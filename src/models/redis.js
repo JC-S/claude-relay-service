@@ -1077,7 +1077,8 @@ class RedisClient {
     ephemeral1hTokens = 0, // 新增：1小时缓存 tokens
     isLongContextRequest = false, // 新增：是否为 1M 上下文请求（超过200k）
     realCost = 0, // 真实费用（官方API费用）
-    ratedCost = 0 // 计费费用（应用倍率后）
+    ratedCost = 0, // 计费费用（应用倍率后）
+    serviceTier = null
   ) {
     const key = `usage:${keyId}`
     const now = new Date()
@@ -1121,6 +1122,8 @@ class RedisClient {
       finalInputTokens + finalOutputTokens + finalCacheCreateTokens + finalCacheReadTokens
     // 核心token（不包括缓存）- 用于与历史数据兼容
     const coreTokens = finalInputTokens + finalOutputTokens
+    const isPriorityServiceTier =
+      typeof serviceTier === 'string' && serviceTier.toLowerCase() === 'priority'
 
     // 使用Pipeline优化性能
     const pipeline = this.client.pipeline()
@@ -1186,6 +1189,13 @@ class RedisClient {
     // 详细缓存类型统计
     pipeline.hincrby(modelDaily, 'ephemeral5mTokens', ephemeral5mTokens)
     pipeline.hincrby(modelDaily, 'ephemeral1hTokens', ephemeral1hTokens)
+    // 费用统计
+    if (realCost > 0) {
+      pipeline.hincrby(modelDaily, 'realCostMicro', Math.round(realCost * 1000000))
+    }
+    if (ratedCost > 0) {
+      pipeline.hincrby(modelDaily, 'ratedCostMicro', Math.round(ratedCost * 1000000))
+    }
 
     // 按模型统计 - 每月
     pipeline.hincrby(modelMonthly, 'inputTokens', finalInputTokens)
@@ -1197,6 +1207,13 @@ class RedisClient {
     // 详细缓存类型统计
     pipeline.hincrby(modelMonthly, 'ephemeral5mTokens', ephemeral5mTokens)
     pipeline.hincrby(modelMonthly, 'ephemeral1hTokens', ephemeral1hTokens)
+    // 费用统计
+    if (realCost > 0) {
+      pipeline.hincrby(modelMonthly, 'realCostMicro', Math.round(realCost * 1000000))
+    }
+    if (ratedCost > 0) {
+      pipeline.hincrby(modelMonthly, 'ratedCostMicro', Math.round(ratedCost * 1000000))
+    }
 
     // API Key级别的模型统计 - 每日
     pipeline.hincrby(keyModelDaily, 'inputTokens', finalInputTokens)
@@ -1274,6 +1291,13 @@ class RedisClient {
     // 详细缓存类型统计
     pipeline.hincrby(modelHourly, 'ephemeral5mTokens', ephemeral5mTokens)
     pipeline.hincrby(modelHourly, 'ephemeral1hTokens', ephemeral1hTokens)
+    // 费用统计
+    if (realCost > 0) {
+      pipeline.hincrby(modelHourly, 'realCostMicro', Math.round(realCost * 1000000))
+    }
+    if (ratedCost > 0) {
+      pipeline.hincrby(modelHourly, 'ratedCostMicro', Math.round(ratedCost * 1000000))
+    }
 
     // API Key级别的模型统计 - 每小时
     pipeline.hincrby(keyModelHourly, 'inputTokens', finalInputTokens)
@@ -1291,6 +1315,26 @@ class RedisClient {
     }
     if (ratedCost > 0) {
       pipeline.hincrby(keyModelHourly, 'ratedCostMicro', Math.round(ratedCost * 1000000))
+    }
+
+    if (isPriorityServiceTier) {
+      const priorityStats = [
+        modelDaily,
+        modelMonthly,
+        modelHourly,
+        keyModelDaily,
+        keyModelMonthly,
+        keyModelHourly,
+        keyModelAlltime
+      ]
+      for (const statKey of priorityStats) {
+        pipeline.hincrby(statKey, 'priorityInputTokens', finalInputTokens)
+        pipeline.hincrby(statKey, 'priorityOutputTokens', finalOutputTokens)
+        pipeline.hincrby(statKey, 'priorityCacheCreateTokens', finalCacheCreateTokens)
+        pipeline.hincrby(statKey, 'priorityCacheReadTokens', finalCacheReadTokens)
+        pipeline.hincrby(statKey, 'priorityEphemeral5mTokens', ephemeral5mTokens)
+        pipeline.hincrby(statKey, 'priorityEphemeral1hTokens', ephemeral1hTokens)
+      }
     }
 
     // 新增：系统级分钟统计
@@ -1388,7 +1432,8 @@ class RedisClient {
     ephemeral5mTokens = 0,
     ephemeral1hTokens = 0,
     model = 'unknown',
-    isLongContextRequest = false
+    isLongContextRequest = false,
+    serviceTier = null
   ) {
     const now = new Date()
     const today = getDateStringInTimezone(now)
@@ -1423,6 +1468,8 @@ class RedisClient {
     const actualTotalTokens =
       finalInputTokens + finalOutputTokens + finalCacheCreateTokens + finalCacheReadTokens
     const coreTokens = finalInputTokens + finalOutputTokens
+    const isPriorityServiceTier =
+      typeof serviceTier === 'string' && serviceTier.toLowerCase() === 'priority'
 
     // 构建统计操作数组
     const operations = [
@@ -1570,6 +1617,49 @@ class RedisClient {
         this.client.hincrby(accountDaily, 'longContextInputTokens', finalInputTokens),
         this.client.hincrby(accountDaily, 'longContextOutputTokens', finalOutputTokens),
         this.client.hincrby(accountDaily, 'longContextRequests', 1)
+      )
+    }
+
+    if (isPriorityServiceTier) {
+      operations.push(
+        this.client.hincrby(accountModelDaily, 'priorityInputTokens', finalInputTokens),
+        this.client.hincrby(accountModelDaily, 'priorityOutputTokens', finalOutputTokens),
+        this.client.hincrby(accountModelDaily, 'priorityCacheCreateTokens', finalCacheCreateTokens),
+        this.client.hincrby(accountModelDaily, 'priorityCacheReadTokens', finalCacheReadTokens),
+        this.client.hincrby(accountModelDaily, 'priorityEphemeral5mTokens', finalEphemeral5mTokens),
+        this.client.hincrby(accountModelDaily, 'priorityEphemeral1hTokens', finalEphemeral1hTokens),
+        this.client.hincrby(accountModelMonthly, 'priorityInputTokens', finalInputTokens),
+        this.client.hincrby(accountModelMonthly, 'priorityOutputTokens', finalOutputTokens),
+        this.client.hincrby(
+          accountModelMonthly,
+          'priorityCacheCreateTokens',
+          finalCacheCreateTokens
+        ),
+        this.client.hincrby(accountModelMonthly, 'priorityCacheReadTokens', finalCacheReadTokens),
+        this.client.hincrby(
+          accountModelMonthly,
+          'priorityEphemeral5mTokens',
+          finalEphemeral5mTokens
+        ),
+        this.client.hincrby(
+          accountModelMonthly,
+          'priorityEphemeral1hTokens',
+          finalEphemeral1hTokens
+        ),
+        this.client.hincrby(accountModelHourly, 'priorityInputTokens', finalInputTokens),
+        this.client.hincrby(accountModelHourly, 'priorityOutputTokens', finalOutputTokens),
+        this.client.hincrby(
+          accountModelHourly,
+          'priorityCacheCreateTokens',
+          finalCacheCreateTokens
+        ),
+        this.client.hincrby(accountModelHourly, 'priorityCacheReadTokens', finalCacheReadTokens),
+        this.client.hincrby(
+          accountModelHourly,
+          'priorityEphemeral5mTokens',
+          finalEphemeral5mTokens
+        ),
+        this.client.hincrby(accountModelHourly, 'priorityEphemeral1hTokens', finalEphemeral1hTokens)
       )
     }
 
@@ -1955,6 +2045,128 @@ class RedisClient {
     await this.client.expire(weeklyKey, 14 * 24 * 3600)
   }
 
+  _buildUsageFromModelStats(modelUsage, fieldPrefix = '') {
+    const fieldName = (name) =>
+      fieldPrefix ? `${fieldPrefix}${name.charAt(0).toUpperCase()}${name.slice(1)}` : name
+    const readInt = (name) => parseInt(modelUsage[fieldName(name)] || 0)
+    const usage = {
+      input_tokens: readInt('inputTokens'),
+      output_tokens: readInt('outputTokens'),
+      cache_creation_input_tokens: readInt('cacheCreateTokens'),
+      cache_read_input_tokens: readInt('cacheReadTokens')
+    }
+
+    const eph5m = readInt('ephemeral5mTokens')
+    const eph1h = readInt('ephemeral1hTokens')
+    if (eph5m > 0 || eph1h > 0) {
+      usage.cache_creation = {
+        ephemeral_5m_input_tokens: eph5m,
+        ephemeral_1h_input_tokens: eph1h
+      }
+    }
+
+    return usage
+  }
+
+  _subtractUsage(totalUsage, usageToSubtract) {
+    const totalEph5m = totalUsage.cache_creation?.ephemeral_5m_input_tokens || 0
+    const totalEph1h = totalUsage.cache_creation?.ephemeral_1h_input_tokens || 0
+    const subEph5m = usageToSubtract.cache_creation?.ephemeral_5m_input_tokens || 0
+    const subEph1h = usageToSubtract.cache_creation?.ephemeral_1h_input_tokens || 0
+    const usage = {
+      input_tokens: Math.max(0, totalUsage.input_tokens - usageToSubtract.input_tokens),
+      output_tokens: Math.max(0, totalUsage.output_tokens - usageToSubtract.output_tokens),
+      cache_creation_input_tokens: Math.max(
+        0,
+        totalUsage.cache_creation_input_tokens - usageToSubtract.cache_creation_input_tokens
+      ),
+      cache_read_input_tokens: Math.max(
+        0,
+        totalUsage.cache_read_input_tokens - usageToSubtract.cache_read_input_tokens
+      )
+    }
+
+    const eph5m = Math.max(0, totalEph5m - subEph5m)
+    const eph1h = Math.max(0, totalEph1h - subEph1h)
+    if (eph5m > 0 || eph1h > 0) {
+      usage.cache_creation = {
+        ephemeral_5m_input_tokens: eph5m,
+        ephemeral_1h_input_tokens: eph1h
+      }
+    }
+
+    return usage
+  }
+
+  _hasBillableUsage(usage) {
+    return (
+      (usage.input_tokens || 0) > 0 ||
+      (usage.output_tokens || 0) > 0 ||
+      (usage.cache_creation_input_tokens || 0) > 0 ||
+      (usage.cache_read_input_tokens || 0) > 0
+    )
+  }
+
+  calculateModelCostFromStats(CostCalculator, modelUsage, model) {
+    const totalUsage = this._buildUsageFromModelStats(modelUsage)
+    if (!this._hasBillableUsage(totalUsage)) {
+      return CostCalculator.calculateCost(totalUsage, model)
+    }
+
+    const priorityUsage = this._buildUsageFromModelStats(modelUsage, 'priority')
+    if (!this._hasBillableUsage(priorityUsage)) {
+      return CostCalculator.calculateCost(totalUsage, model)
+    }
+
+    const standardUsage = this._subtractUsage(totalUsage, priorityUsage)
+    const costResults = []
+    if (this._hasBillableUsage(standardUsage)) {
+      costResults.push(CostCalculator.calculateCost(standardUsage, model))
+    }
+    costResults.push(CostCalculator.calculateCost(priorityUsage, model, 'priority'))
+
+    const costs = costResults.reduce(
+      (sum, result) => ({
+        input: sum.input + (result.costs?.input || 0),
+        output: sum.output + (result.costs?.output || 0),
+        cacheWrite: sum.cacheWrite + (result.costs?.cacheWrite || 0),
+        cacheRead: sum.cacheRead + (result.costs?.cacheRead || 0),
+        total: sum.total + (result.costs?.total || 0)
+      }),
+      { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 }
+    )
+
+    return {
+      model,
+      pricing: null,
+      usingDynamicPricing: costResults.some((result) => result.usingDynamicPricing),
+      hasServiceTierSplit: true,
+      usage: {
+        inputTokens: totalUsage.input_tokens || 0,
+        outputTokens: totalUsage.output_tokens || 0,
+        cacheCreateTokens: totalUsage.cache_creation_input_tokens || 0,
+        cacheReadTokens: totalUsage.cache_read_input_tokens || 0,
+        totalTokens:
+          (totalUsage.input_tokens || 0) +
+          (totalUsage.output_tokens || 0) +
+          (totalUsage.cache_creation_input_tokens || 0) +
+          (totalUsage.cache_read_input_tokens || 0)
+      },
+      costs,
+      formatted: {
+        input: CostCalculator.formatCost(costs.input),
+        output: CostCalculator.formatCost(costs.output),
+        cacheWrite: CostCalculator.formatCost(costs.cacheWrite),
+        cacheRead: CostCalculator.formatCost(costs.cacheRead),
+        total: CostCalculator.formatCost(costs.total)
+      }
+    }
+  }
+
+  _calculateAccountModelCost(CostCalculator, modelUsage, model) {
+    return this.calculateModelCostFromStats(CostCalculator, modelUsage, model).costs.total
+  }
+
   // 💰 计算账户的每日费用（基于模型使用，使用索引集合替代 KEYS）
   async getAccountDailyCost(accountId) {
     const CostCalculator = require('../utils/costCalculator')
@@ -1986,30 +2198,11 @@ class RedisClient {
       const model = accountModels[i]
       const [err, modelUsage] = results[i]
 
-      if (!err && modelUsage && (modelUsage.inputTokens || modelUsage.outputTokens)) {
-        const usage = {
-          input_tokens: parseInt(modelUsage.inputTokens || 0),
-          output_tokens: parseInt(modelUsage.outputTokens || 0),
-          cache_creation_input_tokens: parseInt(modelUsage.cacheCreateTokens || 0),
-          cache_read_input_tokens: parseInt(modelUsage.cacheReadTokens || 0)
-        }
+      if (!err && modelUsage) {
+        const modelCost = this._calculateAccountModelCost(CostCalculator, modelUsage, model)
+        totalCost += modelCost
 
-        // 添加 cache_creation 子对象以支持精确 ephemeral 定价
-        const eph5m = parseInt(modelUsage.ephemeral5mTokens) || 0
-        const eph1h = parseInt(modelUsage.ephemeral1hTokens) || 0
-        if (eph5m > 0 || eph1h > 0) {
-          usage.cache_creation = {
-            ephemeral_5m_input_tokens: eph5m,
-            ephemeral_1h_input_tokens: eph1h
-          }
-        }
-
-        const costResult = CostCalculator.calculateCost(usage, model)
-        totalCost += costResult.costs.total
-
-        logger.debug(
-          `💰 Account ${accountId} daily cost for model ${model}: $${costResult.costs.total}`
-        )
+        logger.debug(`💰 Account ${accountId} daily cost for model ${model}: $${modelCost}`)
       }
     }
 
@@ -2084,26 +2277,9 @@ class RedisClient {
       const { accountId, model } = queryOrder[i]
       const [err, modelUsage] = results[i]
 
-      if (!err && modelUsage && (modelUsage.inputTokens || modelUsage.outputTokens)) {
-        const usage = {
-          input_tokens: parseInt(modelUsage.inputTokens || 0),
-          output_tokens: parseInt(modelUsage.outputTokens || 0),
-          cache_creation_input_tokens: parseInt(modelUsage.cacheCreateTokens || 0),
-          cache_read_input_tokens: parseInt(modelUsage.cacheReadTokens || 0)
-        }
-
-        // 添加 cache_creation 子对象以支持精确 ephemeral 定价
-        const eph5m = parseInt(modelUsage.ephemeral5mTokens) || 0
-        const eph1h = parseInt(modelUsage.ephemeral1hTokens) || 0
-        if (eph5m > 0 || eph1h > 0) {
-          usage.cache_creation = {
-            ephemeral_5m_input_tokens: eph5m,
-            ephemeral_1h_input_tokens: eph1h
-          }
-        }
-
-        const costResult = CostCalculator.calculateCost(usage, model)
-        costMap.set(accountId, costMap.get(accountId) + costResult.costs.total)
+      if (!err && modelUsage) {
+        const modelCost = this._calculateAccountModelCost(CostCalculator, modelUsage, model)
+        costMap.set(accountId, costMap.get(accountId) + modelCost)
       }
     }
 
@@ -2136,27 +2312,7 @@ class RedisClient {
       const parts = key.split(':')
       const model = parts[4]
 
-      if (modelUsage.inputTokens || modelUsage.outputTokens) {
-        const usage = {
-          input_tokens: parseInt(modelUsage.inputTokens || 0),
-          output_tokens: parseInt(modelUsage.outputTokens || 0),
-          cache_creation_input_tokens: parseInt(modelUsage.cacheCreateTokens || 0),
-          cache_read_input_tokens: parseInt(modelUsage.cacheReadTokens || 0)
-        }
-
-        // 添加 cache_creation 子对象以支持精确 ephemeral 定价
-        const eph5m = parseInt(modelUsage.ephemeral5mTokens) || 0
-        const eph1h = parseInt(modelUsage.ephemeral1hTokens) || 0
-        if (eph5m > 0 || eph1h > 0) {
-          usage.cache_creation = {
-            ephemeral_5m_input_tokens: eph5m,
-            ephemeral_1h_input_tokens: eph1h
-          }
-        }
-
-        const costResult = CostCalculator.calculateCost(usage, model)
-        totalCost += costResult.costs.total
-      }
+      totalCost += this._calculateAccountModelCost(CostCalculator, modelUsage, model)
     }
 
     return totalCost

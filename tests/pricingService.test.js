@@ -352,4 +352,40 @@ describe('PricingService - Long Context Pricing', () => {
       expect(result.totalCost).toBeCloseTo(expectedTotal, 10)
     })
   })
+
+  describe('OpenAI service_tier 计费（gpt-5.5）', () => {
+    it('gpt-5.5 的 priority 价格按基础价格 2.5x 本地覆盖', () => {
+      const pricing = pricingService.getModelPricing('gpt-5.5')
+
+      expect(pricing.supports_service_tier).toBe(true)
+      expect(pricing.input_cost_per_token_priority).toBeCloseTo(
+        pricing.input_cost_per_token * 2.5,
+        12
+      )
+      expect(pricing.output_cost_per_token_priority).toBeCloseTo(
+        pricing.output_cost_per_token * 2.5,
+        12
+      )
+      expect(pricing.cache_read_input_token_cost_priority).toBeCloseTo(
+        pricing.cache_read_input_token_cost * 2.5,
+        12
+      )
+    })
+
+    it('gpt-5.5 在 service_tier=priority 时按 2.5x 计费', () => {
+      const usage = {
+        input_tokens: 1000,
+        output_tokens: 100,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 200
+      }
+
+      const result = pricingService.calculateCost(usage, 'gpt-5.5', 'priority')
+
+      expect(result.pricing.input).toBeCloseTo(0.0000125, 12)
+      expect(result.pricing.output).toBeCloseTo(0.000075, 12)
+      expect(result.pricing.cacheRead).toBeCloseTo(0.00000125, 12)
+      expect(result.totalCost).toBeCloseTo(0.02025, 10)
+    })
+  })
 })

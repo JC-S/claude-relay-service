@@ -155,4 +155,33 @@ describe('CostCalculator', () => {
     expect(result.debug.usedFallbackPricing).toBe(false)
     expect(result.debug.pricingSource).toBe('dynamic')
   })
+
+  it('uses gpt-5.5 priority prices when service_tier is priority', () => {
+    pricingService.getModelPricing.mockReturnValue({
+      input_cost_per_token: 0.000005,
+      input_cost_per_token_priority: 0.0000125,
+      output_cost_per_token: 0.00003,
+      output_cost_per_token_priority: 0.000075,
+      cache_read_input_token_cost: 0.0000005,
+      cache_read_input_token_cost_priority: 0.00000125,
+      supports_service_tier: true,
+      litellm_provider: 'openai'
+    })
+
+    const result = CostCalculator.calculateCost(
+      {
+        input_tokens: 1000,
+        output_tokens: 100,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 200
+      },
+      'gpt-5.5',
+      'priority'
+    )
+
+    expect(result.pricing.input).toBe(12.5)
+    expect(result.pricing.output).toBe(75)
+    expect(result.pricing.cacheRead).toBe(1.25)
+    expect(result.costs.total).toBeCloseTo(0.02025, 10)
+  })
 })

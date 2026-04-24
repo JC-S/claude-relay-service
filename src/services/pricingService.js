@@ -41,6 +41,48 @@ class PricingService {
       fastModeBeta: 'fast-mode-2026-02-01',
       fastModeSpeed: 'fast'
     }
+
+    this.localPricingOverrides = {
+      'gpt-5.5': {
+        priorityMultiplier: 2.5
+      }
+    }
+  }
+
+  applyLocalPricingOverrides(pricingData = this.pricingData) {
+    if (!pricingData || typeof pricingData !== 'object') {
+      return pricingData
+    }
+
+    for (const [modelName, override] of Object.entries(this.localPricingOverrides)) {
+      const pricing = pricingData[modelName]
+      if (!pricing || typeof pricing !== 'object') {
+        continue
+      }
+
+      const multiplier = override.priorityMultiplier
+      if (!Number.isFinite(multiplier) || multiplier <= 0) {
+        continue
+      }
+
+      const priorityFields = {
+        input_cost_per_token_priority: 'input_cost_per_token',
+        output_cost_per_token_priority: 'output_cost_per_token',
+        cache_read_input_token_cost_priority: 'cache_read_input_token_cost',
+        cache_creation_input_token_cost_priority: 'cache_creation_input_token_cost'
+      }
+
+      for (const [priorityField, baseField] of Object.entries(priorityFields)) {
+        const basePrice = pricing[baseField]
+        if (typeof basePrice === 'number' && Number.isFinite(basePrice)) {
+          pricing[priorityField] = basePrice * multiplier
+        }
+      }
+
+      pricing.supports_service_tier = true
+    }
+
+    return pricingData
   }
 
   // 初始化价格服务
@@ -262,7 +304,7 @@ class PricingService {
             this.persistLocalHash(buffer)
 
             // 更新内存中的数据
-            this.pricingData = jsonData
+            this.pricingData = this.applyLocalPricingOverrides(jsonData)
             this.lastUpdated = new Date()
 
             logger.success(`Downloaded pricing data for ${Object.keys(jsonData).length} models`)
@@ -293,7 +335,7 @@ class PricingService {
     try {
       if (fs.existsSync(this.pricingFile)) {
         const data = fs.readFileSync(this.pricingFile, 'utf8')
-        this.pricingData = JSON.parse(data)
+        this.pricingData = this.applyLocalPricingOverrides(JSON.parse(data))
 
         const stats = fs.statSync(this.pricingFile)
         this.lastUpdated = stats.mtime
@@ -328,7 +370,7 @@ class PricingService {
         this.persistLocalHash(formattedJson)
 
         // 更新内存中的数据
-        this.pricingData = jsonData
+        this.pricingData = this.applyLocalPricingOverrides(jsonData)
         this.lastUpdated = new Date()
 
         // 设置或重新设置文件监听器
@@ -356,6 +398,8 @@ class PricingService {
     if (!this.pricingData || !modelName) {
       return null
     }
+
+    this.applyLocalPricingOverrides()
 
     // 尝试直接匹配
     if (this.pricingData[modelName]) {
@@ -501,7 +545,7 @@ class PricingService {
   }
 
   // 计算使用费用
-  calculateCost(usage, modelName) {
+  calculateCost(usage, modelName, serviceTier = null) {
     const normalizedModelName = this.stripLongContextSuffix(modelName)
 
     // 检查是否为 1M 上下文模型（用户通过 [1m] 后缀主动选择长上下文模式）
@@ -537,6 +581,11 @@ class PricingService {
 
     // Fast Mode 倍率：优先从 provider_specific_entry.fast 读取，默认 6 倍
     const fastMultiplier = isFastModeRequest ? pricing?.provider_specific_entry?.fast || 6 : 1
+    const usePriorityServiceTier =
+      typeof serviceTier === 'string' &&
+      serviceTier.toLowerCase() === 'priority' &&
+      pricing?.supports_service_tier === true
+    const hasPrice = (value) => value !== null && value !== undefined
 
     // 当 [1m] 模型总输入超过 200K 时，进入 200K+ 计费逻辑
     // 根据 Anthropic 官方文档：当总输入超过 200K 时，整个请求所有 token 类型都使用高档价格
@@ -583,28 +632,38 @@ class PricingService {
       )
     }
 
-    const baseInputPrice = pricing.input_cost_per_token || 0
-    const hasInput200kPrice =
-      pricing.input_cost_per_token_above_200k_tokens !== null &&
-      pricing.input_cost_per_token_above_200k_tokens !== undefined
+    const baseInputPrice =
+      usePriorityServiceTier && hasPrice(pricing.input_cost_per_token_priority)
+        ? pricing.input_cost_per_token_priority
+        : pricing.input_cost_per_token || 0
+    const input200kPrice =
+      usePriorityServiceTier && hasPrice(pricing.input_cost_per_token_above_200k_tokens_priority)
+        ? pricing.input_cost_per_token_above_200k_tokens_priority
+        : pricing.input_cost_per_token_above_200k_tokens
+    const hasInput200kPrice = hasPrice(input200kPrice)
 
     // 确定实际使用的输入价格（普通或 200K+ 高档价格）
     // Claude 模型在 200K+ 场景下如果缺少官方字段，按 2 倍输入价兜底
     let actualInputPrice = useLongContextPricing
       ? hasInput200kPrice
-        ? pricing.input_cost_per_token_above_200k_tokens
+        ? input200kPrice
         : isClaudeModel
           ? baseInputPrice * 2
           : baseInputPrice
       : baseInputPrice
 
-    const baseOutputPrice = pricing.output_cost_per_token || 0
-    const hasOutput200kPrice =
-      pricing.output_cost_per_token_above_200k_tokens !== null &&
-      pricing.output_cost_per_token_above_200k_tokens !== undefined
+    const baseOutputPrice =
+      usePriorityServiceTier && hasPrice(pricing.output_cost_per_token_priority)
+        ? pricing.output_cost_per_token_priority
+        : pricing.output_cost_per_token || 0
+    const output200kPrice =
+      usePriorityServiceTier && hasPrice(pricing.output_cost_per_token_above_200k_tokens_priority)
+        ? pricing.output_cost_per_token_above_200k_tokens_priority
+        : pricing.output_cost_per_token_above_200k_tokens
+    const hasOutput200kPrice = hasPrice(output200kPrice)
     let actualOutputPrice = useLongContextPricing
       ? hasOutput200kPrice
-        ? pricing.output_cost_per_token_above_200k_tokens
+        ? output200kPrice
         : baseOutputPrice
       : baseOutputPrice
 
@@ -613,30 +672,51 @@ class PricingService {
     let actualCacheReadPrice = 0
     let actualEphemeral1hPrice = 0
 
+    const baseCacheCreatePrice =
+      usePriorityServiceTier && hasPrice(pricing.cache_creation_input_token_cost_priority)
+        ? pricing.cache_creation_input_token_cost_priority
+        : pricing.cache_creation_input_token_cost || 0
+    const baseCacheReadPrice =
+      usePriorityServiceTier && hasPrice(pricing.cache_read_input_token_cost_priority)
+        ? pricing.cache_read_input_token_cost_priority
+        : pricing.cache_read_input_token_cost || 0
+    const baseEphemeral1hPrice =
+      usePriorityServiceTier && hasPrice(pricing.cache_creation_input_token_cost_above_1hr_priority)
+        ? pricing.cache_creation_input_token_cost_above_1hr_priority
+        : pricing.cache_creation_input_token_cost_above_1hr || 0
+    const cacheCreate200kPrice =
+      usePriorityServiceTier &&
+      hasPrice(pricing.cache_creation_input_token_cost_above_200k_tokens_priority)
+        ? pricing.cache_creation_input_token_cost_above_200k_tokens_priority
+        : pricing.cache_creation_input_token_cost_above_200k_tokens
+    const cacheRead200kPrice =
+      usePriorityServiceTier &&
+      hasPrice(pricing.cache_read_input_token_cost_above_200k_tokens_priority)
+        ? pricing.cache_read_input_token_cost_above_200k_tokens_priority
+        : pricing.cache_read_input_token_cost_above_200k_tokens
+    const ephemeral1h200kPrice =
+      usePriorityServiceTier &&
+      hasPrice(pricing.cache_creation_input_token_cost_above_1hr_above_200k_tokens_priority)
+        ? pricing.cache_creation_input_token_cost_above_1hr_above_200k_tokens_priority
+        : pricing.cache_creation_input_token_cost_above_1hr_above_200k_tokens
+
     if (useLongContextPricing) {
       // 200K+：Claude 仅用 above_200k 专用字段，缺失留 0 让下方兜底从 actualInputPrice 推导
       actualCacheCreatePrice = isClaudeModel
-        ? pricing.cache_creation_input_token_cost_above_200k_tokens || 0
-        : pricing.cache_creation_input_token_cost_above_200k_tokens ||
-          pricing.cache_creation_input_token_cost ||
-          0
+        ? cacheCreate200kPrice || 0
+        : cacheCreate200kPrice || baseCacheCreatePrice || 0
       actualCacheReadPrice = isClaudeModel
-        ? pricing.cache_read_input_token_cost_above_200k_tokens || 0
-        : pricing.cache_read_input_token_cost_above_200k_tokens ||
-          pricing.cache_read_input_token_cost ||
-          0
-      const has1h200k =
-        pricing.cache_creation_input_token_cost_above_1hr_above_200k_tokens !== null &&
-        pricing.cache_creation_input_token_cost_above_1hr_above_200k_tokens !== undefined
-      actualEphemeral1hPrice = has1h200k
-        ? pricing.cache_creation_input_token_cost_above_1hr_above_200k_tokens
+        ? cacheRead200kPrice || 0
+        : cacheRead200kPrice || baseCacheReadPrice || 0
+      actualEphemeral1hPrice = hasPrice(ephemeral1h200kPrice)
+        ? ephemeral1h200kPrice
         : isClaudeModel
           ? 0
-          : pricing.cache_creation_input_token_cost_above_1hr || 0
+          : baseEphemeral1hPrice
     } else {
-      actualCacheCreatePrice = pricing.cache_creation_input_token_cost || 0
-      actualCacheReadPrice = pricing.cache_read_input_token_cost || 0
-      actualEphemeral1hPrice = pricing.cache_creation_input_token_cost_above_1hr || 0
+      actualCacheCreatePrice = baseCacheCreatePrice
+      actualCacheReadPrice = baseCacheReadPrice
+      actualEphemeral1hPrice = baseEphemeral1hPrice
     }
 
     // Claude 兜底：pricing 字段缺失时用倍率从 actualInputPrice 推导

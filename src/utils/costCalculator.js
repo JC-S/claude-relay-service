@@ -299,7 +299,7 @@ class CostCalculator {
   static calculateCost(usage, model = 'unknown', serviceTier = null) {
     // 如果 usage 包含详细的 cache_creation 对象或是 1M 模型，优先使用 pricingService
     if (this.isDetailedPricingRequest(usage, model)) {
-      const result = pricingService.calculateCost(usage, model)
+      const result = pricingService.calculateCost(usage, model, serviceTier)
       if (this.isValidPricingServiceResult(result)) {
         return this.buildDetailedPricingResult(usage, model, result)
       }

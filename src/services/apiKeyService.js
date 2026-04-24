@@ -1712,7 +1712,8 @@ class ApiKeyService {
         0, // ephemeral1hTokens - 暂时为0，后续处理
         isLongContextRequest,
         realCost,
-        ratedCost
+        ratedCost,
+        serviceTier
       )
 
       // 记录费用统计到每日/每月汇总
@@ -1756,7 +1757,8 @@ class ApiKeyService {
             0, // ephemeral5mTokens - recordUsage 不含详细缓存数据
             0, // ephemeral1hTokens - recordUsage 不含详细缓存数据
             model,
-            isLongContextRequest
+            isLongContextRequest,
+            serviceTier
           )
           logger.database(
             `📊 Recorded account usage: ${accountId} - ${totalTokens} tokens (API Key: ${keyId})`
@@ -1772,6 +1774,7 @@ class ApiKeyService {
       const usageRecord = {
         timestamp: new Date().toISOString(),
         model,
+        serviceTier: serviceTier || null,
         accountId: accountId || null,
         accountType: accountType || null,
         requestId: finalizedRequestMeta?.requestId || null,

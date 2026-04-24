@@ -16,6 +16,65 @@ const config = require('../../../config/config')
 
 const router = express.Router()
 
+function createModelUsageStats() {
+  return {
+    requests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreateTokens: 0,
+    cacheReadTokens: 0,
+    allTokens: 0,
+    ephemeral5mTokens: 0,
+    ephemeral1hTokens: 0,
+    priorityInputTokens: 0,
+    priorityOutputTokens: 0,
+    priorityCacheCreateTokens: 0,
+    priorityCacheReadTokens: 0,
+    priorityEphemeral5mTokens: 0,
+    priorityEphemeral1hTokens: 0,
+    realCostMicro: 0,
+    ratedCostMicro: 0,
+    hasStoredCost: false
+  }
+}
+
+function mergeModelUsageStats(stats, data) {
+  stats.requests += parseInt(data.requests) || 0
+  stats.inputTokens += parseInt(data.inputTokens) || 0
+  stats.outputTokens += parseInt(data.outputTokens) || 0
+  stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
+  stats.cacheReadTokens += parseInt(data.cacheReadTokens) || 0
+  stats.allTokens += parseInt(data.allTokens) || 0
+  stats.ephemeral5mTokens += parseInt(data.ephemeral5mTokens) || 0
+  stats.ephemeral1hTokens += parseInt(data.ephemeral1hTokens) || 0
+  stats.priorityInputTokens += parseInt(data.priorityInputTokens) || 0
+  stats.priorityOutputTokens += parseInt(data.priorityOutputTokens) || 0
+  stats.priorityCacheCreateTokens += parseInt(data.priorityCacheCreateTokens) || 0
+  stats.priorityCacheReadTokens += parseInt(data.priorityCacheReadTokens) || 0
+  stats.priorityEphemeral5mTokens += parseInt(data.priorityEphemeral5mTokens) || 0
+  stats.priorityEphemeral1hTokens += parseInt(data.priorityEphemeral1hTokens) || 0
+
+  if ('realCostMicro' in data || 'ratedCostMicro' in data) {
+    stats.realCostMicro += parseInt(data.realCostMicro) || 0
+    stats.ratedCostMicro += parseInt(data.ratedCostMicro) || 0
+    stats.hasStoredCost = true
+  }
+}
+
+function calculateModelCostFromStats(model, stats) {
+  const costData = redis.calculateModelCostFromStats(CostCalculator, stats, model)
+  if (stats.hasStoredCost) {
+    const realCost = (parseInt(stats.realCostMicro) || 0) / 1000000
+    const ratedCost = (parseInt(stats.ratedCostMicro) || 0) / 1000000
+    costData.costs.real = realCost
+    costData.costs.rated = ratedCost
+    costData.costs.total = realCost
+    costData.formatted.total = CostCalculator.formatCost(realCost)
+    costData.usingStoredCost = true
+  }
+  return costData
+}
+
 // 📊 系统统计
 
 // 获取系统概览
@@ -478,26 +537,8 @@ router.get('/model-stats', authenticateAdmin, async (req, res) => {
       const normalizedModel = normalizeModelName(rawModel)
 
       if (data && Object.keys(data).length > 0) {
-        const stats = modelStatsMap.get(normalizedModel) || {
-          requests: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheCreateTokens: 0,
-          cacheReadTokens: 0,
-          allTokens: 0,
-          ephemeral5mTokens: 0,
-          ephemeral1hTokens: 0
-        }
-
-        stats.requests += parseInt(data.requests) || 0
-        stats.inputTokens += parseInt(data.inputTokens) || 0
-        stats.outputTokens += parseInt(data.outputTokens) || 0
-        stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
-        stats.cacheReadTokens += parseInt(data.cacheReadTokens) || 0
-        stats.allTokens += parseInt(data.allTokens) || 0
-        stats.ephemeral5mTokens += parseInt(data.ephemeral5mTokens) || 0
-        stats.ephemeral1hTokens += parseInt(data.ephemeral1hTokens) || 0
-
+        const stats = modelStatsMap.get(normalizedModel) || createModelUsageStats()
+        mergeModelUsageStats(stats, data)
         modelStatsMap.set(normalizedModel, stats)
       }
     }
@@ -522,7 +563,7 @@ router.get('/model-stats', authenticateAdmin, async (req, res) => {
       }
 
       // 计算费用
-      const costData = CostCalculator.calculateCost(usage, model)
+      const costData = calculateModelCostFromStats(model, stats)
 
       modelStats.push({
         model,
