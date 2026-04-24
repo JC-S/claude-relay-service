@@ -11,14 +11,17 @@ const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const CostCalculator = require('../../utils/costCalculator')
+const { reconcileStoredModelCost } = require('../../utils/modelStatsCostHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const config = require('../../../config/config')
+const { splitModelStatsByFastMode } = require('../../utils/modelVariantHelper')
 
 const router = express.Router()
 
 function createModelUsageStats() {
   return {
     requests: 0,
+    priorityRequests: 0,
     inputTokens: 0,
     outputTokens: 0,
     cacheCreateTokens: 0,
@@ -40,6 +43,7 @@ function createModelUsageStats() {
 
 function mergeModelUsageStats(stats, data) {
   stats.requests += parseInt(data.requests) || 0
+  stats.priorityRequests += parseInt(data.priorityRequests) || 0
   stats.inputTokens += parseInt(data.inputTokens) || 0
   stats.outputTokens += parseInt(data.outputTokens) || 0
   stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
@@ -62,17 +66,80 @@ function mergeModelUsageStats(stats, data) {
 }
 
 function calculateModelCostFromStats(model, stats) {
-  const costData = redis.calculateModelCostFromStats(CostCalculator, stats, model)
-  if (stats.hasStoredCost) {
-    const realCost = (parseInt(stats.realCostMicro) || 0) / 1000000
-    const ratedCost = (parseInt(stats.ratedCostMicro) || 0) / 1000000
-    costData.costs.real = realCost
-    costData.costs.rated = ratedCost
-    costData.costs.total = realCost
-    costData.formatted.total = CostCalculator.formatCost(realCost)
-    costData.usingStoredCost = true
+  return reconcileStoredModelCost(redis.calculateModelCostFromStats(CostCalculator, stats, model), stats, {
+    formatCost: (amount) => CostCalculator.formatCost(amount)
+  })
+}
+
+function buildDisplayModelStats(model, stats, period) {
+  const entries = []
+  const splitEntries = splitModelStatsByFastMode(model, stats, createModelUsageStats)
+
+  for (const entry of splitEntries) {
+    const usage = {
+      input_tokens: parseInt(entry.stats.inputTokens) || 0,
+      output_tokens: parseInt(entry.stats.outputTokens) || 0,
+      cache_creation_input_tokens: parseInt(entry.stats.cacheCreateTokens) || 0,
+      cache_read_input_tokens: parseInt(entry.stats.cacheReadTokens) || 0
+    }
+
+    if ((entry.stats.ephemeral5mTokens || 0) > 0 || (entry.stats.ephemeral1hTokens || 0) > 0) {
+      usage.cache_creation = {
+        ephemeral_5m_input_tokens: parseInt(entry.stats.ephemeral5mTokens) || 0,
+        ephemeral_1h_input_tokens: parseInt(entry.stats.ephemeral1hTokens) || 0
+      }
+    }
+
+    const costData =
+      splitEntries.length > 1 || entry.serviceTier === 'priority'
+        ? CostCalculator.calculateCost(usage, entry.rawModel, entry.serviceTier)
+        : calculateModelCostFromStats(entry.rawModel, entry.stats)
+
+    entries.push({
+      model: entry.model,
+      rawModel: entry.rawModel,
+      serviceTier: entry.serviceTier,
+      period,
+      requests: parseInt(entry.stats.requests) || 0,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      cacheCreateTokens: usage.cache_creation_input_tokens,
+      cacheReadTokens: usage.cache_read_input_tokens,
+      allTokens:
+        parseInt(entry.stats.allTokens) ||
+        usage.input_tokens +
+          usage.output_tokens +
+          usage.cache_creation_input_tokens +
+          usage.cache_read_input_tokens,
+      usage: {
+        requests: parseInt(entry.stats.requests) || 0,
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheCreateTokens: usage.cache_creation_input_tokens,
+        cacheReadTokens: usage.cache_read_input_tokens,
+        totalTokens:
+          parseInt(entry.stats.allTokens) ||
+          usage.input_tokens +
+            usage.output_tokens +
+            usage.cache_creation_input_tokens +
+            usage.cache_read_input_tokens,
+        ephemeral5mTokens: parseInt(entry.stats.ephemeral5mTokens) || 0,
+        ephemeral1hTokens: parseInt(entry.stats.ephemeral1hTokens) || 0,
+        allTokens:
+          parseInt(entry.stats.allTokens) ||
+          usage.input_tokens +
+            usage.output_tokens +
+            usage.cache_creation_input_tokens +
+            usage.cache_read_input_tokens
+      },
+      costs: costData.costs,
+      formatted: costData.formatted,
+      pricing: costData.pricing,
+      usingDynamicPricing: costData.usingDynamicPricing
+    })
   }
-  return costData
+
+  return entries
 }
 
 // 📊 系统统计
@@ -547,49 +614,7 @@ router.get('/model-stats', authenticateAdmin, async (req, res) => {
     const modelStats = []
 
     for (const [model, stats] of modelStatsMap) {
-      const usage = {
-        input_tokens: stats.inputTokens,
-        output_tokens: stats.outputTokens,
-        cache_creation_input_tokens: stats.cacheCreateTokens,
-        cache_read_input_tokens: stats.cacheReadTokens
-      }
-
-      // 如果有 ephemeral 5m/1h 拆分数据，添加 cache_creation 子对象以实现精确计费
-      if (stats.ephemeral5mTokens > 0 || stats.ephemeral1hTokens > 0) {
-        usage.cache_creation = {
-          ephemeral_5m_input_tokens: stats.ephemeral5mTokens,
-          ephemeral_1h_input_tokens: stats.ephemeral1hTokens
-        }
-      }
-
-      // 计算费用
-      const costData = calculateModelCostFromStats(model, stats)
-
-      modelStats.push({
-        model,
-        period: startDate && endDate ? 'custom' : period,
-        requests: stats.requests,
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-        cacheCreateTokens: usage.cache_creation_input_tokens,
-        cacheReadTokens: usage.cache_read_input_tokens,
-        allTokens: stats.allTokens,
-        usage: {
-          requests: stats.requests,
-          inputTokens: usage.input_tokens,
-          outputTokens: usage.output_tokens,
-          cacheCreateTokens: usage.cache_creation_input_tokens,
-          cacheReadTokens: usage.cache_read_input_tokens,
-          totalTokens:
-            usage.input_tokens +
-            usage.output_tokens +
-            usage.cache_creation_input_tokens +
-            usage.cache_read_input_tokens
-        },
-        costs: costData.costs,
-        formatted: costData.formatted,
-        pricing: costData.pricing
-      })
+      modelStats.push(...buildDisplayModelStats(model, stats, startDate && endDate ? 'custom' : period))
     }
 
     // 按总费用排序

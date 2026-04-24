@@ -459,6 +459,55 @@ describe('openai responses payload toggles', () => {
     expect(apiKeyService.recordUsage.mock.calls[0][8]).toBe('priority')
   })
 
+  test('keeps service_tier for codex-tui standard responses sent through openai accounts', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.4',
+        usage: {
+          input_tokens: 12,
+          output_tokens: 6,
+          total_tokens: 18
+        }
+      },
+      headers: {}
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.4',
+        service_tier: 'priority',
+        prompt_cache_key: 'codex-tui-tier-key',
+        stream: false
+      },
+      userAgent: 'codex-tui/0.124.0 (Ubuntu 22.4.0; aarch64) xterm-256color'
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(req.body.instructions).toBeUndefined()
+    expect(req.body.service_tier).toBe('priority')
+    expect(req._serviceTier).toBe('priority')
+    expect(axios.post).toHaveBeenCalled()
+    expect(axios.post.mock.calls[0][1]).toMatchObject({
+      model: 'gpt-5.4',
+      service_tier: 'priority',
+      store: false
+    })
+    expect(apiKeyService.recordUsage).toHaveBeenCalled()
+    expect(apiKeyService.recordUsage.mock.calls[0][8]).toBe('priority')
+  })
+
   test('records null service_tier after Codex adaptation removes it for openai accounts', async () => {
     unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
       accountId: 'openai-1',

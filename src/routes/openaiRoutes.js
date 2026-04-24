@@ -317,9 +317,9 @@ const handleResponses = async (req, res) => {
     }
 
     // 判断是否为 Codex CLI 的请求（基于 User-Agent）
-    // 支持: codex_vscode, codex_cli_rs, codex_exec (非交互式/脚本模式)
+    // 支持: codex_vscode, codex_cli_rs, codex_exec, codex-tui
     const userAgent = req.headers['user-agent'] || ''
-    const codexCliPattern = /^(codex_vscode|codex_cli_rs|codex_exec)\/[\d.]+/i
+    const codexCliPattern = /^(codex_vscode|codex_cli_rs|codex_exec|codex-tui)\/[\d.]+/i
     const isCodexCLI = codexCliPattern.test(userAgent)
 
     const standardResponsesRoute = isStandardResponsesRoute(req)

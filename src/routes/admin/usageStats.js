@@ -13,7 +13,12 @@ const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const CostCalculator = require('../../utils/costCalculator')
+const { reconcileStoredModelCost } = require('../../utils/modelStatsCostHelper')
 const pricingService = require('../../services/pricingService')
+const {
+  applyDisplayModelToRecord,
+  splitModelStatsByFastMode
+} = require('../../utils/modelVariantHelper')
 
 const router = express.Router()
 
@@ -105,6 +110,8 @@ async function getUsageDataByIndex(indexKey, keyPattern, scanPattern) {
 
 function createModelUsageStats() {
   return {
+    requests: 0,
+    priorityRequests: 0,
     inputTokens: 0,
     outputTokens: 0,
     cacheCreateTokens: 0,
@@ -124,6 +131,8 @@ function createModelUsageStats() {
 }
 
 function mergeModelUsageStats(stats, data) {
+  stats.requests += parseInt(data.requests) || 0
+  stats.priorityRequests += parseInt(data.priorityRequests) || 0
   stats.inputTokens += parseInt(data.inputTokens) || 0
   stats.outputTokens += parseInt(data.outputTokens) || 0
   stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
@@ -165,19 +174,46 @@ function buildUsagePayloadFromStats(stats) {
 }
 
 function calculateModelCostFromStats(model, stats) {
-  const costResult = redis.calculateModelCostFromStats(CostCalculator, stats, model)
+  return reconcileStoredModelCost(redis.calculateModelCostFromStats(CostCalculator, stats, model), stats, {
+    formatCost: (amount) => CostCalculator.formatCost(amount)
+  })
+}
 
-  if (stats.hasStoredCost) {
-    const realCost = (parseInt(stats.realCostMicro) || 0) / 1000000
-    const ratedCost = (parseInt(stats.ratedCostMicro) || 0) / 1000000
-    costResult.costs.real = realCost
-    costResult.costs.rated = ratedCost
-    costResult.costs.total = realCost
-    costResult.formatted.total = CostCalculator.formatCost(realCost)
-    costResult.usingStoredCost = true
+function buildDisplayModelStats(model, stats, period) {
+  const entries = []
+  const splitEntries = splitModelStatsByFastMode(model, stats, createModelUsageStats)
+
+  for (const entry of splitEntries) {
+    const usage = buildUsagePayloadFromStats(entry.stats)
+    const costData =
+      splitEntries.length > 1 || entry.serviceTier === 'priority'
+        ? CostCalculator.calculateCost(usage, entry.rawModel, entry.serviceTier)
+        : calculateModelCostFromStats(entry.rawModel, entry.stats)
+
+    entries.push({
+      model: entry.model,
+      rawModel: entry.rawModel,
+      serviceTier: entry.serviceTier,
+      period,
+      requests: parseInt(entry.stats.requests) || 0,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      cacheCreateTokens: usage.cache_creation_input_tokens,
+      cacheReadTokens: usage.cache_read_input_tokens,
+      allTokens:
+        parseInt(entry.stats.allTokens) ||
+        usage.input_tokens +
+          usage.output_tokens +
+          usage.cache_creation_input_tokens +
+          usage.cache_read_input_tokens,
+      costs: costData.costs,
+      formatted: costData.formatted,
+      pricing: costData.pricing,
+      usingDynamicPricing: costData.usingDynamicPricing
+    })
   }
 
-  return costResult
+  return entries
 }
 
 const accountTypeNames = {
@@ -1080,34 +1116,9 @@ router.get('/api-keys/:keyId/model-stats', authenticateAdmin, async (req, res) =
           }
           const model = match[1]
           if (!modelStatsMap.has(model)) {
-            modelStatsMap.set(model, {
-              requests: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              cacheCreateTokens: 0,
-              cacheReadTokens: 0,
-              ephemeral5mTokens: 0,
-              ephemeral1hTokens: 0,
-              allTokens: 0,
-              realCostMicro: 0,
-              ratedCostMicro: 0,
-              hasStoredCost: false
-            })
+            modelStatsMap.set(model, createModelUsageStats())
           }
-          const stats = modelStatsMap.get(model)
-          stats.requests += parseInt(data.requests) || 0
-          stats.inputTokens += parseInt(data.inputTokens) || 0
-          stats.outputTokens += parseInt(data.outputTokens) || 0
-          stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
-          stats.cacheReadTokens += parseInt(data.cacheReadTokens) || 0
-          stats.ephemeral5mTokens += parseInt(data.ephemeral5mTokens) || 0
-          stats.ephemeral1hTokens += parseInt(data.ephemeral1hTokens) || 0
-          stats.allTokens += parseInt(data.allTokens) || 0
-          if ('realCostMicro' in data || 'ratedCostMicro' in data) {
-            stats.realCostMicro += parseInt(data.realCostMicro) || 0
-            stats.ratedCostMicro += parseInt(data.ratedCostMicro) || 0
-            stats.hasStoredCost = true
-          }
+          mergeModelUsageStats(modelStatsMap.get(model), data)
         }
       }
     } else {
@@ -1136,86 +1147,16 @@ router.get('/api-keys/:keyId/model-stats', authenticateAdmin, async (req, res) =
         }
         const model = match[1]
         if (!modelStatsMap.has(model)) {
-          modelStatsMap.set(model, {
-            requests: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheCreateTokens: 0,
-            cacheReadTokens: 0,
-            ephemeral5mTokens: 0,
-            ephemeral1hTokens: 0,
-            allTokens: 0,
-            realCostMicro: 0,
-            ratedCostMicro: 0,
-            hasStoredCost: false
-          })
+          modelStatsMap.set(model, createModelUsageStats())
         }
-        const stats = modelStatsMap.get(model)
-        stats.requests += parseInt(data.requests) || 0
-        stats.inputTokens += parseInt(data.inputTokens) || 0
-        stats.outputTokens += parseInt(data.outputTokens) || 0
-        stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
-        stats.cacheReadTokens += parseInt(data.cacheReadTokens) || 0
-        stats.ephemeral5mTokens += parseInt(data.ephemeral5mTokens) || 0
-        stats.ephemeral1hTokens += parseInt(data.ephemeral1hTokens) || 0
-        stats.allTokens += parseInt(data.allTokens) || 0
-        if ('realCostMicro' in data || 'ratedCostMicro' in data) {
-          stats.realCostMicro += parseInt(data.realCostMicro) || 0
-          stats.ratedCostMicro += parseInt(data.ratedCostMicro) || 0
-          stats.hasStoredCost = true
-        }
+        mergeModelUsageStats(modelStatsMap.get(model), data)
       }
     }
 
     // 将汇总的数据转换为最终结果
     for (const [model, stats] of modelStatsMap) {
       logger.info(`📊 Model ${model} aggregated data:`, stats)
-
-      let costData
-      if (stats.hasStoredCost) {
-        // 使用请求时已计算并存储的费用（精确，包含 1M 上下文、Fast Mode 等特殊计费）
-        const ratedCost = stats.ratedCostMicro / 1000000
-        const realCost = stats.realCostMicro / 1000000
-        costData = {
-          costs: { total: ratedCost, real: realCost },
-          formatted: { total: CostCalculator.formatCost(ratedCost) },
-          pricing: null,
-          usingDynamicPricing: false,
-          usingStoredCost: true
-        }
-      } else {
-        // Legacy fallback：旧数据没有存储费用，从 token 重算
-        const usage = {
-          input_tokens: stats.inputTokens,
-          output_tokens: stats.outputTokens,
-          cache_creation_input_tokens: stats.cacheCreateTokens,
-          cache_read_input_tokens: stats.cacheReadTokens
-        }
-
-        if (stats.ephemeral5mTokens > 0 || stats.ephemeral1hTokens > 0) {
-          usage.cache_creation = {
-            ephemeral_5m_input_tokens: stats.ephemeral5mTokens,
-            ephemeral_1h_input_tokens: stats.ephemeral1hTokens
-          }
-        }
-
-        costData = CostCalculator.calculateCost(usage, model)
-      }
-
-      modelStats.push({
-        model,
-        requests: stats.requests,
-        inputTokens: stats.inputTokens,
-        outputTokens: stats.outputTokens,
-        cacheCreateTokens: stats.cacheCreateTokens,
-        cacheReadTokens: stats.cacheReadTokens,
-        allTokens: stats.allTokens,
-        // 添加费用信息
-        costs: costData.costs,
-        formatted: costData.formatted,
-        pricing: costData.pricing,
-        usingDynamicPricing: costData.usingDynamicPricing
-      })
+      modelStats.push(...buildDisplayModelStats(model, stats, period))
     }
 
     // 如果没有找到模型级别的详细数据，尝试从汇总数据中生成展示
@@ -2823,18 +2764,20 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
       return true
     }
 
-    const filteredRecords = rawRecords.filter((record) => {
-      if (!withinRange(record)) {
-        return false
-      }
-      if (model && record.model !== model) {
-        return false
-      }
-      if (accountId && record.accountId !== accountId) {
-        return false
-      }
-      return true
-    })
+    const filteredRecords = rawRecords
+      .map((record) => applyDisplayModelToRecord(record))
+      .filter((record) => {
+        if (!withinRange(record)) {
+          return false
+        }
+        if (model && record.model !== model) {
+          return false
+        }
+        if (accountId && record.accountId !== accountId) {
+          return false
+        }
+        return true
+      })
 
     filteredRecords.sort((a, b) => {
       const aTime = new Date(a.timestamp).getTime()
@@ -2862,7 +2805,11 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
 
     for (const record of filteredRecords) {
       const usage = toUsageObject(record)
-      const costData = CostCalculator.calculateCost(usage, record.model || 'unknown')
+      const costData = CostCalculator.calculateCost(
+        usage,
+        record.rawModel || record.model || 'unknown',
+        record.serviceTier || null
+      )
       const computedCost =
         typeof record.cost === 'number' ? record.cost : costData?.costs?.total || 0
       const totalTokens =
@@ -2919,7 +2866,11 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
     const enrichedRecords = []
     for (const record of pageRecords) {
       const usage = toUsageObject(record)
-      const costData = CostCalculator.calculateCost(usage, record.model || 'unknown')
+      const costData = CostCalculator.calculateCost(
+        usage,
+        record.rawModel || record.model || 'unknown',
+        record.serviceTier || null
+      )
       const computedCost =
         typeof record.cost === 'number' ? record.cost : costData?.costs?.total || 0
       const realCost =
@@ -2937,6 +2888,8 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
       enrichedRecords.push({
         timestamp: record.timestamp,
         model: record.model || 'unknown',
+        rawModel: record.rawModel || record.model || 'unknown',
+        serviceTier: record.serviceTier || null,
         accountId: record.accountId || null,
         accountName: accountInfo?.name || null,
         accountStatus: accountInfo?.status ?? null,
@@ -3160,18 +3113,19 @@ router.get('/accounts/:accountId/usage-records', authenticateAdmin, async (req, 
       for (const { keyId, records } of batchResults) {
         const apiKeyName = apiKeyNameCache.get(keyId) || (await getApiKeyName(keyId))
         for (const record of records) {
+          const displayRecord = applyDisplayModelToRecord(record)
           if (record.accountId !== accountId) {
             continue
           }
           if (!withinRange(record)) {
             continue
           }
-          if (model && record.model !== model) {
+          if (model && displayRecord.model !== model) {
             continue
           }
 
           const accountType = record.accountType || accountInfo.platform || 'unknown'
-          const normalizedModel = record.model || 'unknown'
+          const normalizedModel = displayRecord.model || 'unknown'
 
           modelSet.add(normalizedModel)
           apiKeyOptionMap.set(keyId, { id: keyId, name: apiKeyName })
@@ -3190,6 +3144,7 @@ router.get('/accounts/:accountId/usage-records', authenticateAdmin, async (req, 
 
           filteredRecords.push({
             ...record,
+            rawModel: displayRecord.rawModel,
             model: normalizedModel,
             accountType,
             apiKeyId: keyId,
@@ -3220,7 +3175,11 @@ router.get('/accounts/:accountId/usage-records', authenticateAdmin, async (req, 
 
     for (const record of filteredRecords) {
       const usage = toUsageObject(record)
-      const costData = CostCalculator.calculateCost(usage, record.model || 'unknown')
+      const costData = CostCalculator.calculateCost(
+        usage,
+        record.rawModel || record.model || 'unknown',
+        record.serviceTier || null
+      )
       const computedCost =
         typeof record.cost === 'number' ? record.cost : costData?.costs?.total || 0
       const totalTokens =
@@ -3249,7 +3208,11 @@ router.get('/accounts/:accountId/usage-records', authenticateAdmin, async (req, 
     const enrichedRecords = []
     for (const record of pageRecords) {
       const usage = toUsageObject(record)
-      const costData = CostCalculator.calculateCost(usage, record.model || 'unknown')
+      const costData = CostCalculator.calculateCost(
+        usage,
+        record.rawModel || record.model || 'unknown',
+        record.serviceTier || null
+      )
       const computedCost =
         typeof record.cost === 'number' ? record.cost : costData?.costs?.total || 0
       const realCost =
@@ -3264,6 +3227,8 @@ router.get('/accounts/:accountId/usage-records', authenticateAdmin, async (req, 
       enrichedRecords.push({
         timestamp: record.timestamp,
         model: record.model || 'unknown',
+        rawModel: record.rawModel || record.model || 'unknown',
+        serviceTier: record.serviceTier || null,
         apiKeyId: record.apiKeyId,
         apiKeyName: record.apiKeyName,
         accountId,

@@ -103,6 +103,43 @@ describe('requestDetailService', () => {
     expect(exec).toHaveBeenCalled()
   })
 
+  test('captureRequestDetail marks gpt priority requests as fast display models', async () => {
+    const exec = jest.fn().mockResolvedValue([])
+    const multi = {
+      set: jest.fn().mockReturnThis(),
+      zadd: jest.fn().mockReturnThis(),
+      expire: jest.fn().mockReturnThis(),
+      exec
+    }
+
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: true
+    })
+    redis.getClient.mockReturnValue({ multi: jest.fn(() => multi) })
+
+    await requestDetailService.captureRequestDetail({
+      requestId: 'req_fast_1',
+      timestamp: '2026-04-07T12:00:00.000Z',
+      endpoint: '/openai/v1/responses',
+      method: 'POST',
+      statusCode: 200,
+      apiKeyId: 'key_1',
+      accountId: 'acct_1',
+      accountType: 'openai',
+      model: 'gpt-5.4',
+      serviceTier: 'priority',
+      inputTokens: 10,
+      outputTokens: 4
+    })
+
+    const storedPayload = JSON.parse(multi.set.mock.calls[0][1])
+    expect(storedPayload.rawModel).toBe('gpt-5.4')
+    expect(storedPayload.model).toBe('gpt-5.4 (fast)')
+    expect(storedPayload.serviceTier).toBe('priority')
+  })
+
   test('listRequestDetails applies openai cache display flags and openai hit-rate formula', async () => {
     claudeRelayConfigService.getConfig.mockResolvedValue({
       requestDetailCaptureEnabled: true,

@@ -1328,6 +1328,7 @@ class RedisClient {
         keyModelAlltime
       ]
       for (const statKey of priorityStats) {
+        pipeline.hincrby(statKey, 'priorityRequests', 1)
         pipeline.hincrby(statKey, 'priorityInputTokens', finalInputTokens)
         pipeline.hincrby(statKey, 'priorityOutputTokens', finalOutputTokens)
         pipeline.hincrby(statKey, 'priorityCacheCreateTokens', finalCacheCreateTokens)
@@ -1622,12 +1623,14 @@ class RedisClient {
 
     if (isPriorityServiceTier) {
       operations.push(
+        this.client.hincrby(accountModelDaily, 'priorityRequests', 1),
         this.client.hincrby(accountModelDaily, 'priorityInputTokens', finalInputTokens),
         this.client.hincrby(accountModelDaily, 'priorityOutputTokens', finalOutputTokens),
         this.client.hincrby(accountModelDaily, 'priorityCacheCreateTokens', finalCacheCreateTokens),
         this.client.hincrby(accountModelDaily, 'priorityCacheReadTokens', finalCacheReadTokens),
         this.client.hincrby(accountModelDaily, 'priorityEphemeral5mTokens', finalEphemeral5mTokens),
         this.client.hincrby(accountModelDaily, 'priorityEphemeral1hTokens', finalEphemeral1hTokens),
+        this.client.hincrby(accountModelMonthly, 'priorityRequests', 1),
         this.client.hincrby(accountModelMonthly, 'priorityInputTokens', finalInputTokens),
         this.client.hincrby(accountModelMonthly, 'priorityOutputTokens', finalOutputTokens),
         this.client.hincrby(
@@ -1646,6 +1649,7 @@ class RedisClient {
           'priorityEphemeral1hTokens',
           finalEphemeral1hTokens
         ),
+        this.client.hincrby(accountModelHourly, 'priorityRequests', 1),
         this.client.hincrby(accountModelHourly, 'priorityInputTokens', finalInputTokens),
         this.client.hincrby(accountModelHourly, 'priorityOutputTokens', finalOutputTokens),
         this.client.hincrby(

@@ -17,6 +17,7 @@ const {
   extractRequestReasoningInfo,
   resolveRequestDetailReasoning
 } = require('../utils/requestDetailHelper')
+const { applyDisplayModelToRecord } = require('../utils/modelVariantHelper')
 
 const REQUEST_DETAIL_ITEM_PREFIX = 'request_detail:item:'
 const REQUEST_DETAIL_DAY_INDEX_PREFIX = 'request_detail:index:day:'
@@ -585,7 +586,7 @@ class RequestDetailService {
     const cost = normalizeNumber(detail.cost, 6)
     const realCost = normalizeNumber(detail.realCost, 6)
     const reasoningInfo = extractRequestReasoningInfo(requestBodySource)
-    const normalized = {
+    const normalized = applyDisplayModelToRecord({
       requestId,
       timestamp,
       requestStartedAt: toIsoString(detail.requestStartedAt),
@@ -597,6 +598,7 @@ class RequestDetailService {
       accountId: detail.accountId || null,
       accountType: detail.accountType || 'unknown',
       model: detail.model || 'unknown',
+      serviceTier: detail.serviceTier || null,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -610,7 +612,7 @@ class RequestDetailService {
       isLongContextRequest: detail.isLongContextRequest === true,
       reasoningDisplay: detail.reasoningDisplay || reasoningInfo.reasoningDisplay || null,
       reasoningSource: detail.reasoningSource || reasoningInfo.reasoningSource || null
-    }
+    })
 
     if (options.bodyPreviewEnabled && requestBodySource !== undefined) {
       normalized.requestBodySnapshot = sanitizeRequestBodySnapshot(requestBodySource)
@@ -1024,20 +1026,20 @@ class RequestDetailService {
   }
 
   _hydrateRawRecord(rawItem, pointer = {}) {
-    const parsed = restoreRecordTimestamp(
+    const parsedRecord = restoreRecordTimestamp(
       safeJsonParse(rawItem),
       Number(pointer?.timestampMs) || Date.now()
     )
 
-    if (!parsed) {
+    if (!parsedRecord) {
       return null
     }
 
-    if (!parsed.requestId && pointer?.requestId) {
-      parsed.requestId = pointer.requestId
+    if (!parsedRecord.requestId && pointer?.requestId) {
+      parsedRecord.requestId = pointer.requestId
     }
 
-    return parsed
+    return applyDisplayModelToRecord(parsedRecord)
   }
 
   async _loadPointerBatchRecords(pointerBatch = [], client = redis.getClient()) {
