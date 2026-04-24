@@ -10,7 +10,12 @@ jest.mock(
 
 jest.mock('../src/models/redis', () => ({
   setApiKey: jest.fn(),
-  getApiKey: jest.fn()
+  getApiKey: jest.fn(),
+  findApiKeyByHash: jest.fn(),
+  getDailyCost: jest.fn(),
+  getCostStats: jest.fn(),
+  getUsageStats: jest.fn(),
+  getWeeklyOpusCost: jest.fn()
 }))
 
 jest.mock('../src/services/costRankService', () => ({
@@ -122,5 +127,57 @@ describe('apiKeyService openai responses config', () => {
     expect(result.openaiResponsesPayloadRules).toEqual([
       { path: 'model', valueType: 'string', value: 'gpt-5' }
     ])
+  })
+
+  test('validateApiKeyForStats returns custom Claude weekly reset config', async () => {
+    redis.findApiKeyByHash.mockResolvedValue({
+      id: 'key-1',
+      name: 'Key',
+      description: '',
+      isActive: 'true',
+      isActivated: 'true',
+      expiresAt: '',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      activationDays: '0',
+      activationUnit: 'days',
+      activatedAt: '2025-01-01T00:00:00.000Z',
+      claudeAccountId: '',
+      claudeConsoleAccountId: '',
+      geminiAccountId: '',
+      openaiAccountId: '',
+      azureOpenaiAccountId: '',
+      bedrockAccountId: '',
+      droidAccountId: '',
+      permissions: '[]',
+      tokenLimit: '0',
+      concurrencyLimit: '0',
+      rateLimitWindow: '0',
+      rateLimitRequests: '0',
+      rateLimitCost: '0',
+      enableModelRestriction: 'false',
+      enableClientRestriction: 'false',
+      dailyCostLimit: '0',
+      totalCostLimit: '0',
+      weeklyOpusCostLimit: '100',
+      weeklyResetDay: '3',
+      weeklyResetHour: '19',
+      tags: '[]',
+      enableOpenAIResponsesCodexAdaptation: 'true',
+      enableOpenAIResponsesPayloadRules: 'false',
+      openaiResponsesPayloadRules: '[]'
+    })
+    redis.getDailyCost.mockResolvedValue(12.34)
+    redis.getCostStats.mockResolvedValue({ total: 56.78 })
+    redis.getUsageStats.mockResolvedValue({ total: { requests: 1 } })
+    redis.getWeeklyOpusCost.mockResolvedValue(23.45)
+
+    const result = await apiKeyService.validateApiKeyForStats('cr_test_key')
+
+    expect(result.valid).toBe(true)
+    expect(result.keyData.weeklyResetDay).toBe(3)
+    expect(result.keyData.weeklyResetHour).toBe(19)
+    expect(result.keyData.weeklyOpusCostLimit).toBe(100)
+    expect(result.keyData.weeklyOpusCost).toBe(23.45)
+    expect(redis.getWeeklyOpusCost).toHaveBeenCalledWith('key-1', 3, 19)
   })
 })

@@ -676,6 +676,8 @@ class ApiKeyService {
           dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
           totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
           weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
+          weeklyResetDay: parseInt(keyData.weeklyResetDay || 1),
+          weeklyResetHour: parseInt(keyData.weeklyResetHour || 0),
           dailyCost: dailyCost || 0,
           totalCost: costStats?.total || 0,
           weeklyOpusCost:
