@@ -486,7 +486,7 @@ class ClaudeAccountService {
   }
 
   // 🎯 获取有效的访问token
-  async getValidAccessToken(accountId) {
+  async getValidAccessToken(accountId, options = {}) {
     try {
       const accountData = await redis.getClaudeAccount(accountId)
 
@@ -529,10 +529,11 @@ class ClaudeAccountService {
         throw new Error('No access token available')
       }
 
-      // 更新最后使用时间和会话窗口
-      accountData.lastUsedAt = new Date().toISOString()
-      await this.updateSessionWindow(accountId, accountData)
-      await redis.setClaudeAccount(accountId, accountData)
+      if (options.updateLastUsedAt !== false) {
+        accountData.lastUsedAt = new Date().toISOString()
+        await this.updateSessionWindow(accountId, accountData)
+        await redis.setClaudeAccount(accountId, accountData)
+      }
 
       return accessToken
     } catch (error) {
@@ -2036,7 +2037,7 @@ class ClaudeAccountService {
 
       // 如果没有提供 accessToken，使用 getValidAccessToken 自动检查过期并刷新
       if (!accessToken) {
-        accessToken = await this.getValidAccessToken(accountId)
+        accessToken = await this.getValidAccessToken(accountId, { updateLastUsedAt: false })
       }
 
       // 如果没有提供 agent，创建代理
