@@ -113,14 +113,16 @@ function createReq({
   body = {},
   userAgent = 'my-client/1.0',
   apiKeyOverrides = {},
-  fromUnifiedEndpoint = false
+  fromUnifiedEndpoint = false,
+  extraHeaders = {}
 } = {}) {
   return {
     method: 'POST',
     path,
     originalUrl: `/openai${path}`,
     headers: {
-      'user-agent': userAgent
+      'user-agent': userAgent,
+      ...extraHeaders
     },
     body: JSON.parse(JSON.stringify(body)),
     apiKey: {
@@ -353,6 +355,116 @@ describe('openai responses payload toggles', () => {
       model: 'gpt-5',
       service_tier: 'priority',
       store: false
+    })
+  })
+
+  test('sends Codex CLI upstream identity headers for openai oauth accounts', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.4',
+        usage: {
+          input_tokens: 8,
+          output_tokens: 2,
+          total_tokens: 10
+        }
+      },
+      headers: {}
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.4',
+        prompt_cache_key: 'cache-session',
+        stream: false
+      },
+      userAgent: 'openai-node/4.0',
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesPayloadRules: false
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(axios.post).toHaveBeenCalled()
+    expect(axios.post.mock.calls[0][2].headers).toMatchObject({
+      authorization: 'Bearer decrypted-token',
+      'chatgpt-account-id': 'chatgpt-account-1',
+      host: 'chatgpt.com',
+      accept: 'application/json',
+      'content-type': 'application/json',
+      connection: 'Keep-Alive',
+      originator: 'codex-tui',
+      'user-agent': 'openai-node/4.0',
+      session_id: 'cache-session'
+    })
+  })
+
+  test('preserves incoming Codex upstream headers for openai oauth accounts', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.4',
+        usage: {
+          input_tokens: 9,
+          output_tokens: 3,
+          total_tokens: 12
+        }
+      },
+      headers: {}
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.4',
+        prompt_cache_key: 'body-session',
+        stream: false
+      },
+      extraHeaders: {
+        originator: 'codex_cli_rs',
+        session_id: 'header-session',
+        version: '0.124.0',
+        'x-codex-beta-features': 'feature-a,feature-b',
+        'x-codex-turn-metadata': 'turn-metadata',
+        'x-client-request-id': 'client-request-id'
+      },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesPayloadRules: false
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(axios.post).toHaveBeenCalled()
+    expect(axios.post.mock.calls[0][2].headers).toMatchObject({
+      originator: 'codex_cli_rs',
+      session_id: 'header-session',
+      version: '0.124.0',
+      'x-codex-beta-features': 'feature-a,feature-b',
+      'x-codex-turn-metadata': 'turn-metadata',
+      'x-client-request-id': 'client-request-id'
     })
   })
 
