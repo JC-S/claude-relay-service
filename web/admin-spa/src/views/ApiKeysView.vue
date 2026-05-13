@@ -4534,6 +4534,8 @@ const exportToExcel = () => {
         启用客户端限制: key.enableClientRestriction ? '是' : '否',
         允许的客户端:
           key.allowedClients && key.allowedClients.length > 0 ? key.allowedClients.join('; ') : '',
+        启用IP白名单: key.enableIpWhitelist ? '是' : '否',
+        IP白名单: key.ipWhitelist && key.ipWhitelist.length > 0 ? key.ipWhitelist.join('; ') : '',
 
         // 创建信息
         创建时间: key.createdAt ? formatDate(key.createdAt) : '',

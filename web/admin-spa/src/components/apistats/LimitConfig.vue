@@ -290,6 +290,34 @@
               </span>
             </div>
           </div>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-sm text-gray-600 dark:text-gray-400 md:text-base">IP 白名单</span>
+              <span class="text-sm font-medium text-gray-900 md:text-base">
+                <span v-if="hasIpWhitelist" class="text-orange-600">
+                  <i class="fas fa-shield-alt mr-1 text-xs md:text-sm" />
+                  限 {{ statsData.restrictions.ipWhitelist.length }} 个 IP
+                </span>
+                <span v-else class="text-green-600">
+                  <i class="fas fa-check-circle mr-1 text-xs md:text-sm" />
+                  不限制来源 IP
+                </span>
+              </span>
+            </div>
+            <div
+              v-if="hasIpWhitelist"
+              class="flex flex-wrap gap-2 rounded-lg bg-cyan-50 p-2 dark:bg-cyan-900/20 md:p-3"
+            >
+              <span
+                v-for="ip in statsData.restrictions.ipWhitelist"
+                :key="ip"
+                class="flex items-center gap-1 rounded-full bg-white px-2 py-1 font-mono text-xs text-cyan-700 shadow-sm dark:bg-gray-800 dark:text-cyan-300 md:text-sm"
+              >
+                <i class="fas fa-network-wired" />
+                {{ ip }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -358,6 +386,16 @@ const hasClientRestrictions = computed(() => {
     restriction.enableClientRestriction === true &&
     Array.isArray(restriction.allowedClients) &&
     restriction.allowedClients.length > 0
+  )
+})
+
+const hasIpWhitelist = computed(() => {
+  const restriction = statsData.value?.restrictions
+  if (!restriction) return false
+  return (
+    restriction.enableIpWhitelist === true &&
+    Array.isArray(restriction.ipWhitelist) &&
+    restriction.ipWhitelist.length > 0
   )
 })
 

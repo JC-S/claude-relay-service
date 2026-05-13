@@ -777,6 +777,7 @@ class RedisClient {
       'isActive',
       'enableModelRestriction',
       'enableClientRestriction',
+      'enableIpWhitelist',
       'enableOpenAIResponsesCodexAdaptation',
       'enableOpenAIResponsesPayloadRules',
       'isDeleted'
@@ -792,6 +793,9 @@ class RedisClient {
     }
     if (parsed.enableOpenAIResponsesPayloadRules === undefined) {
       parsed.enableOpenAIResponsesPayloadRules = false
+    }
+    if (parsed.enableIpWhitelist === undefined) {
+      parsed.enableIpWhitelist = false
     }
 
     // 数字字段
@@ -817,6 +821,7 @@ class RedisClient {
       'tags',
       'restrictedModels',
       'allowedClients',
+      'ipWhitelist',
       'openaiResponsesPayloadRules'
     ]
     for (const field of arrayFields) {
@@ -831,6 +836,9 @@ class RedisClient {
 
     if (!Array.isArray(parsed.openaiResponsesPayloadRules)) {
       parsed.openaiResponsesPayloadRules = []
+    }
+    if (!Array.isArray(parsed.ipWhitelist)) {
+      parsed.ipWhitelist = []
     }
 
     // 对象字段（JSON 解析）

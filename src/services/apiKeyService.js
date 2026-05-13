@@ -8,6 +8,7 @@ const requestDetailService = require('./requestDetailService')
 const { isClaudeFamilyModel } = require('../utils/modelHelper')
 const { finalizeRequestDetailMeta } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('./requestBodyRuleService')
+const { normalizeIpWhitelist } = require('../utils/ipWhitelistHelper')
 
 const ACCOUNT_TYPE_CONFIG = {
   claude: { prefix: 'claude:account:' },
@@ -193,6 +194,8 @@ class ApiKeyService {
       restrictedModels = [],
       enableClientRestriction = false,
       allowedClients = [],
+      enableIpWhitelist = false,
+      ipWhitelist = [],
       dailyCostLimit = 0,
       totalCostLimit = 0,
       weeklyOpusCostLimit = 0,
@@ -247,6 +250,8 @@ class ApiKeyService {
       restrictedModels: JSON.stringify(restrictedModels || []),
       enableClientRestriction: String(enableClientRestriction || false),
       allowedClients: JSON.stringify(allowedClients || []),
+      enableIpWhitelist: String(enableIpWhitelist || false),
+      ipWhitelist: JSON.stringify(normalizeIpWhitelist(ipWhitelist)),
       dailyCostLimit: String(dailyCostLimit || 0),
       totalCostLimit: String(totalCostLimit || 0),
       weeklyOpusCostLimit: String(weeklyOpusCostLimit || 0),
@@ -323,6 +328,8 @@ class ApiKeyService {
       restrictedModels: JSON.parse(keyData.restrictedModels),
       enableClientRestriction: keyData.enableClientRestriction === 'true',
       allowedClients: JSON.parse(keyData.allowedClients || '[]'),
+      enableIpWhitelist: keyData.enableIpWhitelist === 'true',
+      ipWhitelist: normalizeIpWhitelist(keyData.ipWhitelist),
       dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
       totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
       weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
@@ -474,6 +481,8 @@ class ApiKeyService {
         allowedClients = []
       }
 
+      const ipWhitelist = normalizeIpWhitelist(keyData.ipWhitelist)
+
       // 解析标签
       let tags = []
       try {
@@ -527,6 +536,8 @@ class ApiKeyService {
           restrictedModels,
           enableClientRestriction: keyData.enableClientRestriction === 'true',
           allowedClients,
+          enableIpWhitelist: keyData.enableIpWhitelist === 'true',
+          ipWhitelist,
           dailyCostLimit,
           totalCostLimit,
           weeklyOpusCostLimit,
@@ -622,6 +633,8 @@ class ApiKeyService {
         allowedClients = []
       }
 
+      const ipWhitelist = normalizeIpWhitelist(keyData.ipWhitelist)
+
       // 解析标签
       let tags = []
       try {
@@ -673,6 +686,8 @@ class ApiKeyService {
           restrictedModels,
           enableClientRestriction: keyData.enableClientRestriction === 'true',
           allowedClients,
+          enableIpWhitelist: keyData.enableIpWhitelist === 'true',
+          ipWhitelist,
           dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
           totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
           weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
@@ -889,6 +904,7 @@ class ApiKeyService {
         key.isActive = key.isActive === 'true'
         key.enableModelRestriction = key.enableModelRestriction === 'true'
         key.enableClientRestriction = key.enableClientRestriction === 'true'
+        key.enableIpWhitelist = key.enableIpWhitelist === 'true'
         key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
           key.enableOpenAIResponsesCodexAdaptation,
           true
@@ -973,6 +989,7 @@ class ApiKeyService {
         } catch (e) {
           key.allowedClients = []
         }
+        key.ipWhitelist = normalizeIpWhitelist(key.ipWhitelist)
         try {
           key.tags = key.tags ? JSON.parse(key.tags) : []
         } catch (e) {
@@ -1153,6 +1170,8 @@ class ApiKeyService {
           key.enableModelRestriction === 'true' || key.enableModelRestriction === true
         key.enableClientRestriction =
           key.enableClientRestriction === 'true' || key.enableClientRestriction === true
+        key.enableIpWhitelist =
+          key.enableIpWhitelist === 'true' || key.enableIpWhitelist === true
         key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
           key.enableOpenAIResponsesCodexAdaptation,
           true
@@ -1228,6 +1247,7 @@ class ApiKeyService {
         } else {
           key.allowedClients = []
         }
+        key.ipWhitelist = normalizeIpWhitelist(key.ipWhitelist)
         if (Array.isArray(key.tags)) {
           // 已解析，保持不变
         } else if (key.tags) {
@@ -1352,6 +1372,8 @@ class ApiKeyService {
         'restrictedModels',
         'enableClientRestriction',
         'allowedClients',
+        'enableIpWhitelist',
+        'ipWhitelist',
         'dailyCostLimit',
         'totalCostLimit',
         'weeklyOpusCostLimit',
@@ -1373,18 +1395,24 @@ class ApiKeyService {
           if (
             field === 'restrictedModels' ||
             field === 'allowedClients' ||
+            field === 'ipWhitelist' ||
             field === 'tags' ||
             field === 'serviceRates' ||
             field === 'openaiResponsesPayloadRules'
           ) {
             // 特殊处理数组/对象字段
-            updatedData[field] = JSON.stringify(value || (field === 'serviceRates' ? {} : []))
+            const normalizedValue =
+              field === 'ipWhitelist'
+                ? normalizeIpWhitelist(value)
+                : value || (field === 'serviceRates' ? {} : [])
+            updatedData[field] = JSON.stringify(normalizedValue)
           } else if (field === 'permissions') {
             // 权限字段：规范化后JSON序列化，与createApiKey保持一致
             updatedData[field] = JSON.stringify(normalizePermissions(value))
           } else if (
             field === 'enableModelRestriction' ||
             field === 'enableClientRestriction' ||
+            field === 'enableIpWhitelist' ||
             field === 'isActivated' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
             field === 'enableOpenAIResponsesPayloadRules'
@@ -2452,6 +2480,8 @@ class ApiKeyService {
         droidAccountId: keyData.droidAccountId,
         azureOpenaiAccountId: keyData.azureOpenaiAccountId,
         ccrAccountId: keyData.ccrAccountId,
+        enableIpWhitelist: keyData.enableIpWhitelist === 'true',
+        ipWhitelist: normalizeIpWhitelist(keyData.ipWhitelist),
         enableOpenAIResponsesCodexAdaptation: parseBooleanWithDefault(
           keyData.enableOpenAIResponsesCodexAdaptation,
           true

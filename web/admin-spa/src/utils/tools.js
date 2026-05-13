@@ -162,3 +162,18 @@ export const formatCost = (value) => {
   if (num < 0.01) return `$${num.toFixed(6)}`
   return `$${num.toFixed(2)}`
 }
+
+export const parseIpWhitelistInput = (value) => {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))]
+  }
+
+  return [
+    ...new Set(
+      String(value || '')
+        .split(/[\s,;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  ]
+}

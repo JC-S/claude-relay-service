@@ -10,6 +10,7 @@ const ClaudeCodeValidator = require('../validators/clients/claudeCodeValidator')
 const claudeRelayConfigService = require('../services/claudeRelayConfigService')
 const { calculateWaitTimeStats } = require('../utils/statsHelper')
 const { isClaudeFamilyModel } = require('../utils/modelHelper')
+const { getRequestIp, isIpAllowed } = require('../utils/ipWhitelistHelper')
 
 // 工具函数
 function sleep(ms) {
@@ -479,6 +480,22 @@ const authenticateApiKey = async (req, res, next) => {
         error: 'Invalid API key',
         message: validation.error
       })
+    }
+
+    if (validation.keyData.enableIpWhitelist) {
+      const ipWhitelist = Array.isArray(validation.keyData.ipWhitelist)
+        ? validation.keyData.ipWhitelist
+        : []
+      const clientIP = getRequestIp(req)
+      if (ipWhitelist.length === 0 || !isIpAllowed(clientIP, ipWhitelist)) {
+        logger.security(
+          `🚫 IP whitelist failed for key: ${validation.keyData.id} (${validation.keyData.name}) from ${clientIP}`
+        )
+        return res.status(403).json({
+          error: 'IP not allowed',
+          message: 'Your IP is not authorized to use this API key'
+        })
+      }
     }
 
     const skipKeyRestrictions = isTokenCountRequest(req)

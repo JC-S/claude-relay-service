@@ -168,4 +168,27 @@ describe('admin api keys route payload rule updates', () => {
     expect(res.status).not.toHaveBeenCalled()
     expect(res.body.success).toBe(true)
   })
+
+  test('accepts and normalizes IP whitelist updates', async () => {
+    const handler = findPutHandler('/api-keys/:keyId')
+    const res = createResponse()
+
+    await handler(
+      {
+        params: { keyId: 'key-4' },
+        body: {
+          enableIpWhitelist: true,
+          ipWhitelist: ['::ffff:203.0.113.10', '198.51.100.0/24']
+        }
+      },
+      res
+    )
+
+    expect(apiKeyService.updateApiKey).toHaveBeenCalledWith('key-4', {
+      enableIpWhitelist: true,
+      ipWhitelist: ['203.0.113.10', '198.51.100.0/24']
+    })
+    expect(res.status).not.toHaveBeenCalled()
+    expect(res.body.success).toBe(true)
+  })
 })

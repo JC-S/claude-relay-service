@@ -16,6 +16,19 @@
             {{ apiKeyDisplayName }}
           </h2>
           <p class="text-xs text-gray-500 dark:text-gray-400">ID: {{ keyId }}</p>
+          <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span class="font-medium text-gray-500 dark:text-gray-400">IP 白名单:</span>
+            <template v-if="apiKeyInfo.enableIpWhitelist && apiKeyInfo.ipWhitelist.length > 0">
+              <span
+                v-for="ip in apiKeyInfo.ipWhitelist"
+                :key="ip"
+                class="rounded-full bg-cyan-100 px-2 py-0.5 font-mono text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300"
+              >
+                {{ ip }}
+              </span>
+            </template>
+            <span v-else class="text-gray-400 dark:text-gray-500">未启用</span>
+          </div>
         </div>
       </div>
       <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
@@ -331,7 +344,9 @@ const summary = reactive({
 
 const apiKeyInfo = reactive({
   id: keyId.value,
-  name: ''
+  name: '',
+  enableIpWhitelist: false,
+  ipWhitelist: []
 })
 
 const detailVisible = ref(false)
@@ -396,6 +411,10 @@ const syncResponseState = (data) => {
 
   apiKeyInfo.id = data.apiKeyInfo?.id || keyId.value
   apiKeyInfo.name = data.apiKeyInfo?.name || ''
+  apiKeyInfo.enableIpWhitelist = data.apiKeyInfo?.enableIpWhitelist === true
+  apiKeyInfo.ipWhitelist = Array.isArray(data.apiKeyInfo?.ipWhitelist)
+    ? data.apiKeyInfo.ipWhitelist
+    : []
 
   availableModels.value = data.availableFilters?.models || []
   availableAccounts.value = data.availableFilters?.accounts || []

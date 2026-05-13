@@ -938,6 +938,41 @@
             </div>
           </div>
 
+          <!-- IP 白名单 -->
+          <div>
+            <div class="mb-2 flex items-center">
+              <input
+                id="enableIpWhitelist"
+                v-model="form.enableIpWhitelist"
+                class="h-4 w-4 rounded border-gray-300 bg-gray-100 text-blue-600 focus:ring-blue-500"
+                type="checkbox"
+              />
+              <label
+                class="ml-2 cursor-pointer text-sm font-semibold text-gray-700 dark:text-gray-300"
+                for="enableIpWhitelist"
+              >
+                启用 IP 白名单
+              </label>
+            </div>
+
+            <div
+              v-if="form.enableIpWhitelist"
+              class="rounded-lg border border-cyan-200 bg-cyan-50 p-3 dark:border-cyan-700 dark:bg-cyan-900/20"
+            >
+              <label class="mb-2 block text-xs font-medium text-gray-700 dark:text-gray-300">
+                允许访问的 IP
+              </label>
+              <textarea
+                v-model="form.ipWhitelistInput"
+                class="form-input min-h-[96px] w-full border-gray-300 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
+                placeholder="每行一个 IP，例如：&#10;203.0.113.10&#10;2001:db8::1&#10;也支持 CIDR：203.0.113.0/24"
+              />
+              <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                支持多个 IP，可用换行、逗号、空格或分号分隔；启用后非白名单 IP 会被拒绝。
+              </p>
+            </div>
+          </div>
+
           <div class="flex gap-3 pt-2">
             <button
               class="flex-1 rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
@@ -976,7 +1011,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { showToast } from '@/utils/tools'
+import { showToast, parseIpWhitelistInput } from '@/utils/tools'
 import { useClientsStore } from '@/stores/clients'
 import { useApiKeysStore } from '@/stores/apiKeys'
 import * as httpApis from '@/utils/http_apis'
@@ -1114,6 +1149,8 @@ const form = reactive({
   modelInput: '',
   enableClientRestriction: false,
   allowedClients: [],
+  enableIpWhitelist: false,
+  ipWhitelistInput: '',
   tags: []
 })
 
@@ -1488,6 +1525,12 @@ const createApiKey = async () => {
   loading.value = true
 
   try {
+    const ipWhitelist = parseIpWhitelistInput(form.ipWhitelistInput)
+    if (form.enableIpWhitelist && ipWhitelist.length === 0) {
+      showToast('启用 IP 白名单时至少需要填写一个 IP', 'error')
+      return
+    }
+
     // 准备提交的数据
     // 过滤掉空值的服务倍率
     const filteredServiceRates = {}
@@ -1542,7 +1585,9 @@ const createApiKey = async () => {
       enableModelRestriction: form.enableModelRestriction,
       restrictedModels: form.restrictedModels,
       enableClientRestriction: form.enableClientRestriction,
-      allowedClients: form.allowedClients
+      allowedClients: form.allowedClients,
+      enableIpWhitelist: form.enableIpWhitelist,
+      ipWhitelist
     }
 
     // 处理Claude账户绑定（区分OAuth和Console）

@@ -6,6 +6,7 @@ const logger = require('../../utils/logger')
 const CostCalculator = require('../../utils/costCalculator')
 const config = require('../../../config/config')
 const requestBodyRuleService = require('../../services/requestBodyRuleService')
+const { validateIpWhitelist } = require('../../utils/ipWhitelistHelper')
 
 const router = express.Router()
 
@@ -1484,6 +1485,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       restrictedModels,
       enableClientRestriction,
       allowedClients,
+      enableIpWhitelist,
+      ipWhitelist,
       dailyCostLimit,
       totalCostLimit,
       weeklyOpusCostLimit,
@@ -1564,6 +1567,23 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
 
     if (allowedClients !== undefined && !Array.isArray(allowedClients)) {
       return res.status(400).json({ error: 'Allowed clients must be an array' })
+    }
+
+    if (enableIpWhitelist !== undefined && typeof enableIpWhitelist !== 'boolean') {
+      return res.status(400).json({ error: 'Enable IP whitelist must be a boolean' })
+    }
+
+    if (ipWhitelist !== undefined && !Array.isArray(ipWhitelist)) {
+      return res.status(400).json({ error: 'IP whitelist must be an array' })
+    }
+
+    const ipWhitelistValidation = validateIpWhitelist(ipWhitelist)
+    if (!ipWhitelistValidation.valid) {
+      return res.status(400).json({ error: ipWhitelistValidation.error })
+    }
+
+    if (enableIpWhitelist === true && ipWhitelistValidation.entries.length === 0) {
+      return res.status(400).json({ error: 'IP whitelist cannot be empty when enabled' })
     }
 
     // 验证标签字段
@@ -1689,6 +1709,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       restrictedModels,
       enableClientRestriction,
       allowedClients,
+      enableIpWhitelist,
+      ipWhitelist: ipWhitelistValidation.entries,
       dailyCostLimit,
       totalCostLimit,
       weeklyOpusCostLimit,
@@ -1747,6 +1769,8 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       restrictedModels,
       enableClientRestriction,
       allowedClients,
+      enableIpWhitelist,
+      ipWhitelist,
       dailyCostLimit,
       totalCostLimit,
       weeklyOpusCostLimit,
@@ -1785,6 +1809,23 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: batchServiceRatesError })
     }
 
+    if (enableIpWhitelist !== undefined && typeof enableIpWhitelist !== 'boolean') {
+      return res.status(400).json({ error: 'Enable IP whitelist must be a boolean' })
+    }
+
+    if (ipWhitelist !== undefined && !Array.isArray(ipWhitelist)) {
+      return res.status(400).json({ error: 'IP whitelist must be an array' })
+    }
+
+    const batchIpWhitelistValidation = validateIpWhitelist(ipWhitelist)
+    if (!batchIpWhitelistValidation.valid) {
+      return res.status(400).json({ error: batchIpWhitelistValidation.error })
+    }
+
+    if (enableIpWhitelist === true && batchIpWhitelistValidation.entries.length === 0) {
+      return res.status(400).json({ error: 'IP whitelist cannot be empty when enabled' })
+    }
+
     // 生成批量API Keys
     const createdKeys = []
     const errors = []
@@ -1812,6 +1853,8 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           restrictedModels,
           enableClientRestriction,
           allowedClients,
+          enableIpWhitelist,
+          ipWhitelist: batchIpWhitelistValidation.entries,
           dailyCostLimit,
           totalCostLimit,
           weeklyOpusCostLimit,
@@ -1902,6 +1945,24 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
       }
     }
 
+    let updateIpWhitelistEntries = null
+    if (updates.enableIpWhitelist !== undefined && typeof updates.enableIpWhitelist !== 'boolean') {
+      return res.status(400).json({ error: 'Enable IP whitelist must be a boolean' })
+    }
+    if (updates.ipWhitelist !== undefined) {
+      if (!Array.isArray(updates.ipWhitelist)) {
+        return res.status(400).json({ error: 'IP whitelist must be an array' })
+      }
+      const updateIpWhitelistValidation = validateIpWhitelist(updates.ipWhitelist)
+      if (!updateIpWhitelistValidation.valid) {
+        return res.status(400).json({ error: updateIpWhitelistValidation.error })
+      }
+      updateIpWhitelistEntries = updateIpWhitelistValidation.entries
+      if (updates.enableIpWhitelist === true && updateIpWhitelistEntries.length === 0) {
+        return res.status(400).json({ error: 'IP whitelist cannot be empty when enabled' })
+      }
+    }
+
     logger.info(
       `🔄 Admin batch editing ${keyIds.length} API keys with updates: ${JSON.stringify(updates)}`
     )
@@ -1972,6 +2033,12 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         }
         if (updates.serviceRates !== undefined) {
           finalUpdates.serviceRates = updates.serviceRates
+        }
+        if (updates.enableIpWhitelist !== undefined) {
+          finalUpdates.enableIpWhitelist = updates.enableIpWhitelist
+        }
+        if (updateIpWhitelistEntries !== null) {
+          finalUpdates.ipWhitelist = updateIpWhitelistEntries
         }
         if (updates.weeklyResetDay !== undefined) {
           const day = Number(updates.weeklyResetDay)
@@ -2113,6 +2180,8 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       restrictedModels,
       enableClientRestriction,
       allowedClients,
+      enableIpWhitelist,
+      ipWhitelist,
       expiresAt,
       dailyCostLimit,
       totalCostLimit,
@@ -2247,6 +2316,27 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'Allowed clients must be an array' })
       }
       updates.allowedClients = allowedClients
+    }
+
+    if (enableIpWhitelist !== undefined) {
+      if (typeof enableIpWhitelist !== 'boolean') {
+        return res.status(400).json({ error: 'Enable IP whitelist must be a boolean' })
+      }
+      updates.enableIpWhitelist = enableIpWhitelist
+    }
+
+    if (ipWhitelist !== undefined) {
+      if (!Array.isArray(ipWhitelist)) {
+        return res.status(400).json({ error: 'IP whitelist must be an array' })
+      }
+      const ipWhitelistValidation = validateIpWhitelist(ipWhitelist)
+      if (!ipWhitelistValidation.valid) {
+        return res.status(400).json({ error: ipWhitelistValidation.error })
+      }
+      if (enableIpWhitelist === true && ipWhitelistValidation.entries.length === 0) {
+        return res.status(400).json({ error: 'IP whitelist cannot be empty when enabled' })
+      }
+      updates.ipWhitelist = ipWhitelistValidation.entries
     }
 
     // 处理过期时间字段

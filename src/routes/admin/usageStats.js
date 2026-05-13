@@ -19,6 +19,7 @@ const {
   applyDisplayModelToRecord,
   splitModelStatsByFastMode
 } = require('../../utils/modelVariantHelper')
+const { normalizeIpWhitelist } = require('../../utils/ipWhitelistHelper')
 
 const router = express.Router()
 
@@ -2972,7 +2973,9 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
         },
         apiKeyInfo: {
           id: keyId,
-          name: apiKeyInfo.name || apiKeyInfo.label || keyId
+          name: apiKeyInfo.name || apiKeyInfo.label || keyId,
+          enableIpWhitelist: apiKeyInfo.enableIpWhitelist === 'true',
+          ipWhitelist: normalizeIpWhitelist(apiKeyInfo.ipWhitelist)
         },
         summary: {
           ...summary,

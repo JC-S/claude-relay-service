@@ -59,10 +59,14 @@ describe('apiKeyService openai responses config', () => {
     expect(storedKeyData.enableOpenAIResponsesCodexAdaptation).toBe('true')
     expect(storedKeyData.enableOpenAIResponsesPayloadRules).toBe('false')
     expect(storedKeyData.openaiResponsesPayloadRules).toBe('[]')
+    expect(storedKeyData.enableIpWhitelist).toBe('false')
+    expect(storedKeyData.ipWhitelist).toBe('[]')
 
     expect(result.enableOpenAIResponsesCodexAdaptation).toBe(true)
     expect(result.enableOpenAIResponsesPayloadRules).toBe(false)
     expect(result.openaiResponsesPayloadRules).toEqual([])
+    expect(result.enableIpWhitelist).toBe(false)
+    expect(result.ipWhitelist).toEqual([])
   })
 
   test('updateApiKey serializes toggle and payload rule fields', async () => {
@@ -78,7 +82,9 @@ describe('apiKeyService openai responses config', () => {
     await apiKeyService.updateApiKey('key-1', {
       enableOpenAIResponsesCodexAdaptation: false,
       enableOpenAIResponsesPayloadRules: true,
-      openaiResponsesPayloadRules: [{ path: 'model', valueType: 'string', value: 'gpt-5' }]
+      openaiResponsesPayloadRules: [{ path: 'model', valueType: 'string', value: 'gpt-5' }],
+      enableIpWhitelist: true,
+      ipWhitelist: ['203.0.113.10', '203.0.113.0/24']
     })
 
     const [, storedKeyData] = redis.setApiKey.mock.calls[0]
@@ -87,6 +93,8 @@ describe('apiKeyService openai responses config', () => {
     expect(storedKeyData.openaiResponsesPayloadRules).toBe(
       JSON.stringify([{ path: 'model', valueType: 'string', value: 'gpt-5' }])
     )
+    expect(storedKeyData.enableIpWhitelist).toBe('true')
+    expect(storedKeyData.ipWhitelist).toBe(JSON.stringify(['203.0.113.10', '203.0.113.0/24']))
   })
 
   test('getApiKeyById returns parsed toggle and rule values', async () => {
@@ -115,6 +123,8 @@ describe('apiKeyService openai responses config', () => {
       ccrAccountId: '',
       enableOpenAIResponsesCodexAdaptation: 'false',
       enableOpenAIResponsesPayloadRules: 'true',
+      enableIpWhitelist: 'true',
+      ipWhitelist: JSON.stringify(['203.0.113.10']),
       openaiResponsesPayloadRules: JSON.stringify([
         { path: 'model', valueType: 'string', value: 'gpt-5' }
       ])
@@ -124,6 +134,8 @@ describe('apiKeyService openai responses config', () => {
 
     expect(result.enableOpenAIResponsesCodexAdaptation).toBe(false)
     expect(result.enableOpenAIResponsesPayloadRules).toBe(true)
+    expect(result.enableIpWhitelist).toBe(true)
+    expect(result.ipWhitelist).toEqual(['203.0.113.10'])
     expect(result.openaiResponsesPayloadRules).toEqual([
       { path: 'model', valueType: 'string', value: 'gpt-5' }
     ])
@@ -156,6 +168,8 @@ describe('apiKeyService openai responses config', () => {
       rateLimitCost: '0',
       enableModelRestriction: 'false',
       enableClientRestriction: 'false',
+      enableIpWhitelist: 'true',
+      ipWhitelist: JSON.stringify(['203.0.113.10']),
       dailyCostLimit: '0',
       totalCostLimit: '0',
       weeklyOpusCostLimit: '100',
@@ -178,6 +192,8 @@ describe('apiKeyService openai responses config', () => {
     expect(result.keyData.weeklyResetHour).toBe(19)
     expect(result.keyData.weeklyOpusCostLimit).toBe(100)
     expect(result.keyData.weeklyOpusCost).toBe(23.45)
+    expect(result.keyData.enableIpWhitelist).toBe(true)
+    expect(result.keyData.ipWhitelist).toEqual(['203.0.113.10'])
     expect(redis.getWeeklyOpusCost).toHaveBeenCalledWith('key-1', 3, 19)
   })
 })

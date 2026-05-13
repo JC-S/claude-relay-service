@@ -15,6 +15,7 @@ const {
 const modelsConfig = require('../../config/models')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { splitModelStatsByFastMode } = require('../utils/modelVariantHelper')
+const { normalizeIpWhitelist } = require('../utils/ipWhitelistHelper')
 
 const router = express.Router()
 
@@ -277,6 +278,8 @@ router.post('/api/user-stats', async (req, res) => {
         allowedClients = []
       }
 
+      const ipWhitelist = normalizeIpWhitelist(keyData.ipWhitelist)
+
       // 格式化 keyData
       keyData = {
         ...keyData,
@@ -295,6 +298,8 @@ router.post('/api/user-stats', async (req, res) => {
         restrictedModels,
         enableClientRestriction: keyData.enableClientRestriction === 'true',
         allowedClients,
+        enableIpWhitelist: keyData.enableIpWhitelist === 'true',
+        ipWhitelist,
         permissions: keyData.permissions,
         // 添加激活相关字段
         expirationMode: keyData.expirationMode || 'fixed',
@@ -661,7 +666,9 @@ router.post('/api/user-stats', async (req, res) => {
         enableModelRestriction: fullKeyData.enableModelRestriction || false,
         restrictedModels: fullKeyData.restrictedModels || [],
         enableClientRestriction: fullKeyData.enableClientRestriction || false,
-        allowedClients: fullKeyData.allowedClients || []
+        allowedClients: fullKeyData.allowedClients || [],
+        enableIpWhitelist: fullKeyData.enableIpWhitelist || false,
+        ipWhitelist: normalizeIpWhitelist(fullKeyData.ipWhitelist)
       },
 
       // Key 级别的服务倍率
