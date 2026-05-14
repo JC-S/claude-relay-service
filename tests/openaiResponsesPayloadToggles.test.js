@@ -128,6 +128,7 @@ function createReq({
     apiKey: {
       id: 'key_1',
       permissions: ['openai'],
+      disableGptFastMode: false,
       enableOpenAIResponsesCodexAdaptation: true,
       enableOpenAIResponsesPayloadRules: false,
       openaiResponsesPayloadRules: [],
@@ -618,6 +619,82 @@ describe('openai responses payload toggles', () => {
     })
     expect(apiKeyService.recordUsage).toHaveBeenCalled()
     expect(apiKeyService.recordUsage.mock.calls[0][8]).toBe('priority')
+  })
+
+  test('removes gpt service_tier when fast mode is blocked for openai accounts', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.4',
+        usage: {
+          input_tokens: 12,
+          output_tokens: 6,
+          total_tokens: 18
+        }
+      },
+      headers: {}
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.4',
+        service_tier: 'priority',
+        prompt_cache_key: 'blocked-fast-key',
+        stream: false
+      },
+      userAgent: 'codex-tui/0.124.0 (Ubuntu 22.4.0; aarch64) xterm-256color',
+      apiKeyOverrides: {
+        disableGptFastMode: true
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(req.body.service_tier).toBeUndefined()
+    expect(req._serviceTier).toBeNull()
+    expect(axios.post).toHaveBeenCalled()
+    expect(axios.post.mock.calls[0][1]).toMatchObject({
+      model: 'gpt-5.4',
+      store: false
+    })
+    expect(axios.post.mock.calls[0][1].service_tier).toBeUndefined()
+    expect(apiKeyService.recordUsage).toHaveBeenCalled()
+    expect(apiKeyService.recordUsage.mock.calls[0][8]).toBeNull()
+  })
+
+  test('removes payload-rule gpt service_tier before relaying openai-responses requests', async () => {
+    const req = createReq({
+      body: {
+        model: 'gpt-4.1',
+        prompt_cache_key: 'blocked-relay-tier-key'
+      },
+      apiKeyOverrides: {
+        disableGptFastMode: true,
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesPayloadRules: true,
+        openaiResponsesPayloadRules: [
+          { path: 'service_tier', valueType: 'string', value: 'priority' }
+        ]
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(req.body.service_tier).toBeUndefined()
+    expect(req._serviceTier).toBeNull()
+    expect(openaiResponsesRelayService.handleRequest).toHaveBeenCalled()
+    expect(openaiResponsesRelayService.handleRequest.mock.calls[0][0].body.service_tier).toBeUndefined()
+    expect(openaiResponsesRelayService.handleRequest.mock.calls[0][0]._serviceTier).toBeNull()
   })
 
   test('records null service_tier after Codex adaptation removes it for openai accounts', async () => {

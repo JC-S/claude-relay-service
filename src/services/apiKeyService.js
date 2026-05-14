@@ -207,6 +207,7 @@ class ApiKeyService {
       serviceRates = {}, // API Key 级别服务倍率覆盖
       weeklyResetDay = 1, // 周费用重置日 (1=周一 ... 7=周日)
       weeklyResetHour = 0, // 周费用重置时 (0-23)
+      disableGptFastMode = false,
       enableOpenAIResponsesCodexAdaptation = true,
       enableOpenAIResponsesPayloadRules = false,
       openaiResponsesPayloadRules = []
@@ -271,6 +272,7 @@ class ApiKeyService {
       serviceRates: JSON.stringify(serviceRates || {}), // API Key 级别服务倍率
       weeklyResetDay: String(weeklyResetDay || 1), // 周费用重置日 (1-7)
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
+      disableGptFastMode: String(disableGptFastMode === true),
       enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
       enableOpenAIResponsesPayloadRules: String(enableOpenAIResponsesPayloadRules === true),
       openaiResponsesPayloadRules: JSON.stringify(payloadRulesValidation.rules)
@@ -343,6 +345,7 @@ class ApiKeyService {
       expiresAt: keyData.expiresAt,
       createdBy: keyData.createdBy,
       serviceRates: JSON.parse(keyData.serviceRates || '{}'), // API Key 级别服务倍率
+      disableGptFastMode: parseBooleanWithDefault(keyData.disableGptFastMode, false),
       enableOpenAIResponsesCodexAdaptation: parseBooleanWithDefault(
         keyData.enableOpenAIResponsesCodexAdaptation,
         true
@@ -510,6 +513,7 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
+      const disableGptFastMode = parseBooleanWithDefault(keyData.disableGptFastMode, false)
 
       return {
         valid: true,
@@ -548,6 +552,7 @@ class ApiKeyService {
           weeklyResetHour: parseInt(keyData.weeklyResetHour || 0),
           tags,
           serviceRates,
+          disableGptFastMode,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
           openaiResponsesPayloadRules
@@ -654,6 +659,7 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
+      const disableGptFastMode = parseBooleanWithDefault(keyData.disableGptFastMode, false)
 
       return {
         valid: true,
@@ -703,6 +709,7 @@ class ApiKeyService {
             )) || 0,
           tags,
           usage,
+          disableGptFastMode,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
           openaiResponsesPayloadRules
@@ -905,6 +912,7 @@ class ApiKeyService {
         key.enableModelRestriction = key.enableModelRestriction === 'true'
         key.enableClientRestriction = key.enableClientRestriction === 'true'
         key.enableIpWhitelist = key.enableIpWhitelist === 'true'
+        key.disableGptFastMode = parseBooleanWithDefault(key.disableGptFastMode, false)
         key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
           key.enableOpenAIResponsesCodexAdaptation,
           true
@@ -1384,6 +1392,7 @@ class ApiKeyService {
         'serviceRates', // API Key 级别服务倍率
         'weeklyResetDay', // 周费用重置日 (1-7)
         'weeklyResetHour', // 周费用重置时 (0-23)
+        'disableGptFastMode',
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
         'openaiResponsesPayloadRules'
@@ -1414,6 +1423,7 @@ class ApiKeyService {
             field === 'enableClientRestriction' ||
             field === 'enableIpWhitelist' ||
             field === 'isActivated' ||
+            field === 'disableGptFastMode' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
             field === 'enableOpenAIResponsesPayloadRules'
           ) {

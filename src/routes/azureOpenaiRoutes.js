@@ -8,6 +8,7 @@ const apiKeyService = require('../services/apiKeyService')
 const crypto = require('crypto')
 const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
+const { removeGptFastModeFromBody } = require('../utils/gptFastModeHelper')
 
 // 支持的模型列表 - 基于真实的 Azure OpenAI 模型
 const ALLOWED_MODELS = {
@@ -171,6 +172,10 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
   })
 
   try {
+    if (removeGptFastModeFromBody(req.body, req.apiKey)) {
+      logger.info(`🚫 API Key ${req.apiKey?.id || 'unknown'} blocked GPT fast mode for Azure`)
+    }
+
     // 获取绑定的 Azure OpenAI 账户
     let account = null
     if (req.apiKey?.azureOpenaiAccountId) {
@@ -302,6 +307,10 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
   })
 
   try {
+    if (removeGptFastModeFromBody(req.body, req.apiKey)) {
+      logger.info(`🚫 API Key ${req.apiKey?.id || 'unknown'} blocked GPT fast mode for Azure`)
+    }
+
     // 获取绑定的 Azure OpenAI 账户
     let account = null
     if (req.apiKey?.azureOpenaiAccountId) {

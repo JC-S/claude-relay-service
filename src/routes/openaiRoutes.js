@@ -20,6 +20,7 @@ const {
   extractOpenAICacheReadTokens
 } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
+const { removeGptFastModeFromBody } = require('../utils/gptFastModeHelper')
 
 const CODEX_UPSTREAM_USER_AGENT =
   'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)'
@@ -427,6 +428,10 @@ const handleResponses = async (req, res) => {
       } else {
         logger.info('✅ Codex CLI request detected, forwarding as-is')
       }
+    }
+
+    if (removeGptFastModeFromBody(req.body, apiKeyData)) {
+      logger.info(`🚫 API Key ${apiKeyData.id || 'unknown'} blocked GPT fast mode`)
     }
 
     // 从最终请求体中提取 service_tier，用于后续费用计算

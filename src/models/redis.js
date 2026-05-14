@@ -778,6 +778,7 @@ class RedisClient {
       'enableModelRestriction',
       'enableClientRestriction',
       'enableIpWhitelist',
+      'disableGptFastMode',
       'enableOpenAIResponsesCodexAdaptation',
       'enableOpenAIResponsesPayloadRules',
       'isDeleted'
@@ -796,6 +797,9 @@ class RedisClient {
     }
     if (parsed.enableIpWhitelist === undefined) {
       parsed.enableIpWhitelist = false
+    }
+    if (parsed.disableGptFastMode === undefined) {
+      parsed.disableGptFastMode = false
     }
 
     // 数字字段

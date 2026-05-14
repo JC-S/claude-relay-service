@@ -1498,6 +1498,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       serviceRates, // API Key 级别服务倍率
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
+      disableGptFastMode,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
       openaiResponsesPayloadRules
@@ -1650,6 +1651,10 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: serviceRatesError })
     }
 
+    if (disableGptFastMode !== undefined && typeof disableGptFastMode !== 'boolean') {
+      return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
+    }
+
     if (
       enableOpenAIResponsesCodexAdaptation !== undefined &&
       typeof enableOpenAIResponsesCodexAdaptation !== 'boolean'
@@ -1728,6 +1733,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
         weeklyResetHour !== undefined && weeklyResetHour !== null && weeklyResetHour !== ''
           ? Number(weeklyResetHour)
           : 0,
+      disableGptFastMode: disableGptFastMode === true,
       enableOpenAIResponsesCodexAdaptation:
         enableOpenAIResponsesCodexAdaptation !== undefined
           ? enableOpenAIResponsesCodexAdaptation
@@ -1949,6 +1955,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
     if (updates.enableIpWhitelist !== undefined && typeof updates.enableIpWhitelist !== 'boolean') {
       return res.status(400).json({ error: 'Enable IP whitelist must be a boolean' })
     }
+    if (updates.disableGptFastMode !== undefined && typeof updates.disableGptFastMode !== 'boolean') {
+      return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
+    }
     if (updates.ipWhitelist !== undefined) {
       if (!Array.isArray(updates.ipWhitelist)) {
         return res.status(400).json({ error: 'IP whitelist must be an array' })
@@ -2039,6 +2048,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         }
         if (updateIpWhitelistEntries !== null) {
           finalUpdates.ipWhitelist = updateIpWhitelistEntries
+        }
+        if (updates.disableGptFastMode !== undefined) {
+          finalUpdates.disableGptFastMode = updates.disableGptFastMode
         }
         if (updates.weeklyResetDay !== undefined) {
           const day = Number(updates.weeklyResetDay)
@@ -2191,6 +2203,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       serviceRates, // API Key 级别服务倍率
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
+      disableGptFastMode,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
       openaiResponsesPayloadRules
@@ -2407,6 +2420,13 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: singleServiceRatesError })
       }
       updates.serviceRates = serviceRates
+    }
+
+    if (disableGptFastMode !== undefined) {
+      if (typeof disableGptFastMode !== 'boolean') {
+        return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
+      }
+      updates.disableGptFastMode = disableGptFastMode
     }
 
     if (enableOpenAIResponsesCodexAdaptation !== undefined) {

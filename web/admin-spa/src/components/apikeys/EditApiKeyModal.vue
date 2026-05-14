@@ -617,6 +617,36 @@
                 </span>
               </label>
 
+              <label class="flex cursor-pointer items-start gap-3">
+                <input
+                  v-model="form.disableGptFastMode"
+                  class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                  type="checkbox"
+                />
+                <span class="flex-1">
+                  <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <span class="inline-flex items-center gap-1">
+                      <span>屏蔽 GPT Fast Mode</span>
+                      <el-tooltip placement="top">
+                        <template #content>
+                          <div class="w-[250px] space-y-2 text-xs leading-relaxed">
+                            <div>
+                              开启后会移除 GPT 请求中的 `service_tier=priority`，按普通模式转发。
+                            </div>
+                            <div>统计和请求明细会按实际发给上游的非 fast 模式记录。</div>
+                          </div>
+                        </template>
+                        <span class="inline-flex" @click.stop.prevent>
+                          <i
+                            class="fas fa-question-circle cursor-help text-xs text-gray-400 hover:text-gray-600"
+                          />
+                        </span>
+                      </el-tooltip>
+                    </span>
+                  </span>
+                </span>
+              </label>
+
               <div
                 v-if="form.enableOpenAIResponsesPayloadRules"
                 class="rounded-lg border border-emerald-100 bg-white/70 p-3 dark:border-emerald-800 dark:bg-gray-800/40"
@@ -1201,6 +1231,7 @@ const form = reactive({
   allowedClients: [],
   enableIpWhitelist: false,
   ipWhitelistInput: '',
+  disableGptFastMode: false,
   enableOpenAIResponsesCodexAdaptation: true,
   enableOpenAIResponsesPayloadRules: false,
   openaiResponsesPayloadRules: [],
@@ -1400,6 +1431,7 @@ const updateApiKey = async () => {
           : 0,
       weeklyResetDay: form.weeklyResetDay,
       weeklyResetHour: form.weeklyResetHour,
+      disableGptFastMode: form.disableGptFastMode,
       enableOpenAIResponsesCodexAdaptation: form.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: form.enableOpenAIResponsesPayloadRules,
       // 规则内容独立持久化，关闭开关时也要保留已保存的休眠规则。
@@ -1794,6 +1826,8 @@ onMounted(async () => {
     props.apiKey.enableClientRestriction === true || props.apiKey.enableClientRestriction === 'true'
   form.enableIpWhitelist =
     props.apiKey.enableIpWhitelist === true || props.apiKey.enableIpWhitelist === 'true'
+  form.disableGptFastMode =
+    props.apiKey.disableGptFastMode === true || props.apiKey.disableGptFastMode === 'true'
   form.enableOpenAIResponsesCodexAdaptation =
     props.apiKey.enableOpenAIResponsesCodexAdaptation === undefined ||
     props.apiKey.enableOpenAIResponsesCodexAdaptation === true ||
