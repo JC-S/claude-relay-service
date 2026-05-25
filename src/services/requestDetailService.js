@@ -85,6 +85,55 @@ function normalizeTokenValue(value) {
   return Math.max(0, Math.trunc(normalizeNumber(value)))
 }
 
+function normalizeServiceTierValue(value) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed ? trimmed : null
+}
+
+function extractServiceTierFromPayload(payload) {
+  if (!payload) {
+    return null
+  }
+
+  if (typeof payload === 'object') {
+    const directTier =
+      normalizeServiceTierValue(payload.service_tier) ||
+      normalizeServiceTierValue(payload.serviceTier)
+    if (directTier) {
+      return directTier
+    }
+
+    if (typeof payload.preview === 'string') {
+      return extractServiceTierFromPayload(payload.preview)
+    }
+
+    return null
+  }
+
+  if (typeof payload !== 'string') {
+    return null
+  }
+
+  try {
+    return extractServiceTierFromPayload(JSON.parse(payload))
+  } catch (error) {
+    const match = payload.match(/["']service_?tier["']\s*:\s*["']([^"']+)["']/i)
+    return normalizeServiceTierValue(match?.[1])
+  }
+}
+
+function resolveRequestDetailServiceTier(detail = {}, requestBodySource = null) {
+  return (
+    normalizeServiceTierValue(detail.serviceTier) ||
+    normalizeServiceTierValue(detail.service_tier) ||
+    extractServiceTierFromPayload(requestBodySource)
+  )
+}
+
 function buildCostUsageFromRequestDetail(record = {}) {
   const inputTokens = normalizeTokenValue(record.inputTokens)
   const outputTokens = normalizeTokenValue(record.outputTokens)
@@ -161,7 +210,7 @@ function createCostRecomputePatch(record = {}) {
   try {
     const costResult = CostCalculator.calculateCost(
       usage,
-      record.model || 'unknown',
+      record.rawModel || record.model || 'unknown',
       record.serviceTier || null
     )
     const totalCost = normalizeNumber(costResult?.costs?.total ?? costResult?.totalCost ?? 0, 6)
@@ -190,15 +239,14 @@ function createCostRecomputePatch(record = {}) {
 }
 
 function prepareRecordForDisplay(record = {}) {
-  const costPatch = createCostRecomputePatch(record)
-  if (!costPatch) {
-    return record
-  }
-
-  return {
+  const requestBodySource = record.requestBodySnapshot ?? record.requestBody
+  const displaySource = {
     ...record,
-    ...costPatch
+    serviceTier: resolveRequestDetailServiceTier(record, requestBodySource)
   }
+  const costPatch = createCostRecomputePatch(displaySource)
+
+  return applyDisplayModelToRecord(costPatch ? { ...displaySource, ...costPatch } : displaySource)
 }
 
 function formatDayKey(date) {
@@ -701,6 +749,7 @@ class RequestDetailService {
 
   _normalizeRecord(detail, requestId, options = {}) {
     const requestBodySource = detail.requestBodySnapshot ?? detail.requestBody
+    const serviceTier = resolveRequestDetailServiceTier(detail, requestBodySource)
     const timestamp = toIsoString(detail.timestamp) || new Date().toISOString()
     const durationMs = normalizeNumber(detail.durationMs)
     const inputTokens = normalizeNumber(detail.inputTokens)
@@ -726,7 +775,7 @@ class RequestDetailService {
       accountId: detail.accountId || null,
       accountType: detail.accountType || 'unknown',
       model: detail.model || 'unknown',
-      serviceTier: detail.serviceTier || null,
+      serviceTier,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -1173,6 +1222,11 @@ class RequestDetailService {
     if (!parsedRecord.requestId && pointer?.requestId) {
       parsedRecord.requestId = pointer.requestId
     }
+
+    parsedRecord.serviceTier = resolveRequestDetailServiceTier(
+      parsedRecord,
+      parsedRecord.requestBodySnapshot ?? parsedRecord.requestBody
+    )
 
     return applyDisplayModelToRecord(parsedRecord)
   }

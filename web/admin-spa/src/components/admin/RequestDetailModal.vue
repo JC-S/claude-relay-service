@@ -418,7 +418,12 @@ const copySnapshot = async () => {
 }
 
 const formatDate = (value) => (value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-')
-const formatDuration = (value) => `${Number(value || 0)}ms`
+const formatDurationSecondsValue = (value) => {
+  const durationMs = Number(value || 0)
+  const seconds = Number.isFinite(durationMs) ? durationMs / 1000 : 0
+  return seconds.toFixed(2)
+}
+const formatDuration = (value) => `${formatDurationSecondsValue(value)}s`
 const formatPercent = (value) => `${Number(value || 0).toFixed(2)}%`
 const formatCacheCreate = (value, notApplicable = false) =>
   notApplicable ? '-' : formatNumber(value)

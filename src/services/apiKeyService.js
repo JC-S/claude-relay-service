@@ -1178,8 +1178,7 @@ class ApiKeyService {
           key.enableModelRestriction === 'true' || key.enableModelRestriction === true
         key.enableClientRestriction =
           key.enableClientRestriction === 'true' || key.enableClientRestriction === true
-        key.enableIpWhitelist =
-          key.enableIpWhitelist === 'true' || key.enableIpWhitelist === true
+        key.enableIpWhitelist = key.enableIpWhitelist === 'true' || key.enableIpWhitelist === true
         key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
           key.enableOpenAIResponsesCodexAdaptation,
           true
@@ -2193,6 +2192,7 @@ class ApiKeyService {
       accountId: usageRecord.accountId || null,
       accountType: usageRecord.accountType || null,
       model: usageRecord.model || 'unknown',
+      serviceTier: usageRecord.serviceTier || null,
       inputTokens: usageRecord.inputTokens || 0,
       outputTokens: usageRecord.outputTokens || 0,
       cacheReadTokens: usageRecord.cacheReadTokens || 0,

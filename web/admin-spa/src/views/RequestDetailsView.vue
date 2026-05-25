@@ -942,7 +942,7 @@ const exportCsv = async () => {
       '缓存创建',
       '缓存命中率',
       '费用',
-      '耗时(ms)'
+      '耗时(s)'
     ]
 
     const rows = [headers.join(',')]
@@ -962,7 +962,7 @@ const exportCsv = async () => {
         formatCacheCreate(record.cacheCreateTokens, record.cacheCreateNotApplicable),
         formatPercent(record.cacheHitRate),
         formatCost(record.cost),
-        record.durationMs || 0
+        formatDurationSecondsValue(record.durationMs)
       ]
       rows.push(row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
     })
@@ -1007,7 +1007,12 @@ const formatRetentionHours = (value) => {
 
   return `保留 ${hours} 小时`
 }
-const formatDuration = (value) => `${Number(value || 0)}ms`
+const formatDurationSecondsValue = (value) => {
+  const durationMs = Number(value || 0)
+  const seconds = Number.isFinite(durationMs) ? durationMs / 1000 : 0
+  return seconds.toFixed(2)
+}
+const formatDuration = (value) => `${formatDurationSecondsValue(value)}s`
 const formatPercent = (value) => `${Number(value || 0).toFixed(2)}%`
 const formatReasoning = (value) => value || '-'
 
