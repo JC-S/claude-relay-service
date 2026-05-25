@@ -741,6 +741,18 @@ class ClaudeRelayService {
 
       // 检查响应是否为限流错误或认证错误
       if (response.statusCode !== 200 && response.statusCode !== 201) {
+        const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+          provider: 'claude-official',
+          accountId,
+          accountType,
+          accountName: account?.name,
+          statusCode: response.statusCode,
+          statusText: response.statusMessage,
+          headers: response.headers,
+          body: response.body,
+          phase: 'non_stream',
+          model: requestBody?.model
+        })
         let isRateLimited = false
         let rateLimitResetTimestamp = null
         let dedicatedRateLimitMessage = null
@@ -767,7 +779,9 @@ class ClaudeRelayService {
               `❌ Account ${accountId} encountered 401 error (${errorCount} errors), temporarily pausing`
             )
           }
-          await upstreamErrorHelper.markTempUnavailable(accountId, accountType, 401).catch(() => {})
+          await upstreamErrorHelper
+            .markTempUnavailable(accountId, accountType, 401, null, upstreamErrorContext)
+            .catch(() => {})
           // 清除粘性会话，让后续请求路由到其他账户
           if (sessionHash) {
             await unifiedClaudeScheduler.clearSessionMapping(sessionHash).catch(() => {})
@@ -787,7 +801,9 @@ class ClaudeRelayService {
           logger.error(
             `🚫 Forbidden error (403) detected for account ${accountId}${retryCount > 0 ? ` after ${retryCount} retries` : ''}, temporarily pausing`
           )
-          await upstreamErrorHelper.markTempUnavailable(accountId, accountType, 403).catch(() => {})
+          await upstreamErrorHelper
+            .markTempUnavailable(accountId, accountType, 403, null, upstreamErrorContext)
+            .catch(() => {})
           // 清除粘性会话，让后续请求路由到其他账户
           if (sessionHash) {
             await unifiedClaudeScheduler.clearSessionMapping(sessionHash).catch(() => {})
@@ -810,12 +826,21 @@ class ClaudeRelayService {
           } else {
             logger.info(`🚫 529 error handling is disabled, skipping account overload marking`)
           }
-          await upstreamErrorHelper.markTempUnavailable(accountId, accountType, 529).catch(() => {})
+          await upstreamErrorHelper
+            .markTempUnavailable(accountId, accountType, 529, null, upstreamErrorContext)
+            .catch(() => {})
         }
         // 检查是否为5xx状态码
         else if (response.statusCode >= 500 && response.statusCode < 600) {
           logger.warn(`🔥 Server error (${response.statusCode}) detected for account ${accountId}`)
-          await this._handleServerError(accountId, response.statusCode, sessionHash)
+          await this._handleServerError(
+            accountId,
+            response.statusCode,
+            sessionHash,
+            '',
+            accountType,
+            upstreamErrorContext
+          )
         }
         // 检查是否为429状态码
         else if (response.statusCode === 429) {
@@ -917,7 +942,8 @@ class ClaudeRelayService {
                 accountId,
                 accountType,
                 429,
-                upstreamErrorHelper.parseRetryAfter(response.headers)
+                upstreamErrorHelper.parseRetryAfter(response.headers),
+                upstreamErrorContext
               )
               .catch(() => {})
 
@@ -1758,6 +1784,7 @@ class ClaudeRelayService {
 
             const response = {
               statusCode: res.statusCode,
+              statusMessage: res.statusMessage,
               headers: res.headers,
               body: responseBody
             }
@@ -2150,6 +2177,18 @@ class ClaudeRelayService {
               res.on('error', resolveBody)
             })
             const errorBody429 = Buffer.concat(bodyChunks429).toString()
+            const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+              provider: 'claude-official',
+              accountId,
+              accountType,
+              accountName: account?.name,
+              statusCode: res.statusCode,
+              statusText: res.statusMessage,
+              headers: res.headers,
+              body: errorBody429,
+              phase: 'stream',
+              model: body?.model
+            })
 
             // 检查是否为 "Extra usage required" 的非限流 429
             if (this._isExtraUsageRequired429(res.statusCode, errorBody429)) {
@@ -2160,8 +2199,8 @@ class ClaudeRelayService {
                 `❌ Claude API returned error status: 429 | Account: ${account?.name || accountId}`
               )
               logger.error(
-                `❌ Claude API error response (Account: ${account?.name || accountId}):`,
-                errorBody429
+                `❌ Claude API error response captured (Account: ${account?.name || accountId})`,
+                { upstreamErrorContext }
               )
               if (isStreamWritable(responseStream)) {
                 let errorMessage = `Claude API error: 429`
@@ -2254,7 +2293,8 @@ class ClaudeRelayService {
                     accountId,
                     accountType,
                     429,
-                    upstreamErrorHelper.parseRetryAfter(res.headers)
+                    upstreamErrorHelper.parseRetryAfter(res.headers),
+                    upstreamErrorContext
                   )
                   .catch(() => {})
                 logger.warn(`🚫 [Stream] Rate limit detected for account ${accountId}, status 429`)
@@ -2285,8 +2325,8 @@ class ClaudeRelayService {
               `❌ Claude API returned error status: 429 | Account: ${account?.name || accountId}`
             )
             logger.error(
-              `❌ Claude API error response (Account: ${account?.name || accountId}):`,
-              errorBody429
+              `❌ Claude API error response captured (Account: ${account?.name || accountId})`,
+              { upstreamErrorContext }
             )
             if (isStreamWritable(responseStream)) {
               let errorMessage = `Claude API error: 429`
@@ -2381,7 +2421,7 @@ class ClaudeRelayService {
           }
 
           // 将错误处理逻辑封装在一个异步函数中
-          const handleErrorResponse = async () => {
+          const handleErrorResponse = async (upstreamErrorContext) => {
             if (res.statusCode === 401) {
               logger.warn(`🔐 [Stream] Unauthorized error (401) detected for account ${accountId}`)
 
@@ -2398,7 +2438,7 @@ class ClaudeRelayService {
                 )
               }
               await upstreamErrorHelper
-                .markTempUnavailable(accountId, accountType, 401)
+                .markTempUnavailable(accountId, accountType, 401, null, upstreamErrorContext)
                 .catch(() => {})
               // 清除粘性会话，让后续请求路由到其他账户
               if (sessionHash) {
@@ -2424,7 +2464,7 @@ class ClaudeRelayService {
                   `🚫 [Stream] Forbidden error (403) detected for account ${accountId}${retryCount > 0 ? ` after ${retryCount} retries` : ''}, temporarily pausing`
                 )
                 await upstreamErrorHelper
-                  .markTempUnavailable(accountId, accountType, 403)
+                  .markTempUnavailable(accountId, accountType, 403, null, upstreamErrorContext)
                   .catch(() => {})
               }
               // 清除粘性会话，让后续请求路由到其他账户
@@ -2453,20 +2493,22 @@ class ClaudeRelayService {
                 )
               }
               await upstreamErrorHelper
-                .markTempUnavailable(accountId, accountType, 529)
+                .markTempUnavailable(accountId, accountType, 529, null, upstreamErrorContext)
                 .catch(() => {})
             } else if (res.statusCode >= 500 && res.statusCode < 600) {
               logger.warn(
                 `🔥 [Stream] Server error (${res.statusCode}) detected for account ${accountId}`
               )
-              await this._handleServerError(accountId, res.statusCode, sessionHash, '[Stream]')
+              await this._handleServerError(
+                accountId,
+                res.statusCode,
+                sessionHash,
+                '[Stream]',
+                accountType,
+                upstreamErrorContext
+              )
             }
           }
-
-          // 调用异步错误处理函数
-          handleErrorResponse().catch((err) => {
-            logger.error('❌ Error in stream error handler:', err)
-          })
 
           logger.error(
             `❌ Claude API returned error status: ${res.statusCode} | Account: ${account?.name || accountId}`
@@ -2478,10 +2520,27 @@ class ClaudeRelayService {
           })
 
           res.on('end', async () => {
+            const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+              provider: 'claude-official',
+              accountId,
+              accountType,
+              accountName: account?.name,
+              statusCode: res.statusCode,
+              statusText: res.statusMessage,
+              headers: res.headers,
+              body: errorData,
+              phase: 'stream',
+              model: body?.model
+            })
             logger.error(
-              `❌ Claude API error response (Account: ${account?.name || accountId}):`,
-              errorData
+              `❌ Claude API error response captured (Account: ${account?.name || accountId})`,
+              { upstreamErrorContext }
             )
+            try {
+              await handleErrorResponse(upstreamErrorContext)
+            } catch (err) {
+              logger.error('❌ Error in stream error handler:', err)
+            }
             if (
               this._isClaudeCodeCredentialError(errorData) &&
               requestOptions.useRandomizedToolNames !== true &&
@@ -2518,25 +2577,6 @@ class ClaudeRelayService {
                 reject(retryError)
               }
               return
-            }
-            if (this._isOrganizationDisabledError(res.statusCode, errorData)) {
-              ;(async () => {
-                try {
-                  logger.error(
-                    `🚫 [Stream] Organization disabled error (400) detected for account ${accountId}, marking as blocked`
-                  )
-                  await unifiedClaudeScheduler.markAccountBlocked(
-                    accountId,
-                    accountType,
-                    sessionHash
-                  )
-                } catch (markError) {
-                  logger.error(
-                    `❌ [Stream] Failed to mark account ${accountId} as blocked after organization disabled error:`,
-                    markError
-                  )
-                }
-              })()
             }
             if (isStreamWritable(responseStream)) {
               // 解析 Claude API 返回的错误详情
@@ -3087,7 +3127,8 @@ class ClaudeRelayService {
     statusCode,
     sessionHash = null,
     context = '',
-    accountType = 'claude-official'
+    accountType = 'claude-official',
+    upstreamErrorContext = null
   ) {
     try {
       await claudeAccountService.recordServerError(accountId, statusCode)
@@ -3109,7 +3150,8 @@ class ClaudeRelayService {
           accountType,
           sessionHash,
           null,
-          statusCode
+          statusCode,
+          upstreamErrorContext
         )
       } catch (markError) {
         logger.error(`❌ Failed to mark account temporarily unavailable: ${accountId}`, markError)

@@ -208,6 +208,145 @@ const parseRetryAfter = (headers) => {
   return null
 }
 
+const normalizeHeadersForLog = (headers) => {
+  if (!headers || typeof headers !== 'object') {
+    return {}
+  }
+
+  const normalized = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      normalized[key] = [...value]
+    } else if (value && typeof value === 'object') {
+      try {
+        normalized[key] = JSON.parse(JSON.stringify(value))
+      } catch {
+        normalized[key] = String(value)
+      }
+    } else {
+      normalized[key] = value
+    }
+  }
+  return normalized
+}
+
+const normalizeBodyForLog = (body) => {
+  if (body === undefined) {
+    return {
+      body: null,
+      bodyType: 'undefined',
+      bodyCharLength: 0,
+      bodyByteLength: 0
+    }
+  }
+
+  if (body === null) {
+    return {
+      body: null,
+      bodyType: 'null',
+      bodyCharLength: 0,
+      bodyByteLength: 0
+    }
+  }
+
+  if (Buffer.isBuffer(body)) {
+    const base64 = body.toString('base64')
+    return {
+      body: base64,
+      bodyType: 'buffer',
+      bodyEncoding: 'base64',
+      bodyCharLength: base64.length,
+      bodyByteLength: body.length
+    }
+  }
+
+  if (typeof body === 'string') {
+    return {
+      body,
+      bodyType: 'string',
+      bodyCharLength: body.length,
+      bodyByteLength: Buffer.byteLength(body, 'utf8')
+    }
+  }
+
+  if (body && typeof body.pipe === 'function') {
+    return {
+      body: '[stream not captured]',
+      bodyType: 'stream',
+      bodyCharLength: 0,
+      bodyByteLength: 0
+    }
+  }
+
+  try {
+    const json = JSON.stringify(body)
+    return {
+      body: JSON.parse(json),
+      bodyType: Array.isArray(body) ? 'array' : typeof body,
+      bodyCharLength: json.length,
+      bodyByteLength: Buffer.byteLength(json, 'utf8')
+    }
+  } catch {
+    const text = String(body)
+    return {
+      body: text,
+      bodyType: typeof body,
+      bodyCharLength: text.length,
+      bodyByteLength: Buffer.byteLength(text, 'utf8')
+    }
+  }
+}
+
+const buildUpstreamErrorContext = ({
+  provider,
+  accountId,
+  accountType,
+  accountName,
+  statusCode,
+  statusText,
+  headers,
+  body,
+  phase,
+  model,
+  requestId,
+  extra = {}
+}) => {
+  const normalizedHeaders = normalizeHeadersForLog(headers)
+  const normalizedBody = normalizeBodyForLog(body)
+
+  return {
+    provider,
+    accountId,
+    accountType,
+    accountName,
+    phase,
+    model,
+    requestId,
+    capturedAt: new Date().toISOString(),
+    upstreamResponse: {
+      statusCode,
+      statusText: statusText || null,
+      headers: normalizedHeaders,
+      body: normalizedBody.body,
+      bodyType: normalizedBody.bodyType,
+      bodyEncoding: normalizedBody.bodyEncoding,
+      bodyCharLength: normalizedBody.bodyCharLength,
+      bodyByteLength: normalizedBody.bodyByteLength
+    },
+    retryAfterSeconds: parseRetryAfter(normalizedHeaders),
+    ...extra
+  }
+}
+
+const logUpstreamErrorResponse = (params) => {
+  const context = buildUpstreamErrorContext(params)
+  logger.upstreamError(
+    `Upstream error response captured: ${context.provider || context.accountType || 'unknown'} ${context.upstreamResponse.statusCode} (${context.accountName || context.accountId || 'unknown account'})`,
+    context
+  )
+  return context
+}
+
 // 记录错误历史到 Redis List
 const recordErrorHistory = async (
   accountId,
@@ -225,17 +364,7 @@ const recordErrorHistory = async (
       time: new Date().toISOString(),
       status: statusCode,
       errorType,
-      context: context
-        ? {
-            ...context,
-            errorBody:
-              typeof context.errorBody === 'string'
-                ? context.errorBody.slice(0, 2000)
-                : context.errorBody
-                  ? JSON.stringify(context.errorBody).slice(0, 2000)
-                  : undefined
-          }
-        : null
+      context: context || null
     })
 
     const pipeline = client.pipeline()
@@ -500,6 +629,8 @@ module.exports = {
   getAllTempUnavailable,
   classifyError,
   parseRetryAfter,
+  buildUpstreamErrorContext,
+  logUpstreamErrorResponse,
   sanitizeErrorForClient,
   recordErrorHistory,
   getErrorHistory,

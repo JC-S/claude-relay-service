@@ -300,7 +300,21 @@ class ClaudeConsoleRelayService {
       )
 
       // 对于错误响应，记录原始错误和清理后的预览
+      let upstreamErrorContext = null
       if (response.status < 200 || response.status >= 300) {
+        upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+          provider: 'claude-console',
+          accountId,
+          accountType: 'claude-console',
+          accountName: account?.name,
+          statusCode: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+          body: response.data,
+          phase: 'non_stream',
+          model: requestBody?.model,
+          requestId
+        })
         // 记录原始错误响应（包含供应商信息，用于调试）
         const rawData =
           typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
@@ -336,7 +350,7 @@ class ClaudeConsoleRelayService {
         )
         if (!autoProtectionDisabled) {
           await upstreamErrorHelper
-            .markTempUnavailable(accountId, 'claude-console', 401)
+            .markTempUnavailable(accountId, 'claude-console', 401, null, upstreamErrorContext)
             .catch(() => {})
         }
       } else if (accountDisabledError) {
@@ -365,7 +379,8 @@ class ClaudeConsoleRelayService {
               accountId,
               'claude-console',
               429,
-              upstreamErrorHelper.parseRetryAfter(response.headers)
+              upstreamErrorHelper.parseRetryAfter(response.headers),
+              upstreamErrorContext
             )
             .catch(() => {})
         }
@@ -376,7 +391,7 @@ class ClaudeConsoleRelayService {
         if (!autoProtectionDisabled) {
           await claudeConsoleAccountService.markAccountOverloaded(accountId)
           await upstreamErrorHelper
-            .markTempUnavailable(accountId, 'claude-console', 529)
+            .markTempUnavailable(accountId, 'claude-console', 529, null, upstreamErrorContext)
             .catch(() => {})
         }
       } else if (response.status >= 500) {
@@ -385,7 +400,13 @@ class ClaudeConsoleRelayService {
         )
         if (!autoProtectionDisabled) {
           await upstreamErrorHelper
-            .markTempUnavailable(accountId, 'claude-console', response.status)
+            .markTempUnavailable(
+              accountId,
+              'claude-console',
+              response.status,
+              null,
+              upstreamErrorContext
+            )
             .catch(() => {})
         }
       } else if (response.status === 200 || response.status === 201) {
@@ -838,6 +859,18 @@ class ClaudeConsoleRelayService {
 
             response.data.on('end', async () => {
               const autoProtectionDisabled = account.disableAutoProtection === true
+              const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+                provider: 'claude-console',
+                accountId,
+                accountType: 'claude-console',
+                accountName: account?.name,
+                statusCode: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+                body: errorDataForCheck,
+                phase: 'stream',
+                model: body?.model
+              })
               // 记录原始错误消息到日志（方便调试，包含供应商信息）
               logger.error(
                 `📝 [Stream] Upstream error response from ${account?.name || accountId}: ${errorDataForCheck.substring(0, 500)}`
@@ -855,7 +888,13 @@ class ClaudeConsoleRelayService {
                 )
                 if (!autoProtectionDisabled) {
                   await upstreamErrorHelper
-                    .markTempUnavailable(accountId, 'claude-console', 401)
+                    .markTempUnavailable(
+                      accountId,
+                      'claude-console',
+                      401,
+                      null,
+                      upstreamErrorContext
+                    )
                     .catch(() => {})
                 }
               } else if (accountDisabledError) {
@@ -884,7 +923,8 @@ class ClaudeConsoleRelayService {
                       accountId,
                       'claude-console',
                       429,
-                      upstreamErrorHelper.parseRetryAfter(response.headers)
+                      upstreamErrorHelper.parseRetryAfter(response.headers),
+                      upstreamErrorContext
                     )
                     .catch(() => {})
                 }
@@ -895,7 +935,13 @@ class ClaudeConsoleRelayService {
                 if (!autoProtectionDisabled) {
                   await claudeConsoleAccountService.markAccountOverloaded(accountId)
                   await upstreamErrorHelper
-                    .markTempUnavailable(accountId, 'claude-console', 529)
+                    .markTempUnavailable(
+                      accountId,
+                      'claude-console',
+                      529,
+                      null,
+                      upstreamErrorContext
+                    )
                     .catch(() => {})
                 }
               } else if (response.status >= 500) {
@@ -904,7 +950,13 @@ class ClaudeConsoleRelayService {
                 )
                 if (!autoProtectionDisabled) {
                   await upstreamErrorHelper
-                    .markTempUnavailable(accountId, 'claude-console', response.status)
+                    .markTempUnavailable(
+                      accountId,
+                      'claude-console',
+                      response.status,
+                      null,
+                      upstreamErrorContext
+                    )
                     .catch(() => {})
                 }
               }

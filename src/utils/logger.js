@@ -7,8 +7,9 @@ const fs = require('fs')
 const os = require('os')
 
 // 安全的 JSON 序列化函数，处理循环引用和特殊字符
-const safeStringify = (obj, maxDepth = Infinity) => {
+const safeStringify = (obj, maxDepth = Infinity, options = {}) => {
   const seen = new WeakSet()
+  const shouldTruncate = options.truncate !== false
 
   const replacer = (key, value, depth = 0) => {
     if (depth > maxDepth) {
@@ -72,7 +73,7 @@ const safeStringify = (obj, maxDepth = Infinity) => {
     const processed = replacer('', obj)
     const result = JSON.stringify(processed)
     // 体积保护: 超过 50KB 时对大字段做截断，保留顶层结构
-    if (result.length > 50000 && processed && typeof processed === 'object') {
+    if (shouldTruncate && result.length > 50000 && processed && typeof processed === 'object') {
       const truncated = { ...processed, _truncated: true, _totalChars: result.length }
       // 第一轮: 截断单个大字段
       for (const [k, v] of Object.entries(truncated)) {
@@ -153,7 +154,7 @@ const createConsoleFormat = () =>
   )
 
 // 文件格式: NDJSON（完整结构化数据）
-const createFileFormat = () =>
+const createFileFormat = (stringifyOptions = {}) =>
   winston.format.combine(
     winston.format.timestamp({ format: () => formatDateWithTimezone(new Date(), false) }),
     winston.format.errors({ stack: true }),
@@ -168,11 +169,12 @@ const createFileFormat = () =>
       if (stack) {
         entry.stack = stack
       }
-      return safeStringify(entry)
+      return safeStringify(entry, Infinity, stringifyOptions)
     })
   )
 
 const fileFormat = createFileFormat()
+const fullFileFormat = createFileFormat({ truncate: false })
 const consoleFormat = createConsoleFormat()
 const isTestEnv = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID
 
@@ -182,7 +184,7 @@ if (!fs.existsSync(config.logging.dirname)) {
 }
 
 // 🔄 增强的日志轮转配置
-const createRotateTransport = (filename, level = null) => {
+const createRotateTransport = (filename, level = null, format = fileFormat) => {
   const transport = new DailyRotateFile({
     filename: path.join(config.logging.dirname, filename),
     datePattern: 'YYYY-MM-DD',
@@ -190,7 +192,7 @@ const createRotateTransport = (filename, level = null) => {
     maxSize: config.logging.maxSize,
     maxFiles: config.logging.maxFiles,
     auditFile: path.join(config.logging.dirname, `.${filename.replace('%DATE%', 'audit')}.json`),
-    format: fileFormat
+    format
   })
 
   if (level) {
@@ -223,6 +225,16 @@ const securityLogger = winston.createLogger({
   level: 'warn',
   format: fileFormat,
   transports: [createRotateTransport('claude-relay-security-%DATE%.log', 'warn')],
+  silent: false
+})
+
+// 🧾 专门保存完整上游错误响应，不做体积截断，便于排查 429/529 等问题
+const upstreamErrorLogger = winston.createLogger({
+  level: 'error',
+  format: fullFileFormat,
+  transports: [
+    createRotateTransport('claude-relay-upstream-error-%DATE%.log', 'error', fullFileFormat)
+  ],
   silent: false
 })
 
@@ -351,6 +363,24 @@ logger.audit = (message, metadata = {}) => {
     pid: process.pid,
     ...metadata
   })
+}
+
+logger.upstreamError = (message, metadata = {}) => {
+  const upstreamErrorData = {
+    type: 'upstream-error',
+    timestamp: new Date().toISOString(),
+    pid: process.pid,
+    hostname: os.hostname(),
+    ...metadata
+  }
+
+  logger.error(`🧾 ${message}`, upstreamErrorData)
+
+  try {
+    upstreamErrorLogger.error(`🧾 ${message}`, upstreamErrorData)
+  } catch (error) {
+    logger.error('Failed to log upstream error response:', error)
+  }
 }
 
 // 🔧 性能监控方法

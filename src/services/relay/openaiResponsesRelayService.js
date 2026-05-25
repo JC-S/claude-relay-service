@@ -180,12 +180,24 @@ class OpenAIResponsesRelayService {
 
       // 处理 429 限流错误
       if (response.status === 429) {
-        const { resetsInSeconds, errorData } = await this._handle429Error(
+        const { resetsInSeconds, errorData, rawResponseBody } = await this._handle429Error(
           account,
           response,
           req.body?.stream,
           sessionHash
         )
+        const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+          provider: 'openai-responses',
+          accountId: account.id,
+          accountType: 'openai-responses',
+          accountName: account.name,
+          statusCode: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+          body: rawResponseBody ?? errorData,
+          phase: req.body?.stream ? 'stream' : 'non_stream',
+          model: req.body?.model
+        })
 
         const oaiAutoProtectionDisabled =
           account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
@@ -195,7 +207,8 @@ class OpenAIResponsesRelayService {
               account.id,
               'openai-responses',
               429,
-              resetsInSeconds || upstreamErrorHelper.parseRetryAfter(response.headers)
+              resetsInSeconds || upstreamErrorHelper.parseRetryAfter(response.headers),
+              upstreamErrorContext
             )
             .catch(() => {})
         }
@@ -216,6 +229,7 @@ class OpenAIResponsesRelayService {
       if (response.status >= 400) {
         // 处理流式错误响应
         let errorData = response.data
+        let rawErrorBodyForLog = response.data
         if (response.data && typeof response.data.pipe === 'function') {
           // 流式响应需要先读取内容
           const chunks = []
@@ -226,6 +240,7 @@ class OpenAIResponsesRelayService {
             setTimeout(resolve, 5000) // 超时保护
           })
           const fullResponse = Buffer.concat(chunks).toString()
+          rawErrorBodyForLog = fullResponse
 
           // 尝试解析错误响应
           try {
@@ -250,6 +265,18 @@ class OpenAIResponsesRelayService {
             errorData = { error: { message: fullResponse || 'Unknown error' } }
           }
         }
+        const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+          provider: 'openai-responses',
+          accountId: account.id,
+          accountType: 'openai-responses',
+          accountName: account.name,
+          statusCode: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+          body: rawErrorBodyForLog ?? errorData,
+          phase: req.body?.stream ? 'stream' : 'non_stream',
+          model: req.body?.model
+        })
 
         logger.error('OpenAI-Responses API error', {
           status: response.status,
@@ -266,7 +293,13 @@ class OpenAIResponsesRelayService {
               account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
             if (!oaiAutoProtectionDisabled) {
               await upstreamErrorHelper
-                .markTempUnavailable(account.id, 'openai-responses', 401)
+                .markTempUnavailable(
+                  account.id,
+                  'openai-responses',
+                  401,
+                  null,
+                  upstreamErrorContext
+                )
                 .catch(() => {})
             }
             if (sessionHash) {
@@ -313,7 +346,9 @@ class OpenAIResponsesRelayService {
               await upstreamErrorHelper.markTempUnavailable(
                 account.id,
                 'openai-responses',
-                response.status
+                response.status,
+                null,
+                upstreamErrorContext
               )
             }
             if (sessionHash) {
@@ -804,6 +839,7 @@ class OpenAIResponsesRelayService {
   async _handle429Error(account, response, isStream = false, sessionHash = null) {
     let resetsInSeconds = null
     let errorData = null
+    let rawResponseBody = null
 
     try {
       // 对于429错误，响应可能是JSON或SSE格式
@@ -819,6 +855,7 @@ class OpenAIResponsesRelayService {
         })
 
         const fullResponse = Buffer.concat(chunks).toString()
+        rawResponseBody = fullResponse
 
         // 尝试解析SSE格式的错误响应
         if (fullResponse.includes('data: ')) {
@@ -848,6 +885,7 @@ class OpenAIResponsesRelayService {
           }
         }
       } else if (response.data && typeof response.data !== 'object') {
+        rawResponseBody = response.data
         // 如果response.data是字符串，尝试解析为JSON
         try {
           errorData = JSON.parse(response.data)
@@ -858,6 +896,7 @@ class OpenAIResponsesRelayService {
       } else if (response.data && typeof response.data === 'object' && !response.data.pipe) {
         // 非流式响应，且是对象，直接使用
         errorData = response.data
+        rawResponseBody = response.data
       }
 
       // 从响应体中提取重置时间（OpenAI 标准格式）
@@ -900,7 +939,7 @@ class OpenAIResponsesRelayService {
     })
 
     // 返回处理后的数据，避免循环引用
-    return { resetsInSeconds, errorData }
+    return { resetsInSeconds, errorData, rawResponseBody }
   }
 
   // 过滤请求头 - 已迁移到 headerFilter 工具类

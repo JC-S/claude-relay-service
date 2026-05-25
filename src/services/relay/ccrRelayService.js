@@ -259,13 +259,31 @@ class CcrRelayService {
         `[DEBUG] Response data preview: ${typeof response.data === 'string' ? response.data.substring(0, 200) : JSON.stringify(response.data).substring(0, 200)}`
       )
 
+      let upstreamErrorContext = null
+      if (response.status < 200 || response.status >= 300) {
+        upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+          provider: 'ccr',
+          accountId,
+          accountType: 'ccr',
+          accountName: account?.name,
+          statusCode: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+          body: response.data,
+          phase: 'non_stream',
+          model: requestBody?.model
+        })
+      }
+
       // 检查错误状态并相应处理
       if (response.status === 401) {
         logger.warn(`🚫 Unauthorized error detected for CCR account ${accountId}`)
         const autoProtectionDisabled =
           account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
         if (!autoProtectionDisabled) {
-          await upstreamErrorHelper.markTempUnavailable(accountId, 'ccr', 401).catch(() => {})
+          await upstreamErrorHelper
+            .markTempUnavailable(accountId, 'ccr', 401, null, upstreamErrorContext)
+            .catch(() => {})
         }
       } else if (response.status === 429) {
         logger.warn(`🚫 Rate limit detected for CCR account ${accountId}`)
@@ -283,7 +301,8 @@ class CcrRelayService {
               accountId,
               'ccr',
               429,
-              upstreamErrorHelper.parseRetryAfter(response.headers)
+              upstreamErrorHelper.parseRetryAfter(response.headers),
+              upstreamErrorContext
             )
             .catch(() => {})
         }
@@ -293,7 +312,9 @@ class CcrRelayService {
         const autoProtectionDisabled =
           account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
         if (!autoProtectionDisabled) {
-          await upstreamErrorHelper.markTempUnavailable(accountId, 'ccr', 529).catch(() => {})
+          await upstreamErrorHelper
+            .markTempUnavailable(accountId, 'ccr', 529, null, upstreamErrorContext)
+            .catch(() => {})
         }
       } else if (response.status >= 500) {
         logger.warn(`🔥 Server error (${response.status}) detected for CCR account ${accountId}`)
@@ -301,7 +322,7 @@ class CcrRelayService {
           account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
         if (!autoProtectionDisabled) {
           await upstreamErrorHelper
-            .markTempUnavailable(accountId, 'ccr', response.status)
+            .markTempUnavailable(accountId, 'ccr', response.status, null, upstreamErrorContext)
             .catch(() => {})
         }
       } else if (response.status === 200 || response.status === 201) {
@@ -647,36 +668,49 @@ class CcrRelayService {
             const autoProtectionDisabled =
               account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
 
-            if (response.status === 401) {
-              if (!autoProtectionDisabled) {
-                upstreamErrorHelper.markTempUnavailable(accountId, 'ccr', 401).catch(() => {})
-              }
-            } else if (response.status === 429) {
-              ccrAccountService.markAccountRateLimited(accountId)
-              if (!autoProtectionDisabled) {
-                upstreamErrorHelper
-                  .markTempUnavailable(
-                    accountId,
-                    'ccr',
-                    429,
-                    upstreamErrorHelper.parseRetryAfter(response.headers)
-                  )
-                  .catch(() => {})
-              }
-              // 检查是否因为超过每日额度
-              ccrAccountService.checkQuotaUsage(accountId).catch((err) => {
-                logger.error('❌ Failed to check quota after 429 error:', err)
-              })
-            } else if (response.status === 529) {
-              ccrAccountService.markAccountOverloaded(accountId)
-              if (!autoProtectionDisabled) {
-                upstreamErrorHelper.markTempUnavailable(accountId, 'ccr', 529).catch(() => {})
-              }
-            } else if (response.status >= 500) {
-              if (!autoProtectionDisabled) {
-                upstreamErrorHelper
-                  .markTempUnavailable(accountId, 'ccr', response.status)
-                  .catch(() => {})
+            const handleCcrStreamError = async (upstreamErrorContext) => {
+              if (response.status === 401) {
+                if (!autoProtectionDisabled) {
+                  await upstreamErrorHelper
+                    .markTempUnavailable(accountId, 'ccr', 401, null, upstreamErrorContext)
+                    .catch(() => {})
+                }
+              } else if (response.status === 429) {
+                await ccrAccountService.markAccountRateLimited(accountId)
+                if (!autoProtectionDisabled) {
+                  await upstreamErrorHelper
+                    .markTempUnavailable(
+                      accountId,
+                      'ccr',
+                      429,
+                      upstreamErrorHelper.parseRetryAfter(response.headers),
+                      upstreamErrorContext
+                    )
+                    .catch(() => {})
+                }
+                // 检查是否因为超过每日额度
+                ccrAccountService.checkQuotaUsage(accountId).catch((err) => {
+                  logger.error('❌ Failed to check quota after 429 error:', err)
+                })
+              } else if (response.status === 529) {
+                await ccrAccountService.markAccountOverloaded(accountId)
+                if (!autoProtectionDisabled) {
+                  await upstreamErrorHelper
+                    .markTempUnavailable(accountId, 'ccr', 529, null, upstreamErrorContext)
+                    .catch(() => {})
+                }
+              } else if (response.status >= 500) {
+                if (!autoProtectionDisabled) {
+                  await upstreamErrorHelper
+                    .markTempUnavailable(
+                      accountId,
+                      'ccr',
+                      response.status,
+                      null,
+                      upstreamErrorContext
+                    )
+                    .catch(() => {})
+                }
               }
             }
 
@@ -697,13 +731,33 @@ class CcrRelayService {
             }
 
             // 直接透传错误数据，不进行包装
+            const errorChunks = []
             response.data.on('data', (chunk) => {
+              errorChunks.push(chunk)
               if (isStreamWritable(responseStream)) {
                 responseStream.write(chunk)
               }
             })
 
-            response.data.on('end', () => {
+            response.data.on('end', async () => {
+              const errorBody = Buffer.concat(errorChunks).toString()
+              const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
+                provider: 'ccr',
+                accountId,
+                accountType: 'ccr',
+                accountName: account?.name,
+                statusCode: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+                body: errorBody,
+                phase: 'stream',
+                model: body?.model
+              })
+              try {
+                await handleCcrStreamError(upstreamErrorContext)
+              } catch (error) {
+                logger.error('❌ Failed to handle CCR stream upstream error:', error)
+              }
               if (isStreamWritable(responseStream)) {
                 responseStream.end()
               }
