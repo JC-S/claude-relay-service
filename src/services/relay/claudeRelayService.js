@@ -239,8 +239,8 @@ class ClaudeRelayService {
     )
   }
 
-  // 💰 检查是否为 "Extra usage required" 的非限流 429
-  // Anthropic 对未开启 Extra Usage 的账户请求长上下文模型时返回此错误
+  // 💰 检查是否为长上下文 usage credits / extra usage 未开启导致的非限流 429
+  // Anthropic 对未开启 Usage Credits/Extra Usage 的账户请求长上下文模型时返回此错误
   // 这不是真正的限流，不应标记账户为 rate limited
   _isExtraUsageRequired429(statusCode, body) {
     if (statusCode !== 429) {
@@ -250,7 +250,12 @@ class ClaudeRelayService {
     if (!message) {
       return false
     }
-    return message.toLowerCase().includes('extra usage')
+    const lowerMessage = message.toLowerCase()
+    return (
+      lowerMessage.includes('extra usage') ||
+      lowerMessage.includes('usage credits are required') ||
+      (lowerMessage.includes('usage credits') && lowerMessage.includes('long context'))
+    )
   }
 
   _toPascalCaseToolName(name) {
@@ -844,10 +849,10 @@ class ClaudeRelayService {
         }
         // 检查是否为429状态码
         else if (response.statusCode === 429) {
-          // 💰 先检查是否为 "Extra usage required" 的非限流 429
+          // 💰 先检查是否为 usage credits / extra usage 未开启导致的非限流 429
           if (this._isExtraUsageRequired429(response.statusCode, response.body)) {
             logger.info(
-              `💰 [Non-Stream] "Extra usage required" 429 for account ${accountId}, skipping rate limit marking`
+              `💰 [Non-Stream] Usage credits/extra usage required 429 for account ${accountId}, skipping rate limit marking`
             )
           } else {
             const resetHeader = response.headers
@@ -2169,7 +2174,7 @@ class ClaudeRelayService {
         // 错误响应处理
         if (res.statusCode !== 200) {
           if (res.statusCode === 429) {
-            // 💰 先读取完整 body 以区分 "Extra usage required" 和真正的限流
+            // 💰 先读取完整 body 以区分 usage credits / extra usage 未开启和真正的限流
             const bodyChunks429 = []
             await new Promise((resolveBody) => {
               res.on('data', (chunk) => bodyChunks429.push(chunk))
@@ -2190,10 +2195,10 @@ class ClaudeRelayService {
               model: body?.model
             })
 
-            // 检查是否为 "Extra usage required" 的非限流 429
+            // 检查是否为 usage credits / extra usage 未开启导致的非限流 429
             if (this._isExtraUsageRequired429(res.statusCode, errorBody429)) {
               logger.info(
-                `💰 [Stream] "Extra usage required" 429 for account ${accountId}, skipping rate limit marking`
+                `💰 [Stream] Usage credits/extra usage required 429 for account ${accountId}, skipping rate limit marking`
               )
               logger.error(
                 `❌ Claude API returned error status: 429 | Account: ${account?.name || accountId}`
