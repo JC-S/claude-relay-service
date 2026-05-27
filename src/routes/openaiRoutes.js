@@ -21,6 +21,8 @@ const {
 } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { removeGptFastModeFromBody } = require('../utils/gptFastModeHelper')
+const openaiNicSelector = require('../utils/openaiNicSelector')
+const { getHttpsAgentForLocalAddress } = require('../utils/performanceOptimizer')
 
 const CODEX_UPSTREAM_USER_AGENT =
   'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)'
@@ -126,6 +128,15 @@ function toNumberSafe(value) {
   }
   const num = Number(value)
   return Number.isFinite(num) ? num : null
+}
+
+function isInterleaveNicEnabled(accountData = {}) {
+  return accountData?.interleaveNicEnabled === true || accountData?.interleaveNicEnabled === 'true'
+}
+
+function isLocalAddressNetworkError(error) {
+  const errorCodes = new Set(['EADDRNOTAVAIL', 'ENETUNREACH'])
+  return errorCodes.has(error?.code) || errorCodes.has(error?.cause?.code)
 }
 
 function extractCodexUsageHeaders(headers) {
@@ -512,6 +523,11 @@ const handleResponses = async (req, res) => {
       axiosConfig.httpsAgent = proxyAgent
       axiosConfig.proxy = false
       logger.info(`🌐 Using proxy for OpenAI request: ${ProxyHelper.getProxyDescription(proxy)}`)
+      if (isInterleaveNicEnabled(account)) {
+        logger.warn(
+          `⚠️ OpenAI account ${accountId} has both proxy and NIC interleave enabled; proxy takes precedence`
+        )
+      }
     } else {
       logger.debug('🌐 No proxy configured for OpenAI request')
     }
@@ -520,16 +536,53 @@ const handleResponses = async (req, res) => {
       ? 'https://chatgpt.com/backend-api/codex/responses/compact'
       : 'https://chatgpt.com/backend-api/codex/responses'
 
-    // 根据 stream 参数决定请求类型
-    if (isStream) {
-      // 流式请求
-      upstream = await axios.post(codexEndpoint, req.body, {
-        ...axiosConfig,
-        responseType: 'stream'
+    let selectedLocalAddress = null
+    if (!proxyAgent && isInterleaveNicEnabled(account)) {
+      selectedLocalAddress = await openaiNicSelector.chooseLocalAddress({
+        accountId,
+        sessionHash,
+        ttlHours: account.interleaveNicTtlHours
       })
-    } else {
-      // 非流式请求
-      upstream = await axios.post(codexEndpoint, req.body, axiosConfig)
+
+      if (selectedLocalAddress) {
+        axiosConfig.httpsAgent = getHttpsAgentForLocalAddress(selectedLocalAddress, {
+          stream: isStream
+        })
+        axiosConfig.proxy = false
+        req.upstreamNicIp = selectedLocalAddress
+        logger.info(
+          `🌐 OpenAI NIC interleave selected ${selectedLocalAddress} for account ${accountId}, session ${sessionHash ? sessionHash.slice(0, 12) : 'none'}`
+        )
+      }
+    }
+
+    const sendUpstreamRequest = () => {
+      if (isStream) {
+        return axios.post(codexEndpoint, req.body, {
+          ...axiosConfig,
+          responseType: 'stream'
+        })
+      }
+
+      return axios.post(codexEndpoint, req.body, axiosConfig)
+    }
+
+    try {
+      upstream = await sendUpstreamRequest()
+    } catch (requestError) {
+      if (selectedLocalAddress && isLocalAddressNetworkError(requestError)) {
+        logger.warn(
+          `⚠️ OpenAI NIC ${selectedLocalAddress} unavailable for account ${accountId}, retrying with default route: ${requestError.code || requestError.cause?.code || requestError.message}`
+        )
+        await openaiNicSelector.clearBinding({ accountId, sessionHash })
+        selectedLocalAddress = null
+        delete req.upstreamNicIp
+        delete axiosConfig.httpsAgent
+        delete axiosConfig.proxy
+        upstream = await sendUpstreamRequest()
+      } else {
+        throw requestError
+      }
     }
 
     const codexUsageSnapshot = extractCodexUsageHeaders(upstream.headers)

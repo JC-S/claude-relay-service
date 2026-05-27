@@ -13,6 +13,7 @@ const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const ProxyHelper = require('../../utils/proxyHelper')
+const openaiNicSelector = require('../../utils/openaiNicSelector')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
 
@@ -38,6 +39,48 @@ function generateOpenAIPKCE() {
     codeVerifier,
     codeChallenge
   }
+}
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key)
+}
+
+function isInterleaveNicEnabled(value) {
+  return value === true || value === 'true'
+}
+
+function validateInterleaveNicTtl(value) {
+  if (value === undefined || value === null || value === '') {
+    return { valid: true, value: 24 }
+  }
+
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 72) {
+    return { valid: false, value: null }
+  }
+
+  return { valid: true, value: parsed }
+}
+
+function validateOpenAIInterleaveState({ enabled, ttlHours, proxy }) {
+  const ttlValidation = validateInterleaveNicTtl(ttlHours)
+  if (!ttlValidation.valid) {
+    return 'OpenAI 多网卡出口会话绑定时间必须是 1-72 的整数小时'
+  }
+
+  if (!enabled) {
+    return null
+  }
+
+  if (ProxyHelper.validateProxyConfig(proxy)) {
+    return 'OpenAI 多网卡出口与代理设置互斥，请关闭其中一项'
+  }
+
+  if (!openaiNicSelector.isAvailable()) {
+    return '服务端未配置至少 2 个 OpenAI 本地出口 IP，无法启用多网卡出口'
+  }
+
+  return null
 }
 
 // 生成 OpenAI OAuth 授权 URL
@@ -330,6 +373,8 @@ router.post('/', authenticateAdmin, async (req, res) => {
       groupIds, // 支持多分组
       rateLimitDuration,
       priority,
+      interleaveNicEnabled,
+      interleaveNicTtlHours,
       needsImmediateRefresh, // 是否需要立即刷新
       requireRefreshSuccess // 是否必须刷新成功才能创建
     } = req.body
@@ -338,6 +383,19 @@ router.post('/', authenticateAdmin, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: '账户名称不能为空'
+      })
+    }
+
+    const interleaveEnabled = isInterleaveNicEnabled(interleaveNicEnabled)
+    const interleaveValidationError = validateOpenAIInterleaveState({
+      enabled: interleaveEnabled,
+      ttlHours: interleaveNicTtlHours,
+      proxy
+    })
+    if (interleaveValidationError) {
+      return res.status(400).json({
+        success: false,
+        message: interleaveValidationError
       })
     }
 
@@ -352,6 +410,11 @@ router.post('/', authenticateAdmin, async (req, res) => {
       openaiOauth: openaiOauth || {},
       accountInfo: accountInfo || {},
       proxy: proxy || null,
+      interleaveNicEnabled: interleaveEnabled,
+      interleaveNicTtlHours:
+        interleaveNicTtlHours === undefined || interleaveNicTtlHours === null
+          ? 24
+          : interleaveNicTtlHours,
       isActive: true,
       schedulable: true
     }
@@ -511,6 +574,27 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     const currentAccount = await openaiAccountService.getAccount(id)
     if (!currentAccount) {
       return res.status(404).json({ error: 'Account not found' })
+    }
+
+    const effectiveInterleaveEnabled = hasOwn(mappedUpdates, 'interleaveNicEnabled')
+      ? isInterleaveNicEnabled(mappedUpdates.interleaveNicEnabled)
+      : isInterleaveNicEnabled(currentAccount.interleaveNicEnabled)
+    const effectiveInterleaveTtlHours = hasOwn(mappedUpdates, 'interleaveNicTtlHours')
+      ? mappedUpdates.interleaveNicTtlHours
+      : currentAccount.interleaveNicTtlHours
+    const effectiveProxy = hasOwn(mappedUpdates, 'proxy')
+      ? mappedUpdates.proxy
+      : currentAccount.proxy
+    const interleaveValidationError = validateOpenAIInterleaveState({
+      enabled: effectiveInterleaveEnabled,
+      ttlHours: effectiveInterleaveTtlHours,
+      proxy: effectiveProxy
+    })
+    if (interleaveValidationError) {
+      return res.status(400).json({
+        success: false,
+        message: interleaveValidationError
+      })
     }
 
     // 如果更新了 Refresh Token，需要验证其有效性

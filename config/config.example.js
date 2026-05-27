@@ -101,6 +101,18 @@ const config = {
     useIPv4: process.env.PROXY_USE_IPV4 !== 'false' // 默认 true，只有明确设置为 'false' 才使用 IPv6
   },
 
+  // 🌐 OpenAI/Codex 多网卡出口配置
+  openaiNicInterleave: {
+    localAddresses: Array.from(
+      new Set(
+        (process.env.OPENAI_UPSTREAM_LOCAL_ADDRESSES || process.env.NIC_INTERLEAVE_IPS || '')
+          .split(',')
+          .map((address) => address.trim())
+          .filter(Boolean)
+      )
+    )
+  },
+
   // ⏱️ 请求超时配置
   requestTimeout: parseInt(process.env.REQUEST_TIMEOUT) || 600000, // 默认 10 分钟
 

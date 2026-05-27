@@ -41,6 +41,9 @@ const httpAgent = new http.Agent({
   freeSocketTimeout: FREE_SOCKET_TIMEOUT
 })
 
+// 按 localAddress 和流式模式拆分缓存，避免 keep-alive 连接复用到错误出口。
+const localAddressAgentCache = new Map()
+
 // 定价数据缓存（按文件路径区分）
 const pricingDataCache = new Map()
 const PRICING_CACHE_TTL = 5 * 60 * 1000 // 5分钟
@@ -61,6 +64,38 @@ function getHttpsAgentForStream() {
  */
 function getHttpsAgentForNonStream() {
   return httpsAgentNonStream
+}
+
+/**
+ * 获取绑定指定本地 IP 的 HTTPS agent
+ * @param {string} localAddress - 本地出口 IP
+ * @param {Object} options - 选项
+ * @param {boolean} options.stream - 是否为流式请求
+ * @returns {https.Agent|null}
+ */
+function getHttpsAgentForLocalAddress(localAddress, { stream = false } = {}) {
+  const address = String(localAddress || '').trim()
+  if (!address) {
+    return null
+  }
+
+  const cacheKey = `${address}|${stream ? 'stream' : 'non-stream'}`
+  if (localAddressAgentCache.has(cacheKey)) {
+    return localAddressAgentCache.get(cacheKey)
+  }
+
+  const agent = new https.Agent({
+    keepAlive: true,
+    localAddress: address,
+    family: 4,
+    maxSockets: stream ? STREAM_MAX_SOCKETS : NON_STREAM_MAX_SOCKETS,
+    maxFreeSockets: MAX_FREE_SOCKETS,
+    timeout: 0,
+    freeSocketTimeout: FREE_SOCKET_TIMEOUT
+  })
+
+  localAddressAgentCache.set(cacheKey, agent)
+  return agent
 }
 
 /**
@@ -151,6 +186,9 @@ function getAgentStats() {
       freeSockets: Object.keys(httpAgent.freeSockets).length,
       requests: Object.keys(httpAgent.requests).length
     },
+    localAddressAgents: {
+      count: localAddressAgentCache.size
+    },
     configCache: configCache.getStats()
   }
 }
@@ -158,6 +196,7 @@ function getAgentStats() {
 module.exports = {
   getHttpsAgentForStream,
   getHttpsAgentForNonStream,
+  getHttpsAgentForLocalAddress,
   getHttpAgent: () => httpAgent,
   getPricingData,
   clearPricingCache,

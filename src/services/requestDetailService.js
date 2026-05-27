@@ -789,6 +789,7 @@ class RequestDetailService {
       usedFallbackPricing: detail.usedFallbackPricing === true,
       costRecomputed: detail.costRecomputed === true,
       durationMs,
+      upstreamNicIp: normalizeOptionalFilterValue(detail.upstreamNicIp) || null,
       isLongContextRequest: detail.isLongContextRequest === true,
       reasoningDisplay: detail.reasoningDisplay || reasoningInfo.reasoningDisplay || null,
       reasoningSource: detail.reasoningSource || reasoningInfo.reasoningSource || null

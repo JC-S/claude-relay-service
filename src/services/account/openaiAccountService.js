@@ -43,6 +43,21 @@ function toNumberOrNull(value) {
   return Number.isFinite(num) ? num : null
 }
 
+function normalizeBooleanString(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue ? 'true' : 'false'
+  }
+  return value === true || value === 'true' ? 'true' : 'false'
+}
+
+function normalizeInterleaveNicTtlHours(value) {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) {
+    return '24'
+  }
+  return String(Math.min(Math.max(parsed, 1), 72))
+}
+
 function computeResetMeta(updatedAt, resetAfterSeconds) {
   if (!updatedAt || resetAfterSeconds === null || resetAfterSeconds === undefined) {
     return {
@@ -502,6 +517,8 @@ async function createAccount(accountData) {
       accountData.disableAutoProtection === true || accountData.disableAutoProtection === 'true'
         ? 'true'
         : 'false',
+    interleaveNicEnabled: normalizeBooleanString(accountData.interleaveNicEnabled, false),
+    interleaveNicTtlHours: normalizeInterleaveNicTtlHours(accountData.interleaveNicTtlHours),
     lastRefresh: now,
     createdAt: now,
     updatedAt: now
@@ -617,6 +634,14 @@ async function updateAccount(accountId, updates) {
       updates.disableAutoProtection === true || updates.disableAutoProtection === 'true'
         ? 'true'
         : 'false'
+  }
+
+  if (updates.interleaveNicEnabled !== undefined) {
+    updates.interleaveNicEnabled = normalizeBooleanString(updates.interleaveNicEnabled, false)
+  }
+
+  if (updates.interleaveNicTtlHours !== undefined) {
+    updates.interleaveNicTtlHours = normalizeInterleaveNicTtlHours(updates.interleaveNicTtlHours)
   }
 
   // 更新账户类型时处理共享账户集合

@@ -106,6 +106,13 @@
                   {{ detail.reasoningSource ? `来源：${detail.reasoningSource}` : '未指定' }}
                 </p>
               </div>
+              <div>
+                <p class="field-label">出口本地 IP</p>
+                <p class="field-value">{{ detail.upstreamNicIp || '—' }}</p>
+                <p class="field-sub">
+                  {{ detail.upstreamNicIp ? '多网卡轮询' : '默认出口' }}
+                </p>
+              </div>
             </div>
           </div>
 

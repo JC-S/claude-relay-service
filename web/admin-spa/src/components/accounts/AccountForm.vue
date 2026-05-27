@@ -2269,6 +2269,49 @@
             <!-- 代理设置 -->
             <ProxyConfig v-model="form.proxy" />
 
+            <div
+              v-if="form.platform === 'openai'"
+              class="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 dark:border-emerald-700 dark:bg-emerald-900/20"
+            >
+              <div class="flex items-start justify-between gap-4">
+                <div>
+                  <h4 class="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+                    启用 OpenAI 多网卡出口
+                  </h4>
+                  <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-200">
+                    与代理互斥。启用后，同一会话会在绑定时间内固定走同一个本地出口 IP。
+                  </p>
+                </div>
+                <label class="flex shrink-0 items-center">
+                  <input
+                    v-model="form.interleaveNicEnabled"
+                    class="h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    :disabled="proxyConfigured"
+                    type="checkbox"
+                  />
+                  <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">启用</span>
+                </label>
+              </div>
+              <p v-if="proxyConfigured" class="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                代理启用时不可使用多网卡出口
+              </p>
+              <div v-if="form.interleaveNicEnabled" class="mt-4">
+                <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  会话绑定时间（小时）
+                </label>
+                <input
+                  v-model.number="form.interleaveNicTtlHours"
+                  class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                  max="72"
+                  min="1"
+                  type="number"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  取值范围 1–72 小时，命中同一会话时会自动续期。
+                </p>
+              </div>
+            </div>
+
             <div class="flex gap-3 pt-4">
               <button
                 class="flex-1 rounded-xl bg-gray-100 px-6 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -3990,6 +4033,49 @@
           <!-- 代理设置 -->
           <ProxyConfig v-model="form.proxy" />
 
+          <div
+            v-if="form.platform === 'openai'"
+            class="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 dark:border-emerald-700 dark:bg-emerald-900/20"
+          >
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h4 class="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+                  启用 OpenAI 多网卡出口
+                </h4>
+                <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-200">
+                  与代理互斥。启用后，同一会话会在绑定时间内固定走同一个本地出口 IP。
+                </p>
+              </div>
+              <label class="flex shrink-0 items-center">
+                <input
+                  v-model="form.interleaveNicEnabled"
+                  class="h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="proxyConfigured"
+                  type="checkbox"
+                />
+                <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">启用</span>
+              </label>
+            </div>
+            <p v-if="proxyConfigured" class="mt-2 text-xs text-amber-600 dark:text-amber-300">
+              代理启用时不可使用多网卡出口
+            </p>
+            <div v-if="form.interleaveNicEnabled" class="mt-4">
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                会话绑定时间（小时）
+              </label>
+              <input
+                v-model.number="form.interleaveNicTtlHours"
+                class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                max="72"
+                min="1"
+                type="number"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                取值范围 1–72 小时，命中同一会话时会自动续期。
+              </p>
+            </div>
+          </div>
+
           <div class="flex gap-3 pt-4">
             <button
               class="flex-1 rounded-xl bg-gray-100 px-6 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -4305,6 +4391,13 @@ const normalizeAccountCooldownOverride = (value) => {
 }
 
 const toFormBoolean = (value) => value === true || value === 'true'
+const clampOpenAINicTtlHours = (value) => {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) {
+    return 24
+  }
+  return Math.min(Math.max(parsed, 1), 72)
+}
 
 // 表单数据
 const form = ref({
@@ -4363,6 +4456,8 @@ const form = ref({
   userAgent: props.account?.userAgent || '',
   enableRateLimit: props.account ? props.account.rateLimitDuration > 0 : true,
   disableAutoProtection: toFormBoolean(props.account?.disableAutoProtection),
+  interleaveNicEnabled: toFormBoolean(props.account?.interleaveNicEnabled),
+  interleaveNicTtlHours: clampOpenAINicTtlHours(props.account?.interleaveNicTtlHours),
   disableTempUnavailable: toFormBoolean(props.account?.disableTempUnavailable),
   tempUnavailable503TtlSeconds: toFormCooldownOverrideValue(
     props.account?.tempUnavailable503TtlSeconds
@@ -4406,6 +4501,12 @@ const form = ref({
     return ''
   })(),
   expiresAt: props.account?.expiresAt || null
+})
+
+const proxyConfigured = computed(() => form.value.proxy?.enabled === true)
+const buildOpenAINicInterleavePayload = () => ({
+  interleaveNicEnabled: !!form.value.interleaveNicEnabled,
+  interleaveNicTtlHours: clampOpenAINicTtlHours(form.value.interleaveNicTtlHours)
 })
 
 const buildClaudeTempUnavailablePolicyPayload = () => ({
@@ -5107,6 +5208,7 @@ const handleOAuthSuccess = async (tokenInfoOrList) => {
       data.openaiOauth = tokenInfo.tokens || tokenInfo
       data.accountInfo = tokenInfo.accountInfo
       data.priority = form.value.priority || 50
+      Object.assign(data, buildOpenAINicInterleavePayload())
     } else if (currentPlatform === 'droid') {
       const rawTokens = tokenInfo.tokens || tokenInfo || {}
 
@@ -5477,6 +5579,7 @@ const createAccount = async () => {
       data.needsImmediateRefresh = true
       data.requireRefreshSuccess = true // 必须刷新成功才能创建账户
       data.priority = form.value.priority || 50
+      Object.assign(data, buildOpenAINicInterleavePayload())
     } else if (form.value.platform === 'droid') {
       data.priority = form.value.priority || 50
       data.endpointType = form.value.endpointType || 'anthropic'
@@ -5840,6 +5943,7 @@ const updateAccount = async () => {
     // OpenAI 账号优先级更新
     if (props.account.platform === 'openai') {
       data.priority = form.value.priority || 50
+      Object.assign(data, buildOpenAINicInterleavePayload())
     }
 
     // Gemini 账号优先级更新
@@ -6014,6 +6118,12 @@ watch(
     }
   }
 )
+
+watch(proxyConfigured, (configured) => {
+  if (configured && form.value.interleaveNicEnabled) {
+    form.value.interleaveNicEnabled = false
+  }
+})
 
 // 监听Access Token变化，清除错误
 watch(
@@ -6508,6 +6618,8 @@ watch(
         maxConcurrentTasks: newAccount.maxConcurrentTasks || 0,
         // 上游错误处理
         disableAutoProtection: toFormBoolean(newAccount.disableAutoProtection),
+        interleaveNicEnabled: toFormBoolean(newAccount.interleaveNicEnabled),
+        interleaveNicTtlHours: clampOpenAINicTtlHours(newAccount.interleaveNicTtlHours),
         disableTempUnavailable: toFormBoolean(newAccount.disableTempUnavailable),
         tempUnavailable503TtlSeconds: toFormCooldownOverrideValue(
           newAccount.tempUnavailable503TtlSeconds
