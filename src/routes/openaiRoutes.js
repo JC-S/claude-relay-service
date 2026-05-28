@@ -139,6 +139,50 @@ function isLocalAddressNetworkError(error) {
   return errorCodes.has(error?.code) || errorCodes.has(error?.cause?.code)
 }
 
+async function applyOpenAINicCooldownOnRateLimit({
+  account,
+  accountId,
+  sessionHash,
+  selectedLocalAddress,
+  source
+}) {
+  if (!selectedLocalAddress || !isInterleaveNicEnabled(account)) {
+    return false
+  }
+
+  const cooldownResult = await openaiNicSelector.markCooldown({
+    accountId,
+    localAddress: selectedLocalAddress
+  })
+
+  if (cooldownResult.marked) {
+    await openaiNicSelector.clearBinding({ accountId, sessionHash })
+    logger.warn(
+      `🚫 OpenAI NIC ${selectedLocalAddress} entered ${cooldownResult.ttlSeconds}s cooldown for account ${accountId} after ${source} rate limit; ${cooldownResult.remainingAddresses} alternate NIC(s) remain`
+    )
+    return true
+  }
+
+  if (cooldownResult.reason === 'last_available') {
+    logger.warn(
+      `🚫 OpenAI NIC ${selectedLocalAddress} hit rate limit for account ${accountId}, but it is the last available NIC; skipping NIC and account cooldown`
+    )
+    return true
+  }
+
+  if (cooldownResult.reason === 'not_available' || cooldownResult.reason === 'unknown_address') {
+    logger.warn(
+      `🚫 OpenAI NIC cooldown skipped for account ${accountId}, address ${selectedLocalAddress}: ${cooldownResult.reason || 'unknown'}`
+    )
+    return false
+  }
+
+  logger.warn(
+    `🚫 OpenAI NIC cooldown failed for account ${accountId}, address ${selectedLocalAddress}: ${cooldownResult.reason || 'unknown'}`
+  )
+  return false
+}
+
 function extractCodexUsageHeaders(headers) {
   const normalized = normalizeHeaders(headers)
   if (!normalized || Object.keys(normalized).length === 0) {
@@ -642,13 +686,22 @@ const handleResponses = async (req, res) => {
         logger.error('⚠️ Failed to parse rate limit error:', e)
       }
 
-      // 标记账户为限流状态
-      await unifiedOpenAIScheduler.markAccountRateLimited(
+      const nicCooldownApplied = await applyOpenAINicCooldownOnRateLimit({
+        account,
         accountId,
-        'openai',
         sessionHash,
-        resetsInSeconds
-      )
+        selectedLocalAddress,
+        source: 'HTTP 429'
+      })
+
+      if (!nicCooldownApplied) {
+        await unifiedOpenAIScheduler.markAccountRateLimited(
+          accountId,
+          'openai',
+          sessionHash,
+          resetsInSeconds
+        )
+      }
 
       // 返回错误响应给客户端
       const errorResponse = errorData || {
@@ -987,12 +1040,22 @@ const handleResponses = async (req, res) => {
       // 如果在流式响应中检测到限流
       if (rateLimitDetected) {
         logger.warn(`🚫 Processing rate limit for OpenAI account ${accountId} from stream`)
-        await unifiedOpenAIScheduler.markAccountRateLimited(
+        const nicCooldownApplied = await applyOpenAINicCooldownOnRateLimit({
+          account,
           accountId,
-          'openai',
           sessionHash,
-          rateLimitResetsInSeconds
-        )
+          selectedLocalAddress,
+          source: 'stream'
+        })
+
+        if (!nicCooldownApplied) {
+          await unifiedOpenAIScheduler.markAccountRateLimited(
+            accountId,
+            'openai',
+            sessionHash,
+            rateLimitResetsInSeconds
+          )
+        }
       } else if (upstream.status === 200) {
         // 流式请求成功，检查并移除限流状态
         const isRateLimited = await unifiedOpenAIScheduler.isAccountRateLimited(accountId)
