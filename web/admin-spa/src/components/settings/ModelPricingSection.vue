@@ -128,7 +128,15 @@
             class="transition hover:bg-gray-50 dark:hover:bg-gray-800/50"
           >
             <td class="whitespace-nowrap px-3 py-2.5">
-              <div class="font-medium text-gray-900 dark:text-gray-100">{{ model.name }}</div>
+              <div class="flex items-center gap-2 font-medium text-gray-900 dark:text-gray-100">
+                <span>{{ model.name }}</span>
+                <span
+                  v-if="model.aliasOf"
+                  class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                >
+                  继承 {{ model.aliasOf }}
+                </span>
+              </div>
               <div v-if="model.provider" class="text-xs text-gray-400">{{ model.provider }}</div>
             </td>
             <td
@@ -217,7 +225,8 @@ const allModels = computed(() =>
     outputCost: (data.output_cost_per_token || 0) * 1e6,
     cacheCreateCost: (data.cache_creation_input_token_cost || 0) * 1e6,
     cacheReadCost: (data.cache_read_input_token_cost || 0) * 1e6,
-    maxTokens: data.max_tokens || data.max_output_tokens || 0
+    maxTokens: data.max_tokens || data.max_output_tokens || 0,
+    aliasOf: data.pricing_alias_of || ''
   }))
 )
 

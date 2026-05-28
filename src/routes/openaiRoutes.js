@@ -23,6 +23,7 @@ const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { removeGptFastModeFromBody } = require('../utils/gptFastModeHelper')
 const openaiNicSelector = require('../utils/openaiNicSelector')
 const { getHttpsAgentForLocalAddress } = require('../utils/performanceOptimizer')
+const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
 
 const CODEX_UPSTREAM_USER_AGENT =
   'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)'
@@ -142,9 +143,12 @@ function isLocalAddressNetworkError(error) {
 async function handleOpenAINicCooldownOnRateLimit({
   account,
   accountId,
+  req,
   sessionHash,
   selectedLocalAddress,
-  source
+  source,
+  resetsInSeconds = null,
+  errorData = null
 }) {
   if (!selectedLocalAddress || !isInterleaveNicEnabled(account)) {
     return { handled: false, retryable: false, reason: 'not_available' }
@@ -154,6 +158,27 @@ async function handleOpenAINicCooldownOnRateLimit({
     accountId,
     localAddress: selectedLocalAddress
   })
+  const historyContext = {
+    model: req?.body?.model || null,
+    path: req?.originalUrl || req?.path || null,
+    apiKeyName: req?.apiKey?.name || null,
+    source,
+    interleaveNic: true,
+    localAddress: selectedLocalAddress,
+    upstreamNicIp: selectedLocalAddress,
+    cooldownApplied: Boolean(cooldownResult.marked),
+    cooldownReason: cooldownResult.reason || (cooldownResult.marked ? 'cooldown_applied' : null),
+    cooldownSeconds: cooldownResult.ttlSeconds || null,
+    cooldownExpiresAt: cooldownResult.expiresAt || null,
+    remainingNicAddresses:
+      cooldownResult.remainingAddresses === undefined ? null : cooldownResult.remainingAddresses,
+    resetsInSeconds,
+    errorBody: errorData || null
+  }
+
+  await upstreamErrorHelper
+    .recordErrorHistory(accountId, 'openai', 429, 'rate_limit', historyContext)
+    .catch(() => {})
 
   if (cooldownResult.marked) {
     await openaiNicSelector.clearBinding({ accountId, sessionHash })
@@ -164,6 +189,7 @@ async function handleOpenAINicCooldownOnRateLimit({
       handled: true,
       retryable: true,
       reason: 'cooldown_applied',
+      historyRecorded: true,
       cooldownResult
     }
   }
@@ -176,6 +202,7 @@ async function handleOpenAINicCooldownOnRateLimit({
       handled: true,
       retryable: false,
       reason: 'last_available',
+      historyRecorded: true,
       cooldownResult
     }
   }
@@ -188,6 +215,7 @@ async function handleOpenAINicCooldownOnRateLimit({
       handled: false,
       retryable: false,
       reason: cooldownResult.reason || 'unknown',
+      historyRecorded: true,
       cooldownResult
     }
   }
@@ -199,8 +227,29 @@ async function handleOpenAINicCooldownOnRateLimit({
     handled: false,
     retryable: false,
     reason: cooldownResult.reason || 'unknown',
+    historyRecorded: true,
     cooldownResult
   }
+}
+
+function recordOpenAIRateLimitHistory(accountId, req, source, resetsInSeconds, errorData) {
+  const historyContext = {
+    model: req?.body?.model || null,
+    path: req?.originalUrl || req?.path || null,
+    apiKeyName: req?.apiKey?.name || null,
+    source,
+    interleaveNic: false,
+    resetsInSeconds,
+    errorBody: errorData || null
+  }
+
+  return upstreamErrorHelper.recordErrorHistory(
+    accountId,
+    'openai',
+    429,
+    'rate_limit',
+    historyContext
+  )
 }
 
 async function parseOpenAIRateLimitResponse(upstream, isStream) {
@@ -745,14 +794,26 @@ const handleResponses = async (req, res) => {
       const nicCooldownDecision = await handleOpenAINicCooldownOnRateLimit({
         account,
         accountId,
+        req,
         sessionHash,
         selectedLocalAddress,
         source:
-          nicRateLimitRetryCount === 0 ? 'HTTP 429' : `HTTP 429 retry ${nicRateLimitRetryCount}`
+          nicRateLimitRetryCount === 0 ? 'HTTP 429' : `HTTP 429 retry ${nicRateLimitRetryCount}`,
+        resetsInSeconds: rateLimitResetsInSeconds,
+        errorData: rateLimitErrorData
       })
 
       if (!nicCooldownDecision.retryable || nicRateLimitRetryCount >= maxNicRateLimitRetries) {
         if (!nicCooldownDecision.handled) {
+          if (!nicCooldownDecision.historyRecorded) {
+            await recordOpenAIRateLimitHistory(
+              accountId,
+              req,
+              'HTTP 429',
+              rateLimitResetsInSeconds,
+              rateLimitErrorData
+            ).catch(() => {})
+          }
           await unifiedOpenAIScheduler.markAccountRateLimited(
             accountId,
             'openai',
@@ -1117,12 +1178,24 @@ const handleResponses = async (req, res) => {
         const nicCooldownDecision = await handleOpenAINicCooldownOnRateLimit({
           account,
           accountId,
+          req,
           sessionHash,
           selectedLocalAddress,
-          source: 'stream'
+          source: 'stream',
+          resetsInSeconds: streamRateLimitResetsInSeconds,
+          errorData: null
         })
 
         if (!nicCooldownDecision.handled) {
+          if (!nicCooldownDecision.historyRecorded) {
+            await recordOpenAIRateLimitHistory(
+              accountId,
+              req,
+              'stream',
+              streamRateLimitResetsInSeconds,
+              null
+            ).catch(() => {})
+          }
           await unifiedOpenAIScheduler.markAccountRateLimited(
             accountId,
             'openai',

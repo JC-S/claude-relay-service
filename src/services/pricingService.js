@@ -47,6 +47,10 @@ class PricingService {
         priorityMultiplier: 2.5
       }
     }
+
+    this.localPricingAliases = {
+      'claude-opus-4-8': 'claude-opus-4-7'
+    }
   }
 
   applyLocalPricingOverrides(pricingData = this.pricingData) {
@@ -80,6 +84,28 @@ class PricingService {
       }
 
       pricing.supports_service_tier = true
+    }
+
+    this.applyLocalPricingAliases(pricingData)
+
+    return pricingData
+  }
+
+  applyLocalPricingAliases(pricingData = this.pricingData) {
+    if (!pricingData || typeof pricingData !== 'object') {
+      return pricingData
+    }
+
+    for (const [targetModel, sourceModel] of Object.entries(this.localPricingAliases)) {
+      if (pricingData[targetModel] || !pricingData[sourceModel]) {
+        continue
+      }
+
+      pricingData[targetModel] = {
+        ...pricingData[sourceModel],
+        pricing_alias_of: sourceModel,
+        pricing_alias_reason: 'local_missing_model_fallback'
+      }
     }
 
     return pricingData
@@ -924,16 +950,16 @@ class PricingService {
       }
 
       // 更新内存中的数据
-      this.pricingData = jsonData
+      this.pricingData = this.applyLocalPricingOverrides(jsonData)
       this.lastUpdated = new Date()
 
-      const modelCount = Object.keys(jsonData).length
+      const modelCount = Object.keys(this.pricingData).length
       logger.success(`Reloaded pricing data for ${modelCount} models from file`)
 
       // 显示一些统计信息
-      const claudeModels = Object.keys(jsonData).filter((k) => k.includes('claude')).length
-      const gptModels = Object.keys(jsonData).filter((k) => k.includes('gpt')).length
-      const geminiModels = Object.keys(jsonData).filter((k) => k.includes('gemini')).length
+      const claudeModels = Object.keys(this.pricingData).filter((k) => k.includes('claude')).length
+      const gptModels = Object.keys(this.pricingData).filter((k) => k.includes('gpt')).length
+      const geminiModels = Object.keys(this.pricingData).filter((k) => k.includes('gemini')).length
 
       logger.debug(
         `💰 Model breakdown: Claude=${claudeModels}, GPT=${gptModels}, Gemini=${geminiModels}`

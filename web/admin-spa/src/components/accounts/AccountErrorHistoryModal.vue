@@ -99,6 +99,10 @@
                 <span v-if="item.context.apiKeyName">
                   <i class="fas fa-key mr-1" />{{ item.context.apiKeyName }}
                 </span>
+                <span v-if="item.context.localAddress || item.context.upstreamNicIp">
+                  <i class="fas fa-network-wired mr-1" />出口 IP:
+                  {{ item.context.localAddress || item.context.upstreamNicIp }}
+                </span>
               </div>
 
               <!-- 可折叠错误详情 -->

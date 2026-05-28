@@ -98,7 +98,13 @@ jest.mock('../src/utils/requestDetailHelper', () => ({
 
 jest.mock('../src/utils/openaiNicSelector', () => ({
   chooseLocalAddress: jest.fn(),
-  clearBinding: jest.fn()
+  clearBinding: jest.fn(),
+  markCooldown: jest.fn(),
+  getConfiguredLocalAddresses: jest.fn()
+}))
+
+jest.mock('../src/utils/upstreamErrorHelper', () => ({
+  recordErrorHistory: jest.fn(() => Promise.resolve())
 }))
 
 jest.mock('../src/utils/performanceOptimizer', () => ({
@@ -109,6 +115,7 @@ const axios = require('axios')
 const unifiedOpenAIScheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
 const openaiAccountService = require('../src/services/account/openaiAccountService')
 const openaiNicSelector = require('../src/utils/openaiNicSelector')
+const upstreamErrorHelper = require('../src/utils/upstreamErrorHelper')
 const { getHttpsAgentForLocalAddress } = require('../src/utils/performanceOptimizer')
 const openaiRoutes = require('../src/routes/openaiRoutes')
 
@@ -197,6 +204,14 @@ describe('openaiRoutes NIC interleave', () => {
     jest.clearAllMocks()
     setupOpenAIAccount()
     openaiNicSelector.chooseLocalAddress.mockResolvedValue('10.0.0.191')
+    openaiNicSelector.markCooldown.mockResolvedValue({
+      marked: true,
+      localAddress: '10.0.0.191',
+      ttlSeconds: 3600,
+      expiresAt: '2026-05-28T13:00:00.000Z',
+      remainingAddresses: 1
+    })
+    openaiNicSelector.getConfiguredLocalAddresses.mockReturnValue(['10.0.0.191', '10.0.0.184'])
     getHttpsAgentForLocalAddress.mockReturnValue({
       options: {
         localAddress: '10.0.0.191'
@@ -245,5 +260,73 @@ describe('openaiRoutes NIC interleave', () => {
     expect(capturedConfigs[1].httpsAgent).toBeUndefined()
     expect(capturedConfigs[1].proxy).toBeUndefined()
     expect(req.upstreamNicIp).toBeUndefined()
+  })
+
+  test('records failed NIC address in error history and retries with alternate NIC on 429', async () => {
+    const capturedConfigs = []
+    openaiNicSelector.chooseLocalAddress
+      .mockResolvedValueOnce('10.0.0.191')
+      .mockResolvedValueOnce('10.0.0.184')
+    getHttpsAgentForLocalAddress.mockImplementation((localAddress) => ({
+      options: {
+        localAddress
+      }
+    }))
+    axios.post.mockImplementation(async (_url, _body, axiosConfig) => {
+      capturedConfigs.push({ ...axiosConfig })
+      if (capturedConfigs.length === 1) {
+        return {
+          status: 429,
+          data: {
+            error: {
+              type: 'usage_limit_reached',
+              message: 'Rate limit reached',
+              resets_in_seconds: 300
+            }
+          },
+          headers: {}
+        }
+      }
+      return createSuccessResponse()
+    })
+
+    const req = createReq()
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(openaiNicSelector.markCooldown).toHaveBeenCalledWith({
+      accountId: 'openai-1',
+      localAddress: '10.0.0.191'
+    })
+    expect(upstreamErrorHelper.recordErrorHistory).toHaveBeenCalledWith(
+      'openai-1',
+      'openai',
+      429,
+      'rate_limit',
+      expect.objectContaining({
+        model: 'gpt-5',
+        path: '/openai/v1/responses',
+        source: 'HTTP 429',
+        interleaveNic: true,
+        localAddress: '10.0.0.191',
+        upstreamNicIp: '10.0.0.191',
+        cooldownApplied: true,
+        cooldownReason: 'cooldown_applied',
+        cooldownSeconds: 3600,
+        cooldownExpiresAt: '2026-05-28T13:00:00.000Z',
+        remainingNicAddresses: 1,
+        resetsInSeconds: 300,
+        errorBody: {
+          error: {
+            type: 'usage_limit_reached',
+            message: 'Rate limit reached',
+            resets_in_seconds: 300
+          }
+        }
+      })
+    )
+    expect(unifiedOpenAIScheduler.markAccountRateLimited).not.toHaveBeenCalled()
+    expect(capturedConfigs).toHaveLength(2)
+    expect(capturedConfigs[0].httpsAgent.options.localAddress).toBe('10.0.0.191')
+    expect(capturedConfigs[1].httpsAgent.options.localAddress).toBe('10.0.0.184')
   })
 })

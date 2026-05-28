@@ -66,7 +66,7 @@ describe('PricingService - Long Context Pricing', () => {
     pricingService = require('../src/services/pricingService')
 
     // 直接设置真实价格数据（绕过网络初始化）
-    pricingService.pricingData = pricingData
+    pricingService.pricingData = JSON.parse(JSON.stringify(pricingData))
     pricingService.lastUpdated = new Date()
   })
 
@@ -386,6 +386,54 @@ describe('PricingService - Long Context Pricing', () => {
       expect(result.pricing.output).toBeCloseTo(0.000075, 12)
       expect(result.pricing.cacheRead).toBeCloseTo(0.00000125, 12)
       expect(result.totalCost).toBeCloseTo(0.02025, 10)
+    })
+  })
+
+  describe('本地价格别名', () => {
+    it('claude-opus-4-8 缺少定价时按 claude-opus-4-7 定价展示和计费', () => {
+      const sourcePricing = pricingData['claude-opus-4-7']
+      pricingService.pricingData = {
+        'claude-opus-4-7': JSON.parse(JSON.stringify(sourcePricing))
+      }
+
+      const aliasPricing = pricingService.getModelPricing('claude-opus-4-8')
+
+      expect(aliasPricing.pricing_alias_of).toBe('claude-opus-4-7')
+      expect(aliasPricing.input_cost_per_token).toBe(sourcePricing.input_cost_per_token)
+      expect(aliasPricing.output_cost_per_token).toBe(sourcePricing.output_cost_per_token)
+      expect(pricingService.pricingData['claude-opus-4-8']).toBe(aliasPricing)
+
+      const usage = {
+        input_tokens: 1000,
+        output_tokens: 100,
+        cache_creation_input_tokens: 200,
+        cache_read_input_tokens: 300
+      }
+
+      const opus47Cost = pricingService.calculateCost(usage, 'claude-opus-4-7')
+      const opus48Cost = pricingService.calculateCost(usage, 'claude-opus-4-8')
+
+      expect(opus48Cost.totalCost).toBeCloseTo(opus47Cost.totalCost, 12)
+      expect(opus48Cost.pricing).toEqual(opus47Cost.pricing)
+    })
+
+    it('远端已有 claude-opus-4-8 定价时不使用本地别名覆盖', () => {
+      pricingService.pricingData = {
+        'claude-opus-4-7': {
+          input_cost_per_token: 0.000005,
+          output_cost_per_token: 0.000025
+        },
+        'claude-opus-4-8': {
+          input_cost_per_token: 0.000007,
+          output_cost_per_token: 0.000035
+        }
+      }
+
+      const pricing = pricingService.getModelPricing('claude-opus-4-8')
+
+      expect(pricing.pricing_alias_of).toBeUndefined()
+      expect(pricing.input_cost_per_token).toBe(0.000007)
+      expect(pricing.output_cost_per_token).toBe(0.000035)
     })
   })
 })
