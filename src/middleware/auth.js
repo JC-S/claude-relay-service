@@ -11,6 +11,10 @@ const claudeRelayConfigService = require('../services/claudeRelayConfigService')
 const { calculateWaitTimeStats } = require('../utils/statsHelper')
 const { isClaudeFamilyModel } = require('../utils/modelHelper')
 const { getRequestIp, isIpAllowed } = require('../utils/ipWhitelistHelper')
+const {
+  CACHE_KEY: CLAUDE_CODE_UA_CACHE_KEY,
+  getClaudeCodeVersionGateResult
+} = require('../utils/claudeCodeVersionGate')
 
 // 工具函数
 function sleep(ms) {
@@ -529,6 +533,34 @@ const authenticateApiKey = async (req, res, next) => {
       logger.api(
         `✅ Client validated: ${validationResult.clientName} (${validationResult.matchedClient}) for key: ${validation.keyData.id} (${validation.keyData.name})`
       )
+
+      if (validationResult.matchedClient === 'claude_code') {
+        try {
+          const cachedUserAgent = await redis.client.get(CLAUDE_CODE_UA_CACHE_KEY)
+          const versionGateResult = getClaudeCodeVersionGateResult(
+            req.headers['user-agent'],
+            cachedUserAgent
+          )
+
+          if (versionGateResult.blocked) {
+            const clientIP = req.ip || req.connection?.remoteAddress || 'unknown'
+            logger.security(
+              `🚫 Claude Code version too old for key: ${validation.keyData.id} (${validation.keyData.name}) from ${clientIP}, client=${versionGateResult.clientVersion}, minimum=${versionGateResult.minimumAllowedVersion}, cached=${versionGateResult.cachedVersion}`
+            )
+            return res.status(426).json({
+              error: {
+                type: 'client_validation_error',
+                message: `Your Claude Code CLI version ${versionGateResult.clientVersion} is too old for this API key. Please upgrade to ${versionGateResult.minimumAllowedVersion} or newer and try again.`
+              },
+              clientVersion: versionGateResult.clientVersion,
+              minimumAllowedVersion: versionGateResult.minimumAllowedVersion,
+              cachedVersion: versionGateResult.cachedVersion
+            })
+          }
+        } catch (error) {
+          logger.warn('⚠️ Failed to check Claude Code client version:', error)
+        }
+      }
     }
 
     // 🔒 检查全局 Claude Code 限制（与 API Key 级别是 OR 逻辑）
