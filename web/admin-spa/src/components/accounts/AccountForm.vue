@@ -4074,6 +4074,28 @@
                 取值范围 1–72 小时，命中同一会话时会自动续期。
               </p>
             </div>
+            <div
+              v-if="shouldShowOpenAINicCooldownStatus"
+              class="mt-4 space-y-2 rounded-lg border border-emerald-200 bg-white/70 p-3 dark:border-emerald-700 dark:bg-gray-800/60"
+            >
+              <div
+                v-for="nic in openAINicCooldownRows"
+                :key="nic.localAddress"
+                class="flex items-center justify-between gap-3 text-xs"
+              >
+                <span class="truncate font-mono text-gray-700 dark:text-gray-200">
+                  {{ nic.localAddress }}
+                </span>
+                <span
+                  :class="[
+                    'inline-flex shrink-0 items-center rounded-full px-2 py-0.5 font-medium',
+                    getOpenAINicCooldownClass(nic)
+                  ]"
+                >
+                  {{ formatOpenAINicCooldownStatus(nic) }}
+                </span>
+              </div>
+            </div>
           </div>
 
           <div class="flex gap-3 pt-4">
@@ -4508,6 +4530,72 @@ const buildOpenAINicInterleavePayload = () => ({
   interleaveNicEnabled: !!form.value.interleaveNicEnabled,
   interleaveNicTtlHours: clampOpenAINicTtlHours(form.value.interleaveNicTtlHours)
 })
+const openAINicCooldownStatus = ref(null)
+
+const openAINicCooldownRows = computed(() => {
+  const rows = openAINicCooldownStatus.value?.addresses
+  return Array.isArray(rows) ? rows : []
+})
+
+const shouldShowOpenAINicCooldownStatus = computed(
+  () =>
+    isEdit.value &&
+    form.value.platform === 'openai' &&
+    form.value.interleaveNicEnabled &&
+    openAINicCooldownRows.value.length > 0
+)
+
+const isOpenAINicCoolingDown = (nic) => nic?.status === 'cooldown' || nic?.active === true
+
+const formatOpenAINicCooldownRemaining = (ttlSeconds) => {
+  const totalSeconds = Math.max(0, Math.ceil(Number(ttlSeconds) || 0))
+  if (totalSeconds <= 0) {
+    return '0 分钟'
+  }
+
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.ceil((totalSeconds % 3600) / 60)
+  if (hours > 0 && minutes > 0) {
+    return `${hours} 小时 ${minutes} 分钟`
+  }
+  if (hours > 0) {
+    return `${hours} 小时`
+  }
+  return `${Math.max(1, Math.ceil(totalSeconds / 60))} 分钟`
+}
+
+const formatOpenAINicCooldownStatus = (nic) => {
+  if (!isOpenAINicCoolingDown(nic)) {
+    return '可用'
+  }
+  return `冷却中 · 剩余 ${formatOpenAINicCooldownRemaining(nic?.ttlSeconds)}`
+}
+
+const getOpenAINicCooldownClass = (nic) => {
+  if (!isOpenAINicCoolingDown(nic)) {
+    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+  }
+  return 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+}
+
+const loadOpenAINicCooldownStatus = async (account = props.account) => {
+  if (!account?.id || account.platform !== 'openai') {
+    openAINicCooldownStatus.value = null
+    return
+  }
+
+  const accountId = account.id
+  const response = await httpApis.getOpenAINicCooldownsApi(accountId)
+  if (props.account?.id !== accountId) {
+    return
+  }
+
+  if (response.success) {
+    openAINicCooldownStatus.value = response.data || null
+  } else {
+    openAINicCooldownStatus.value = null
+  }
+}
 
 const buildClaudeTempUnavailablePolicyPayload = () => ({
   disableTempUnavailable: !!form.value.disableTempUnavailable,
@@ -6633,6 +6721,7 @@ watch(
       if (newAccount.platform === 'claude-console') {
         loadAccountUsage()
       }
+      void loadOpenAINicCooldownStatus(newAccount)
 
       // 如果是分组类型，加载分组ID
       if (newAccount.accountType === 'group') {
@@ -6695,6 +6784,8 @@ watch(
           form.value.groupIds = foundGroupIds
         })
       }
+    } else {
+      openAINicCooldownStatus.value = null
     }
   },
   { immediate: true }

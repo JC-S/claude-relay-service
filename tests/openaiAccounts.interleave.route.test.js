@@ -44,7 +44,8 @@ jest.mock('../src/utils/proxyHelper', () => ({
 }))
 
 jest.mock('../src/utils/openaiNicSelector', () => ({
-  isAvailable: jest.fn()
+  isAvailable: jest.fn(),
+  getCooldownSnapshot: jest.fn()
 }))
 
 jest.mock('../src/utils/webhookNotifier', () => ({}))
@@ -90,6 +91,15 @@ describe('OpenAI account NIC interleave admin route validation', () => {
     jest.clearAllMocks()
     app = buildApp()
     openaiNicSelector.isAvailable.mockReturnValue(true)
+    openaiNicSelector.getCooldownSnapshot.mockResolvedValue({
+      configured: true,
+      totalCount: 2,
+      availableCount: 1,
+      addresses: [
+        { localAddress: '10.0.0.191', status: 'cooldown', active: true, ttlSeconds: 120 },
+        { localAddress: '10.0.0.184', status: 'available', active: false, ttlSeconds: 0 }
+      ]
+    })
     openaiAccountService.createAccount.mockImplementation(async (data) => ({
       id: 'acct_created',
       ...data
@@ -207,5 +217,26 @@ describe('OpenAI account NIC interleave admin route validation', () => {
     expect(response.status).toBe(400)
     expect(response.body.message).toContain('1-72')
     expect(openaiAccountService.updateAccount).not.toHaveBeenCalled()
+  })
+
+  test('GET returns NIC cooldown status for an OpenAI account', async () => {
+    const response = await request(app).get('/admin/openai-accounts/acct_1/nic-cooldowns')
+
+    expect(response.status).toBe(200)
+    expect(openaiAccountService.getAccount).toHaveBeenCalledWith('acct_1')
+    expect(openaiNicSelector.getCooldownSnapshot).toHaveBeenCalledWith({ accountId: 'acct_1' })
+    expect(response.body.data.addresses).toEqual([
+      { localAddress: '10.0.0.191', status: 'cooldown', active: true, ttlSeconds: 120 },
+      { localAddress: '10.0.0.184', status: 'available', active: false, ttlSeconds: 0 }
+    ])
+  })
+
+  test('GET returns 404 when querying NIC cooldown status for a missing account', async () => {
+    openaiAccountService.getAccount.mockResolvedValueOnce(null)
+
+    const response = await request(app).get('/admin/openai-accounts/missing/nic-cooldowns')
+
+    expect(response.status).toBe(404)
+    expect(openaiNicSelector.getCooldownSnapshot).not.toHaveBeenCalled()
   })
 })

@@ -1,8 +1,9 @@
 function createRedisMock() {
   const store = new Map()
+  const expirations = new Map()
   let counter = 0
 
-  return {
+  const redisMock = {
     store,
     get: jest.fn(async (key) => store.get(key) || null),
     set: jest.fn(async (key, value, ...args) => {
@@ -11,15 +12,42 @@ function createRedisMock() {
         return null
       }
       store.set(key, value)
+      const exIndex = args.indexOf('EX')
+      if (exIndex !== -1) {
+        expirations.set(key, Number(args[exIndex + 1]))
+      }
       return 'OK'
     }),
     expire: jest.fn(async () => 1),
+    ttl: jest.fn(async (key) => {
+      if (!store.has(key)) {
+        return -2
+      }
+      return expirations.has(key) ? expirations.get(key) : -1
+    }),
     incr: jest.fn(async () => {
       counter += 1
       return counter
     }),
-    del: jest.fn(async (key) => (store.delete(key) ? 1 : 0))
+    del: jest.fn(async (key) => {
+      expirations.delete(key)
+      return store.delete(key) ? 1 : 0
+    })
   }
+
+  redisMock.pipeline = jest.fn(() => {
+    const ttlKeys = []
+    return {
+      ttl: jest.fn((key) => {
+        ttlKeys.push(key)
+      }),
+      exec: jest.fn(async () =>
+        Promise.all(ttlKeys.map(async (key) => [null, await redisMock.ttl(key)]))
+      )
+    }
+  })
+
+  return redisMock
 }
 
 const ORIGINAL_ENV = { ...process.env }
@@ -185,5 +213,45 @@ describe('openaiNicSelector', () => {
       selector.chooseLocalAddress({ accountId: 'acct_1', sessionHash: 'stale_hash' })
     ).resolves.toBe('10.0.0.191')
     expect(redisClient.store.get('openai:nic_binding:acct_1:stale_hash')).toBe('10.0.0.191')
+  })
+
+  test('reports per-address cooldown snapshot', async () => {
+    const { selector } = loadSelector({
+      addresses: ['10.0.0.191', '10.0.0.184']
+    })
+
+    await expect(
+      selector.markCooldown({
+        accountId: 'acct_1',
+        localAddress: '10.0.0.191',
+        cooldownSeconds: 120
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        marked: true,
+        localAddress: '10.0.0.191',
+        ttlSeconds: 120
+      })
+    )
+
+    await expect(selector.getCooldownSnapshot({ accountId: 'acct_1' })).resolves.toMatchObject({
+      configured: true,
+      totalCount: 2,
+      availableCount: 1,
+      addresses: [
+        {
+          localAddress: '10.0.0.191',
+          status: 'cooldown',
+          active: true,
+          ttlSeconds: 120
+        },
+        {
+          localAddress: '10.0.0.184',
+          status: 'available',
+          active: false,
+          ttlSeconds: 0
+        }
+      ]
+    })
   })
 })

@@ -538,6 +538,35 @@ router.post('/', authenticateAdmin, async (req, res) => {
   }
 })
 
+// 获取 OpenAI 多网卡出口 cooldown 状态
+router.get('/:id/nic-cooldowns', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    const account = await openaiAccountService.getAccount(id)
+
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: '账户不存在'
+      })
+    }
+
+    const cooldownSnapshot = await openaiNicSelector.getCooldownSnapshot({ accountId: id })
+
+    return res.json({
+      success: true,
+      data: cooldownSnapshot
+    })
+  } catch (error) {
+    logger.error('获取 OpenAI 多网卡 cooldown 状态失败:', error)
+    return res.status(500).json({
+      success: false,
+      message: '获取多网卡 cooldown 状态失败',
+      error: error.message
+    })
+  }
+})
+
 // 更新 OpenAI 账户
 router.put('/:id', authenticateAdmin, async (req, res) => {
   try {

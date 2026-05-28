@@ -99,6 +99,66 @@ async function getSelectableAddresses(client, accountId, addresses) {
   return addresses
 }
 
+async function getCooldownSnapshot({ accountId } = {}) {
+  const addresses = getConfiguredLocalAddresses()
+  const baseSnapshot = {
+    configured: addresses.length >= 2,
+    totalCount: addresses.length,
+    availableCount: addresses.length,
+    addresses: addresses.map((address) => ({
+      localAddress: address,
+      status: 'available',
+      active: false,
+      ttlSeconds: 0,
+      expiresAt: null
+    }))
+  }
+
+  if (!accountId || addresses.length === 0) {
+    return baseSnapshot
+  }
+
+  const client = redis.getClient()
+  if (!client) {
+    return {
+      ...baseSnapshot,
+      redisAvailable: false
+    }
+  }
+
+  try {
+    const now = Date.now()
+    const cooldownStates = await getCooldownStates(client, accountId, addresses)
+    const cooldownAddresses = addresses.map((address) => {
+      const state = cooldownStates.get(address) || { active: false, ttl: 0 }
+      const ttlSeconds = Math.max(0, Number(state.ttl) || 0)
+
+      return {
+        localAddress: address,
+        status: state.active ? 'cooldown' : 'available',
+        active: Boolean(state.active),
+        ttlSeconds,
+        expiresAt: state.active ? new Date(now + ttlSeconds * 1000).toISOString() : null
+      }
+    })
+
+    return {
+      configured: addresses.length >= 2,
+      totalCount: addresses.length,
+      availableCount: cooldownAddresses.filter((address) => !address.active).length,
+      addresses: cooldownAddresses,
+      redisAvailable: true
+    }
+  } catch (error) {
+    logger.warn(`⚠️ Failed to read OpenAI NIC cooldown snapshot: ${error.message}`)
+    return {
+      ...baseSnapshot,
+      redisAvailable: false,
+      error: error.message
+    }
+  }
+}
+
 async function chooseLocalAddress({ accountId, sessionHash, ttlHours } = {}) {
   const addresses = getConfiguredLocalAddresses()
   if (addresses.length < 2 || !accountId) {
@@ -229,6 +289,7 @@ module.exports = {
   isAvailable,
   normalizeTtlHours,
   normalizeCooldownSeconds,
+  getCooldownSnapshot,
   chooseLocalAddress,
   markCooldown,
   clearBinding,

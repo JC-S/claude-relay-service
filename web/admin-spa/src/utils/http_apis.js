@@ -177,6 +177,8 @@ export const createOpenAIAccountApi = (data) =>
   request({ url: '/admin/openai-accounts', method: 'POST', data })
 export const updateOpenAIAccountApi = (id, data) =>
   request({ url: `/admin/openai-accounts/${id}`, method: 'PUT', data })
+export const getOpenAINicCooldownsApi = (id) =>
+  request({ url: `/admin/openai-accounts/${id}/nic-cooldowns`, method: 'GET' })
 export const generateOpenAIAuthUrlApi = (data) =>
   request({ url: '/admin/openai-accounts/generate-auth-url', method: 'POST', data })
 export const exchangeOpenAICodeApi = (data) =>
