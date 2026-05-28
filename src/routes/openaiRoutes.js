@@ -139,7 +139,7 @@ function isLocalAddressNetworkError(error) {
   return errorCodes.has(error?.code) || errorCodes.has(error?.cause?.code)
 }
 
-async function applyOpenAINicCooldownOnRateLimit({
+async function handleOpenAINicCooldownOnRateLimit({
   account,
   accountId,
   sessionHash,
@@ -147,7 +147,7 @@ async function applyOpenAINicCooldownOnRateLimit({
   source
 }) {
   if (!selectedLocalAddress || !isInterleaveNicEnabled(account)) {
-    return false
+    return { handled: false, retryable: false, reason: 'not_available' }
   }
 
   const cooldownResult = await openaiNicSelector.markCooldown({
@@ -160,27 +160,115 @@ async function applyOpenAINicCooldownOnRateLimit({
     logger.warn(
       `🚫 OpenAI NIC ${selectedLocalAddress} entered ${cooldownResult.ttlSeconds}s cooldown for account ${accountId} after ${source} rate limit; ${cooldownResult.remainingAddresses} alternate NIC(s) remain`
     )
-    return true
+    return {
+      handled: true,
+      retryable: true,
+      reason: 'cooldown_applied',
+      cooldownResult
+    }
   }
 
   if (cooldownResult.reason === 'last_available') {
     logger.warn(
       `🚫 OpenAI NIC ${selectedLocalAddress} hit rate limit for account ${accountId}, but it is the last available NIC; skipping NIC and account cooldown`
     )
-    return true
+    return {
+      handled: true,
+      retryable: false,
+      reason: 'last_available',
+      cooldownResult
+    }
   }
 
   if (cooldownResult.reason === 'not_available' || cooldownResult.reason === 'unknown_address') {
     logger.warn(
       `🚫 OpenAI NIC cooldown skipped for account ${accountId}, address ${selectedLocalAddress}: ${cooldownResult.reason || 'unknown'}`
     )
-    return false
+    return {
+      handled: false,
+      retryable: false,
+      reason: cooldownResult.reason || 'unknown',
+      cooldownResult
+    }
   }
 
   logger.warn(
     `🚫 OpenAI NIC cooldown failed for account ${accountId}, address ${selectedLocalAddress}: ${cooldownResult.reason || 'unknown'}`
   )
-  return false
+  return {
+    handled: false,
+    retryable: false,
+    reason: cooldownResult.reason || 'unknown',
+    cooldownResult
+  }
+}
+
+async function parseOpenAIRateLimitResponse(upstream, isStream) {
+  let resetsInSeconds = null
+  let errorData = null
+
+  try {
+    if (isStream && upstream.data) {
+      const chunks = []
+      await new Promise((resolve, reject) => {
+        upstream.data.on('data', (chunk) => chunks.push(chunk))
+        upstream.data.on('end', resolve)
+        upstream.data.on('error', reject)
+        setTimeout(resolve, 5000)
+      })
+
+      const fullResponse = Buffer.concat(chunks).toString()
+      try {
+        errorData = JSON.parse(fullResponse)
+      } catch (e) {
+        logger.error('Failed to parse 429 error response:', e)
+        logger.debug('Raw response:', fullResponse)
+      }
+    } else {
+      errorData = upstream.data
+    }
+
+    if (errorData && errorData.error && errorData.error.resets_in_seconds) {
+      resetsInSeconds = errorData.error.resets_in_seconds
+      logger.info(
+        `🕐 Codex rate limit will reset in ${resetsInSeconds} seconds (${Math.ceil(resetsInSeconds / 60)} minutes / ${Math.ceil(resetsInSeconds / 3600)} hours)`
+      )
+    } else {
+      logger.warn('⚠️ Could not extract resets_in_seconds from 429 response')
+    }
+  } catch (e) {
+    logger.error('⚠️ Failed to parse rate limit error:', e)
+  }
+
+  return {
+    errorData,
+    resetsInSeconds
+  }
+}
+
+function buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds) {
+  return (
+    errorData || {
+      error: {
+        type: 'usage_limit_reached',
+        message: 'The usage limit has been reached',
+        resets_in_seconds: resetsInSeconds
+      }
+    }
+  )
+}
+
+function sendOpenAIRateLimitResponse(res, isStream, errorResponse) {
+  if (isStream) {
+    res.status(429)
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.write(`data: ${JSON.stringify(errorResponse)}\n\n`)
+    res.end()
+  } else {
+    res.status(429).json(errorResponse)
+  }
 }
 
 function extractCodexUsageHeaders(headers) {
@@ -581,23 +669,29 @@ const handleResponses = async (req, res) => {
       : 'https://chatgpt.com/backend-api/codex/responses'
 
     let selectedLocalAddress = null
-    if (!proxyAgent && isInterleaveNicEnabled(account)) {
-      selectedLocalAddress = await openaiNicSelector.chooseLocalAddress({
+    const chooseAndApplyLocalAddress = async (reason) => {
+      const localAddress = await openaiNicSelector.chooseLocalAddress({
         accountId,
         sessionHash,
         ttlHours: account.interleaveNicTtlHours
       })
 
-      if (selectedLocalAddress) {
-        axiosConfig.httpsAgent = getHttpsAgentForLocalAddress(selectedLocalAddress, {
+      if (localAddress) {
+        axiosConfig.httpsAgent = getHttpsAgentForLocalAddress(localAddress, {
           stream: isStream
         })
         axiosConfig.proxy = false
-        req.upstreamNicIp = selectedLocalAddress
+        req.upstreamNicIp = localAddress
         logger.info(
-          `🌐 OpenAI NIC interleave selected ${selectedLocalAddress} for account ${accountId}, session ${sessionHash ? sessionHash.slice(0, 12) : 'none'}`
+          `🌐 OpenAI NIC interleave ${reason} ${localAddress} for account ${accountId}, session ${sessionHash ? sessionHash.slice(0, 12) : 'none'}`
         )
       }
+
+      return localAddress
+    }
+
+    if (!proxyAgent && isInterleaveNicEnabled(account)) {
+      selectedLocalAddress = await chooseAndApplyLocalAddress('selected')
     }
 
     const sendUpstreamRequest = () => {
@@ -611,22 +705,89 @@ const handleResponses = async (req, res) => {
       return axios.post(codexEndpoint, req.body, axiosConfig)
     }
 
-    try {
-      upstream = await sendUpstreamRequest()
-    } catch (requestError) {
-      if (selectedLocalAddress && isLocalAddressNetworkError(requestError)) {
-        logger.warn(
-          `⚠️ OpenAI NIC ${selectedLocalAddress} unavailable for account ${accountId}, retrying with default route: ${requestError.code || requestError.cause?.code || requestError.message}`
-        )
-        await openaiNicSelector.clearBinding({ accountId, sessionHash })
-        selectedLocalAddress = null
-        delete req.upstreamNicIp
-        delete axiosConfig.httpsAgent
-        delete axiosConfig.proxy
-        upstream = await sendUpstreamRequest()
-      } else {
+    const sendUpstreamRequestWithFallback = async () => {
+      try {
+        return await sendUpstreamRequest()
+      } catch (requestError) {
+        if (selectedLocalAddress && isLocalAddressNetworkError(requestError)) {
+          logger.warn(
+            `⚠️ OpenAI NIC ${selectedLocalAddress} unavailable for account ${accountId}, retrying with default route: ${requestError.code || requestError.cause?.code || requestError.message}`
+          )
+          await openaiNicSelector.clearBinding({ accountId, sessionHash })
+          selectedLocalAddress = null
+          delete req.upstreamNicIp
+          delete axiosConfig.httpsAgent
+          delete axiosConfig.proxy
+          return await sendUpstreamRequest()
+        }
+
         throw requestError
       }
+    }
+
+    upstream = await sendUpstreamRequestWithFallback()
+
+    let rateLimitErrorData = null
+    let rateLimitResetsInSeconds = null
+    let nicRateLimitRetryCount = 0
+    const maxNicRateLimitRetries =
+      !proxyAgent && isInterleaveNicEnabled(account)
+        ? Math.max(0, openaiNicSelector.getConfiguredLocalAddresses().length - 1)
+        : 0
+
+    while (upstream.status === 429) {
+      logger.warn(`🚫 Rate limit detected for OpenAI account ${accountId} (Codex API)`)
+
+      const rateLimitInfo = await parseOpenAIRateLimitResponse(upstream, isStream)
+      rateLimitErrorData = rateLimitInfo.errorData
+      rateLimitResetsInSeconds = rateLimitInfo.resetsInSeconds
+
+      const nicCooldownDecision = await handleOpenAINicCooldownOnRateLimit({
+        account,
+        accountId,
+        sessionHash,
+        selectedLocalAddress,
+        source:
+          nicRateLimitRetryCount === 0 ? 'HTTP 429' : `HTTP 429 retry ${nicRateLimitRetryCount}`
+      })
+
+      if (!nicCooldownDecision.retryable || nicRateLimitRetryCount >= maxNicRateLimitRetries) {
+        if (!nicCooldownDecision.handled) {
+          await unifiedOpenAIScheduler.markAccountRateLimited(
+            accountId,
+            'openai',
+            sessionHash,
+            rateLimitResetsInSeconds
+          )
+        }
+
+        const errorResponse = buildOpenAIRateLimitErrorResponse(
+          rateLimitErrorData,
+          rateLimitResetsInSeconds
+        )
+        sendOpenAIRateLimitResponse(res, isStream, errorResponse)
+        return
+      }
+
+      const previousLocalAddress = selectedLocalAddress
+      selectedLocalAddress = await chooseAndApplyLocalAddress(`retrying with`)
+      if (!selectedLocalAddress || selectedLocalAddress === previousLocalAddress) {
+        logger.warn(
+          `🚫 OpenAI NIC retry skipped for account ${accountId}: no alternate NIC selected after ${previousLocalAddress || 'unknown'} was rate limited`
+        )
+        const errorResponse = buildOpenAIRateLimitErrorResponse(
+          rateLimitErrorData,
+          rateLimitResetsInSeconds
+        )
+        sendOpenAIRateLimitResponse(res, isStream, errorResponse)
+        return
+      }
+
+      nicRateLimitRetryCount += 1
+      logger.info(
+        `🔁 Retrying OpenAI request for account ${accountId} with NIC ${selectedLocalAddress} after ${previousLocalAddress} returned 429`
+      )
+      upstream = await sendUpstreamRequestWithFallback()
     }
 
     const codexUsageSnapshot = extractCodexUsageHeaders(upstream.headers)
@@ -638,94 +799,7 @@ const handleResponses = async (req, res) => {
       }
     }
 
-    // 处理 429 限流错误
-    if (upstream.status === 429) {
-      logger.warn(`🚫 Rate limit detected for OpenAI account ${accountId} (Codex API)`)
-
-      // 解析响应体中的限流信息
-      let resetsInSeconds = null
-      let errorData = null
-
-      try {
-        // 对于429错误，无论是否是流式请求，响应都会是完整的JSON错误对象
-        if (isStream && upstream.data) {
-          // 流式响应需要先收集数据
-          const chunks = []
-          await new Promise((resolve, reject) => {
-            upstream.data.on('data', (chunk) => chunks.push(chunk))
-            upstream.data.on('end', resolve)
-            upstream.data.on('error', reject)
-            // 设置超时防止无限等待
-            setTimeout(resolve, 5000)
-          })
-
-          const fullResponse = Buffer.concat(chunks).toString()
-          try {
-            errorData = JSON.parse(fullResponse)
-          } catch (e) {
-            logger.error('Failed to parse 429 error response:', e)
-            logger.debug('Raw response:', fullResponse)
-          }
-        } else {
-          // 非流式响应直接使用data
-          errorData = upstream.data
-        }
-
-        // 提取重置时间
-        if (errorData && errorData.error && errorData.error.resets_in_seconds) {
-          resetsInSeconds = errorData.error.resets_in_seconds
-          logger.info(
-            `🕐 Codex rate limit will reset in ${resetsInSeconds} seconds (${Math.ceil(resetsInSeconds / 60)} minutes / ${Math.ceil(resetsInSeconds / 3600)} hours)`
-          )
-        } else {
-          logger.warn(
-            '⚠️ Could not extract resets_in_seconds from 429 response, using default 60 minutes'
-          )
-        }
-      } catch (e) {
-        logger.error('⚠️ Failed to parse rate limit error:', e)
-      }
-
-      const nicCooldownApplied = await applyOpenAINicCooldownOnRateLimit({
-        account,
-        accountId,
-        sessionHash,
-        selectedLocalAddress,
-        source: 'HTTP 429'
-      })
-
-      if (!nicCooldownApplied) {
-        await unifiedOpenAIScheduler.markAccountRateLimited(
-          accountId,
-          'openai',
-          sessionHash,
-          resetsInSeconds
-        )
-      }
-
-      // 返回错误响应给客户端
-      const errorResponse = errorData || {
-        error: {
-          type: 'usage_limit_reached',
-          message: 'The usage limit has been reached',
-          resets_in_seconds: resetsInSeconds
-        }
-      }
-
-      if (isStream) {
-        // 流式响应也需要设置正确的状态码
-        res.status(429)
-        res.setHeader('Content-Type', 'text/event-stream')
-        res.setHeader('Cache-Control', 'no-cache')
-        res.setHeader('Connection', 'keep-alive')
-        res.write(`data: ${JSON.stringify(errorResponse)}\n\n`)
-        res.end()
-      } else {
-        res.status(429).json(errorResponse)
-      }
-
-      return
-    } else if (upstream.status === 401 || upstream.status === 402) {
+    if (upstream.status === 401 || upstream.status === 402) {
       const unauthorizedStatus = upstream.status
       const statusDescription = unauthorizedStatus === 401 ? 'Unauthorized' : 'Payment required'
       logger.warn(
@@ -850,7 +924,7 @@ const handleResponses = async (req, res) => {
     let actualModel = null
     let usageReported = false
     let rateLimitDetected = false
-    let rateLimitResetsInSeconds = null
+    let streamRateLimitResetsInSeconds = null
 
     if (!isStream) {
       // 非流式响应处理
@@ -946,9 +1020,9 @@ const handleResponses = async (req, res) => {
       if (eventData.error && eventData.error.type === 'usage_limit_reached') {
         rateLimitDetected = true
         if (eventData.error.resets_in_seconds) {
-          rateLimitResetsInSeconds = eventData.error.resets_in_seconds
+          streamRateLimitResetsInSeconds = eventData.error.resets_in_seconds
           logger.warn(
-            `🚫 Rate limit detected in stream, resets in ${rateLimitResetsInSeconds} seconds`
+            `🚫 Rate limit detected in stream, resets in ${streamRateLimitResetsInSeconds} seconds`
           )
         }
       }
@@ -1040,7 +1114,7 @@ const handleResponses = async (req, res) => {
       // 如果在流式响应中检测到限流
       if (rateLimitDetected) {
         logger.warn(`🚫 Processing rate limit for OpenAI account ${accountId} from stream`)
-        const nicCooldownApplied = await applyOpenAINicCooldownOnRateLimit({
+        const nicCooldownDecision = await handleOpenAINicCooldownOnRateLimit({
           account,
           accountId,
           sessionHash,
@@ -1048,12 +1122,12 @@ const handleResponses = async (req, res) => {
           source: 'stream'
         })
 
-        if (!nicCooldownApplied) {
+        if (!nicCooldownDecision.handled) {
           await unifiedOpenAIScheduler.markAccountRateLimited(
             accountId,
             'openai',
             sessionHash,
-            rateLimitResetsInSeconds
+            streamRateLimitResetsInSeconds
           )
         }
       } else if (upstream.status === 200) {
