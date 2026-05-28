@@ -3,6 +3,10 @@ const { CLAUDE_MODELS } = require('../config/models')
 describe('models config', () => {
   it('includes the latest Claude Opus and Sonnet options', () => {
     expect(CLAUDE_MODELS[0]).toEqual({
+      value: 'claude-opus-4-8',
+      label: 'Claude Opus 4.8'
+    })
+    expect(CLAUDE_MODELS).toContainEqual({
       value: 'claude-opus-4-7',
       label: 'Claude Opus 4.7'
     })
