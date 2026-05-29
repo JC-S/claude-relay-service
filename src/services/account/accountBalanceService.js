@@ -91,6 +91,10 @@ class AccountBalanceService {
     const accounts = await this.getAllAccountsByPlatform(normalizedPlatform)
     const queryApi = this._parseBoolean(options.queryApi) || false
     const useCache = options.useCache !== false
+    const includeWeeklyCost = options.includeWeeklyCost !== false
+    const weeklyCostContext = includeWeeklyCost
+      ? await this._buildWeeklyCostContext(accounts, normalizedPlatform)
+      : { weeklyCostMap: new Map(), weeklyCostWindowMap: new Map() }
 
     const results = await this._mapWithConcurrency(
       accounts,
@@ -99,7 +103,10 @@ class AccountBalanceService {
         try {
           const balance = await this._getAccountBalanceForAccount(acc, normalizedPlatform, {
             queryApi,
-            useCache
+            useCache,
+            includeWeeklyCost,
+            weeklyCostMap: weeklyCostContext.weeklyCostMap,
+            weeklyCostWindowMap: weeklyCostContext.weeklyCostWindowMap
           })
           return { ...balance, name: acc.name || '' }
         } catch (error) {
@@ -153,7 +160,8 @@ class AccountBalanceService {
         async (acc) => {
           const balance = await this._getAccountBalanceForAccount(acc, platform, {
             queryApi: false,
-            useCache: true
+            useCache: true,
+            includeWeeklyCost: false
           })
           return { ...balance, name: acc.name || '' }
         }
@@ -317,7 +325,7 @@ class AccountBalanceService {
     const scriptEnabled = isBalanceScriptEnabled()
     const scriptMeta = { scriptEnabled, scriptConfigured }
 
-    const localBalance = await this._getBalanceFromLocal(accountId, platform)
+    const localBalance = await this._getBalanceFromLocal(accountId, platform, account, options)
     const localStatistics = localBalance.statistics || {}
 
     const quotaFromLocal = this._buildQuotaFromLocal(account, localStatistics)
@@ -500,13 +508,41 @@ class AccountBalanceService {
     }
   }
 
-  async _getBalanceFromLocal(accountId, platform) {
+  async _getBalanceFromLocal(accountId, platform, account = null, options = {}) {
     const cached = await this.redis.getLocalBalance(platform, accountId)
     if (cached && cached.statistics) {
+      if (options.includeWeeklyCost === false) {
+        return cached
+      }
+
+      const weeklyFromOptions = this._getWeeklyCostFromOptions(
+        accountId,
+        account,
+        platform,
+        options
+      )
+      if (weeklyFromOptions) {
+        return {
+          ...cached,
+          statistics: {
+            ...cached.statistics,
+            weeklyCost: weeklyFromOptions.weeklyCost,
+            weeklyCostWindow: weeklyFromOptions.weeklyCostWindow
+          }
+        }
+      }
+
+      if (
+        !this._shouldShowWeeklyCost(account, platform) ||
+        cached.statistics.weeklyCost !== undefined
+      ) {
+        return cached
+      }
+    } else if (cached) {
       return cached
     }
 
-    const statistics = await this._computeLocalStatistics(accountId)
+    const statistics = await this._computeLocalStatistics(accountId, account, platform, options)
     const localBalance = {
       status: 'success',
       balance: null,
@@ -520,7 +556,7 @@ class AccountBalanceService {
     return localBalance
   }
 
-  async _computeLocalStatistics(accountId) {
+  async _computeLocalStatistics(accountId, account = null, platform = null, options = {}) {
     const safeNumber = (value) => {
       const num = Number(value)
       return Number.isFinite(num) ? num : 0
@@ -531,8 +567,14 @@ class AccountBalanceService {
       const dailyCost = safeNumber(usageStats?.daily?.cost || 0)
       const monthlyCost = await this._computeMonthlyCost(accountId)
       const totalCost = await this._computeTotalCost(accountId)
+      const weeklyCostInfo = await this._computeWeeklyCostInfo(
+        accountId,
+        account,
+        platform,
+        options
+      )
 
-      return {
+      const statistics = {
         totalCost,
         dailyCost,
         monthlyCost,
@@ -540,6 +582,13 @@ class AccountBalanceService {
         dailyRequests: safeNumber(usageStats?.daily?.requests || 0),
         monthlyRequests: safeNumber(usageStats?.monthly?.requests || 0)
       }
+
+      if (weeklyCostInfo) {
+        statistics.weeklyCost = weeklyCostInfo.weeklyCost
+        statistics.weeklyCostWindow = weeklyCostInfo.weeklyCostWindow
+      }
+
+      return statistics
     } catch (error) {
       this.logger.debug(`本地统计计算失败: ${accountId}`, error)
       return {
@@ -615,6 +664,263 @@ class AccountBalanceService {
       this.logger.debug(`汇总模型费用失败: ${pattern}`, error)
       return 0
     }
+  }
+
+  async _buildWeeklyCostContext(accounts, platform) {
+    const weeklyCostMap = new Map()
+    const weeklyCostWindowMap = new Map()
+
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      return { weeklyCostMap, weeklyCostWindowMap }
+    }
+
+    if (typeof this.redis?.batchGetAccountPeriodCost !== 'function') {
+      return { weeklyCostMap, weeklyCostWindowMap }
+    }
+
+    const windows = []
+    for (const account of accounts) {
+      if (!account?.id || !this._shouldShowWeeklyCost(account, platform)) {
+        continue
+      }
+
+      const window = this._getOAuthCostWindow(account, platform)
+      if (!window) {
+        continue
+      }
+
+      windows.push({ accountId: account.id, ...window })
+      weeklyCostWindowMap.set(account.id, window)
+    }
+
+    if (windows.length === 0) {
+      return { weeklyCostMap, weeklyCostWindowMap }
+    }
+
+    try {
+      const costs = await this.redis.batchGetAccountPeriodCost(windows)
+      for (const window of windows) {
+        const cost = Number(costs?.get?.(window.accountId) || 0)
+        weeklyCostMap.set(window.accountId, Number.isFinite(cost) ? cost : 0)
+      }
+    } catch (error) {
+      this.logger.debug(`批量计算 OAuth 本周成本失败: ${platform}`, error)
+      weeklyCostMap.clear()
+      weeklyCostWindowMap.clear()
+    }
+
+    return { weeklyCostMap, weeklyCostWindowMap }
+  }
+
+  async _computeWeeklyCostInfo(accountId, account, platform, options = {}) {
+    if (options.includeWeeklyCost === false) {
+      return null
+    }
+
+    const weeklyFromOptions = this._getWeeklyCostFromOptions(accountId, account, platform, options)
+    if (weeklyFromOptions) {
+      return weeklyFromOptions
+    }
+
+    if (!this._shouldShowWeeklyCost(account, platform)) {
+      return null
+    }
+
+    const window = this._getOAuthCostWindow(account, platform)
+    if (!window || typeof this.redis?.batchGetAccountPeriodCost !== 'function') {
+      return null
+    }
+
+    try {
+      const costMap = await this.redis.batchGetAccountPeriodCost([{ accountId, ...window }])
+      const weeklyCost = Number(costMap?.get?.(accountId) || 0)
+      return {
+        weeklyCost: Number.isFinite(weeklyCost) ? weeklyCost : 0,
+        weeklyCostWindow: window
+      }
+    } catch (error) {
+      this.logger.debug(`计算 OAuth 本周成本失败: ${accountId}`, error)
+      return null
+    }
+  }
+
+  _getWeeklyCostFromOptions(accountId, account, platform, options = {}) {
+    if (!this._shouldShowWeeklyCost(account, platform)) {
+      return null
+    }
+
+    const costMap = options.weeklyCostMap
+    if (!costMap || typeof costMap.has !== 'function' || !costMap.has(accountId)) {
+      return null
+    }
+
+    const weeklyCost = Number(costMap.get(accountId))
+    if (!Number.isFinite(weeklyCost)) {
+      return null
+    }
+
+    const window =
+      options.weeklyCostWindowMap?.get?.(accountId) || this._getOAuthCostWindow(account, platform)
+    if (!window) {
+      return null
+    }
+
+    return {
+      weeklyCost,
+      weeklyCostWindow: window
+    }
+  }
+
+  _getOAuthCostWindow(account, platform) {
+    const normalizedPlatform = this.normalizePlatform(platform)
+    if (!account || !['claude', 'openai'].includes(normalizedPlatform)) {
+      return null
+    }
+
+    if (normalizedPlatform === 'claude') {
+      const resetAt = account.claudeUsage?.sevenDay?.resetsAt || account.claudeSevenDayResetsAt
+      const resetMs = Date.parse(resetAt)
+      if (!Number.isFinite(resetMs)) {
+        return null
+      }
+
+      return {
+        startAt: new Date(resetMs - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        endAt: new Date(resetMs).toISOString(),
+        source: 'claude_seven_day'
+      }
+    }
+
+    const secondary = account.codexUsage?.secondary || null
+    let resetAt = secondary?.resetAt || null
+    let windowMinutes = Number(secondary?.windowMinutes)
+
+    if (!resetAt) {
+      const updatedMs = Date.parse(account.codexUsageUpdatedAt)
+      const resetAfterSeconds = Number(account.codexSecondaryResetAfterSeconds)
+      if (Number.isFinite(updatedMs) && Number.isFinite(resetAfterSeconds)) {
+        resetAt = new Date(updatedMs + resetAfterSeconds * 1000).toISOString()
+      }
+    }
+
+    if (!Number.isFinite(windowMinutes)) {
+      windowMinutes = Number(account.codexSecondaryWindowMinutes)
+    }
+
+    const resetMs = Date.parse(resetAt)
+    if (!Number.isFinite(resetMs) || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
+      return null
+    }
+
+    return {
+      startAt: new Date(resetMs - windowMinutes * 60 * 1000).toISOString(),
+      endAt: new Date(resetMs).toISOString(),
+      source: 'openai_codex_secondary'
+    }
+  }
+
+  _shouldShowWeeklyCost(account, platform) {
+    const normalizedPlatform = this.normalizePlatform(platform)
+    if (!['claude', 'openai'].includes(normalizedPlatform)) {
+      return false
+    }
+
+    if (!this._isOAuthAccount(account, normalizedPlatform)) {
+      return false
+    }
+
+    if (this._isManualSchedulingStopped(account)) {
+      return false
+    }
+
+    return !!this._getOAuthCostWindow(account, normalizedPlatform)
+  }
+
+  _isOAuthAccount(account, platform) {
+    if (!account) {
+      return false
+    }
+
+    const scopes = Array.isArray(account.scopes)
+      ? account.scopes
+      : String(account.scopes || '')
+          .split(/\s+/)
+          .filter(Boolean)
+
+    if (platform === 'claude') {
+      return (
+        account.authType === 'oauth' ||
+        !!account.claudeAiOauth ||
+        (scopes.includes('user:profile') && scopes.includes('user:inference'))
+      )
+    }
+
+    return !!(
+      account.openaiOauth ||
+      account.codexUsage ||
+      account.codexSecondaryResetAfterSeconds ||
+      account.accessToken ||
+      account.refreshToken
+    )
+  }
+
+  _isManualSchedulingStopped(account) {
+    if (!this._isExplicitFalse(account?.schedulable)) {
+      return false
+    }
+
+    return !this._hasAutoStopMarker(account)
+  }
+
+  _hasAutoStopMarker(account) {
+    if (!account) {
+      return false
+    }
+
+    const autoStopFields = [
+      'rateLimitAutoStopped',
+      'fiveHourAutoStopped',
+      'tempErrorAutoStopped',
+      'opusRateLimitAutoStopped'
+    ]
+    if (autoStopFields.some((field) => this._isTruthy(account[field]))) {
+      return true
+    }
+
+    const { rateLimitStatus } = account
+    if (typeof rateLimitStatus === 'string' && rateLimitStatus === 'limited') {
+      return true
+    }
+    if (
+      rateLimitStatus &&
+      typeof rateLimitStatus === 'object' &&
+      (rateLimitStatus.status === 'limited' || rateLimitStatus.isRateLimited === true)
+    ) {
+      return true
+    }
+
+    const { opusRateLimitStatus } = account
+    if (
+      opusRateLimitStatus &&
+      typeof opusRateLimitStatus === 'object' &&
+      (opusRateLimitStatus.status === 'limited' || opusRateLimitStatus.isRateLimited === true)
+    ) {
+      return true
+    }
+
+    if (account.overloadStatus?.isOverloaded === true) {
+      return true
+    }
+
+    return ['unauthorized', 'expired', 'error'].includes(String(account.status || '').toLowerCase())
+  }
+
+  _isExplicitFalse(value) {
+    return value === false || value === 'false' || value === 0 || value === '0'
+  }
+
+  _isTruthy(value) {
+    return value === true || value === 'true' || value === 1 || value === '1'
   }
 
   _buildQuotaFromLocal(account, statistics) {

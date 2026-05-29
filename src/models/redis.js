@@ -2334,6 +2334,215 @@ class RedisClient {
     return totalCost
   }
 
+  _getLocalDateParts(date) {
+    const tzDate = getDateInTimezone(date)
+    return {
+      year: tzDate.getUTCFullYear(),
+      month: tzDate.getUTCMonth() + 1,
+      day: tzDate.getUTCDate(),
+      hour: tzDate.getUTCHours()
+    }
+  }
+
+  _formatLocalDateKey(parts) {
+    return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(
+      2,
+      '0'
+    )}`
+  }
+
+  _localDateHourToUtcMs(dateKey, hour = 0) {
+    const [year, month, day] = String(dateKey)
+      .split('-')
+      .map((value) => parseInt(value, 10))
+    const offset = Number(config.system.timezoneOffset || 8)
+
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      return null
+    }
+
+    return Date.UTC(year, month - 1, day, hour, 0, 0, 0) - offset * 3600000
+  }
+
+  _addLocalDays(dateKey, days) {
+    const startMs = this._localDateHourToUtcMs(dateKey, 0)
+    if (!Number.isFinite(startMs)) {
+      return null
+    }
+    return this._formatLocalDateKey(this._getLocalDateParts(new Date(startMs + days * 86400000)))
+  }
+
+  _getAccountPeriodBuckets(startAt, endAt) {
+    const startMs = Date.parse(startAt)
+    const rawEndMs = Date.parse(endAt)
+    const endMs = Math.min(rawEndMs, Date.now())
+
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      return { daily: new Set(), hourly: new Set() }
+    }
+
+    const daily = new Set()
+    const hourly = new Set()
+    const startDateKey = getDateStringInTimezone(new Date(startMs))
+    const lastMs = endMs - 1
+    const endDateKey = getDateStringInTimezone(new Date(lastMs))
+
+    for (let dateKey = startDateKey; dateKey && dateKey <= endDateKey; ) {
+      const dayStartMs = this._localDateHourToUtcMs(dateKey, 0)
+      const nextDateKey = this._addLocalDays(dateKey, 1)
+      const dayEndMs = nextDateKey ? this._localDateHourToUtcMs(nextDateKey, 0) : null
+
+      if (
+        Number.isFinite(dayStartMs) &&
+        Number.isFinite(dayEndMs) &&
+        startMs <= dayStartMs &&
+        dayEndMs <= endMs
+      ) {
+        daily.add(dateKey)
+      } else if (Number.isFinite(dayStartMs) && Number.isFinite(dayEndMs)) {
+        for (let hour = 0; hour < 24; hour += 1) {
+          const hourStartMs = dayStartMs + hour * 3600000
+          const hourEndMs = hourStartMs + 3600000
+          if (hourStartMs < endMs && hourEndMs > startMs) {
+            hourly.add(`${dateKey}:${String(hour).padStart(2, '0')}`)
+          }
+        }
+      }
+
+      dateKey = nextDateKey
+    }
+
+    return { daily, hourly }
+  }
+
+  // 💰 批量计算多个账户在任意周期窗口内的费用（基于模型日/小时聚合）
+  async batchGetAccountPeriodCost(windows) {
+    const normalizedWindows = Array.isArray(windows)
+      ? windows
+      : windows instanceof Map
+        ? Array.from(windows.entries()).map(([accountId, window]) => ({ accountId, ...window }))
+        : []
+
+    const validWindows = normalizedWindows.filter((window) => {
+      const startMs = Date.parse(window?.startAt)
+      const endMs = Date.parse(window?.endAt)
+      return (
+        window?.accountId && Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
+      )
+    })
+
+    const costMap = new Map(validWindows.map((window) => [window.accountId, 0]))
+    if (validWindows.length === 0) {
+      return costMap
+    }
+
+    const CostCalculator = require('../utils/costCalculator')
+    const dailyAccounts = new Map()
+    const hourlyAccounts = new Map()
+
+    const addAccountToBucket = (bucketMap, bucketKey, accountId) => {
+      if (!bucketMap.has(bucketKey)) {
+        bucketMap.set(bucketKey, new Set())
+      }
+      bucketMap.get(bucketKey).add(accountId)
+    }
+
+    for (const window of validWindows) {
+      const buckets = this._getAccountPeriodBuckets(window.startAt, window.endAt)
+      for (const dateKey of buckets.daily) {
+        addAccountToBucket(dailyAccounts, dateKey, window.accountId)
+      }
+      for (const hourKey of buckets.hourly) {
+        addAccountToBucket(hourlyAccounts, hourKey, window.accountId)
+      }
+    }
+
+    const indexQueries = []
+    for (const dateKey of dailyAccounts.keys()) {
+      indexQueries.push({
+        type: 'daily',
+        bucketKey: dateKey,
+        indexKey: `account_usage:model:daily:index:${dateKey}`
+      })
+    }
+    for (const hourKey of hourlyAccounts.keys()) {
+      indexQueries.push({
+        type: 'hourly',
+        bucketKey: hourKey,
+        indexKey: `account_usage:model:hourly:index:${hourKey}`
+      })
+    }
+
+    if (indexQueries.length === 0) {
+      return costMap
+    }
+
+    const indexPipeline = this.client.pipeline()
+    indexQueries.forEach((query) => indexPipeline.smembers(query.indexKey))
+    const indexResults = await indexPipeline.exec()
+
+    const statsPipeline = this.client.pipeline()
+    const queryOrder = []
+
+    for (let i = 0; i < indexQueries.length; i += 1) {
+      const query = indexQueries[i]
+      const [err, entries] = indexResults[i] || []
+      if (err || !Array.isArray(entries) || entries.length === 0) {
+        continue
+      }
+
+      const targetAccounts =
+        query.type === 'daily'
+          ? dailyAccounts.get(query.bucketKey)
+          : hourlyAccounts.get(query.bucketKey)
+      if (!targetAccounts || targetAccounts.size === 0) {
+        continue
+      }
+
+      for (const entry of entries) {
+        const separatorIndex = String(entry).indexOf(':')
+        if (separatorIndex === -1) {
+          continue
+        }
+
+        const accountId = String(entry).slice(0, separatorIndex)
+        const model = String(entry).slice(separatorIndex + 1)
+        if (!targetAccounts.has(accountId) || !model) {
+          continue
+        }
+
+        if (query.type === 'daily') {
+          statsPipeline.hgetall(
+            `account_usage:model:daily:${accountId}:${model}:${query.bucketKey}`
+          )
+        } else {
+          statsPipeline.hgetall(
+            `account_usage:model:hourly:${accountId}:${model}:${query.bucketKey}`
+          )
+        }
+        queryOrder.push({ accountId, model })
+      }
+    }
+
+    if (queryOrder.length === 0) {
+      return costMap
+    }
+
+    const statsResults = await statsPipeline.exec()
+    for (let i = 0; i < queryOrder.length; i += 1) {
+      const { accountId, model } = queryOrder[i]
+      const [err, modelUsage] = statsResults[i] || []
+      if (err || !modelUsage || Object.keys(modelUsage).length === 0) {
+        continue
+      }
+
+      const modelCost = this._calculateAccountModelCost(CostCalculator, modelUsage, model)
+      costMap.set(accountId, (costMap.get(accountId) || 0) + modelCost)
+    }
+
+    return costMap
+  }
+
   // 📊 获取账户使用统计
   async getAccountUsageStats(accountId, accountType = null) {
     const accountKey = `account_usage:${accountId}`

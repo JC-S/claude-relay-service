@@ -51,6 +51,10 @@
         </button>
       </div>
 
+      <div v-if="weeklyCostInfo" class="pl-6 text-xs text-gray-500 dark:text-gray-400">
+        本周成本 {{ formatCurrency(weeklyCostInfo.amount) }}
+      </div>
+
       <!-- 配额（如适用） -->
       <div v-if="quotaInfo && isAntigravityQuota" class="space-y-2">
         <div class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400">
@@ -257,6 +261,12 @@ const primaryText = computed(() => {
   }
   const dailyCost = Number(balanceData.value?.statistics?.dailyCost || 0)
   return `今日成本 ${formatCurrency(dailyCost)}`
+})
+
+const weeklyCostInfo = computed(() => {
+  const amount = Number(balanceData.value?.statistics?.weeklyCost)
+  if (!Number.isFinite(amount)) return null
+  return { amount }
 })
 
 const load = async () => {

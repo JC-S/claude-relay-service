@@ -35,6 +35,7 @@ describe('AccountBalanceService', () => {
     setAccountBalance: jest.fn().mockResolvedValue(undefined),
     deleteAccountBalance: jest.fn().mockResolvedValue(undefined),
     getBalanceScriptConfig: jest.fn().mockResolvedValue(null),
+    batchGetAccountPeriodCost: jest.fn().mockResolvedValue(new Map()),
     getAccountUsageStats: jest.fn().mockResolvedValue({
       total: { requests: 10 },
       daily: { requests: 2, cost: 20 },
@@ -187,6 +188,114 @@ describe('AccountBalanceService', () => {
     expect(result.data.source).toBe('api')
     expect(result.data.balance.amount).toBeCloseTo(3, 6)
     expect(result.data.lastRefreshAt).toBe('2025-01-01T00:00:00Z')
+  })
+
+  it('should include weekly cost for Claude OAuth quota window', async () => {
+    const mockRedis = buildMockRedis()
+    mockRedis.batchGetAccountPeriodCost.mockResolvedValue(new Map([['claude-oauth-1', 12.345]]))
+
+    const service = new AccountBalanceService({ redis: mockRedis, logger: mockLogger })
+    service._computeMonthlyCost = jest.fn().mockResolvedValue(0)
+    service._computeTotalCost = jest.fn().mockResolvedValue(0)
+
+    const account = {
+      id: 'claude-oauth-1',
+      authType: 'oauth',
+      schedulable: true,
+      claudeUsage: {
+        sevenDay: {
+          resetsAt: '2026-05-29T12:00:00.000Z'
+        }
+      }
+    }
+
+    const statistics = await service._computeLocalStatistics(account.id, account, 'claude')
+
+    expect(statistics.weeklyCost).toBeCloseTo(12.345, 6)
+    expect(statistics.weeklyCostWindow).toEqual({
+      startAt: '2026-05-22T12:00:00.000Z',
+      endAt: '2026-05-29T12:00:00.000Z',
+      source: 'claude_seven_day'
+    })
+    expect(mockRedis.batchGetAccountPeriodCost).toHaveBeenCalledWith([
+      {
+        accountId: 'claude-oauth-1',
+        startAt: '2026-05-22T12:00:00.000Z',
+        endAt: '2026-05-29T12:00:00.000Z',
+        source: 'claude_seven_day'
+      }
+    ])
+  })
+
+  it('should include weekly cost for OpenAI OAuth Codex secondary window', async () => {
+    const mockRedis = buildMockRedis()
+    mockRedis.batchGetAccountPeriodCost.mockResolvedValue(new Map([['openai-oauth-1', 4.56]]))
+
+    const service = new AccountBalanceService({ redis: mockRedis, logger: mockLogger })
+    service._computeMonthlyCost = jest.fn().mockResolvedValue(0)
+    service._computeTotalCost = jest.fn().mockResolvedValue(0)
+
+    const account = {
+      id: 'openai-oauth-1',
+      openaiOauth: '[ENCRYPTED]',
+      schedulable: true,
+      codexUsage: {
+        secondary: {
+          resetAt: '2026-05-29T12:00:00.000Z',
+          windowMinutes: 10080
+        }
+      }
+    }
+
+    const statistics = await service._computeLocalStatistics(account.id, account, 'openai')
+
+    expect(statistics.weeklyCost).toBeCloseTo(4.56, 6)
+    expect(statistics.weeklyCostWindow).toEqual({
+      startAt: '2026-05-22T12:00:00.000Z',
+      endAt: '2026-05-29T12:00:00.000Z',
+      source: 'openai_codex_secondary'
+    })
+  })
+
+  it('should not include weekly cost when OAuth quota window is missing', async () => {
+    const mockRedis = buildMockRedis()
+    const service = new AccountBalanceService({ redis: mockRedis, logger: mockLogger })
+    service._computeMonthlyCost = jest.fn().mockResolvedValue(0)
+    service._computeTotalCost = jest.fn().mockResolvedValue(0)
+
+    const account = {
+      id: 'claude-oauth-no-window',
+      authType: 'oauth',
+      schedulable: true
+    }
+
+    const statistics = await service._computeLocalStatistics(account.id, account, 'claude')
+
+    expect(statistics.weeklyCost).toBeUndefined()
+    expect(mockRedis.batchGetAccountPeriodCost).not.toHaveBeenCalled()
+  })
+
+  it('should not include weekly cost for manually stopped OAuth accounts', async () => {
+    const mockRedis = buildMockRedis()
+    const service = new AccountBalanceService({ redis: mockRedis, logger: mockLogger })
+    service._computeMonthlyCost = jest.fn().mockResolvedValue(0)
+    service._computeTotalCost = jest.fn().mockResolvedValue(0)
+
+    const account = {
+      id: 'claude-oauth-stopped',
+      authType: 'oauth',
+      schedulable: false,
+      claudeUsage: {
+        sevenDay: {
+          resetsAt: '2026-05-29T12:00:00.000Z'
+        }
+      }
+    }
+
+    const statistics = await service._computeLocalStatistics(account.id, account, 'claude')
+
+    expect(statistics.weeklyCost).toBeUndefined()
+    expect(mockRedis.batchGetAccountPeriodCost).not.toHaveBeenCalled()
   })
 
   it('should count low balance once per account in summary', async () => {
