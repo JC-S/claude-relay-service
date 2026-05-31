@@ -2288,8 +2288,14 @@ const expiryEditModalRef = ref(null)
 const showUsageDetailModal = ref(false)
 const selectedApiKeyForDetail = ref(null)
 
+const API_KEYS_TAG_FILTER_STORAGE_KEY = 'apiKeysSelectedTagFilter'
+
+const getInitialSelectedTagFilter = () => {
+  return localStorage.getItem(API_KEYS_TAG_FILTER_STORAGE_KEY) || ''
+}
+
 // 标签相关
-const selectedTagFilter = ref('')
+const selectedTagFilter = ref(getInitialSelectedTagFilter())
 const availableTags = ref([])
 
 // 模型筛选相关
@@ -4784,6 +4790,11 @@ watch(searchMode, () => {
 // 监听标签筛选变化，重新加载数据
 watch(selectedTagFilter, () => {
   currentPage.value = 1
+  if (selectedTagFilter.value) {
+    localStorage.setItem(API_KEYS_TAG_FILTER_STORAGE_KEY, selectedTagFilter.value)
+  } else {
+    localStorage.removeItem(API_KEYS_TAG_FILTER_STORAGE_KEY)
+  }
   loadApiKeys(false)
 })
 
