@@ -96,12 +96,14 @@ describe('apiKeyService openai responses config', () => {
     expect(storedKeyData.openaiResponsesPayloadRules).toBe('[]')
     expect(storedKeyData.enableIpWhitelist).toBe('false')
     expect(storedKeyData.ipWhitelist).toBe('[]')
+    expect(storedKeyData.enableClaudeThinkingSignatureLossyFallback).toBe('false')
 
     expect(result.enableOpenAIResponsesCodexAdaptation).toBe(true)
     expect(result.enableOpenAIResponsesPayloadRules).toBe(false)
     expect(result.openaiResponsesPayloadRules).toEqual([])
     expect(result.enableIpWhitelist).toBe(false)
     expect(result.ipWhitelist).toEqual([])
+    expect(result.enableClaudeThinkingSignatureLossyFallback).toBe(false)
   })
 
   test('updateApiKey serializes toggle and payload rule fields', async () => {
@@ -119,7 +121,8 @@ describe('apiKeyService openai responses config', () => {
       enableOpenAIResponsesPayloadRules: true,
       openaiResponsesPayloadRules: [{ path: 'model', valueType: 'string', value: 'gpt-5' }],
       enableIpWhitelist: true,
-      ipWhitelist: ['203.0.113.10', '203.0.113.0/24']
+      ipWhitelist: ['203.0.113.10', '203.0.113.0/24'],
+      enableClaudeThinkingSignatureLossyFallback: true
     })
 
     const [, storedKeyData] = redis.setApiKey.mock.calls[0]
@@ -130,6 +133,7 @@ describe('apiKeyService openai responses config', () => {
     )
     expect(storedKeyData.enableIpWhitelist).toBe('true')
     expect(storedKeyData.ipWhitelist).toBe(JSON.stringify(['203.0.113.10', '203.0.113.0/24']))
+    expect(storedKeyData.enableClaudeThinkingSignatureLossyFallback).toBe('true')
   })
 
   test('getApiKeyById returns parsed toggle and rule values', async () => {
@@ -159,6 +163,7 @@ describe('apiKeyService openai responses config', () => {
       enableOpenAIResponsesCodexAdaptation: 'false',
       enableOpenAIResponsesPayloadRules: 'true',
       enableIpWhitelist: 'true',
+      enableClaudeThinkingSignatureLossyFallback: 'true',
       ipWhitelist: JSON.stringify(['203.0.113.10']),
       openaiResponsesPayloadRules: JSON.stringify([
         { path: 'model', valueType: 'string', value: 'gpt-5' }
@@ -170,6 +175,7 @@ describe('apiKeyService openai responses config', () => {
     expect(result.enableOpenAIResponsesCodexAdaptation).toBe(false)
     expect(result.enableOpenAIResponsesPayloadRules).toBe(true)
     expect(result.enableIpWhitelist).toBe(true)
+    expect(result.enableClaudeThinkingSignatureLossyFallback).toBe(true)
     expect(result.ipWhitelist).toEqual(['203.0.113.10'])
     expect(result.openaiResponsesPayloadRules).toEqual([
       { path: 'model', valueType: 'string', value: 'gpt-5' }

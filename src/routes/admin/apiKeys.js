@@ -1499,6 +1499,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
+      enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
       openaiResponsesPayloadRules
@@ -1656,6 +1657,15 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
     }
 
     if (
+      enableClaudeThinkingSignatureLossyFallback !== undefined &&
+      typeof enableClaudeThinkingSignatureLossyFallback !== 'boolean'
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'enableClaudeThinkingSignatureLossyFallback must be a boolean' })
+    }
+
+    if (
       enableOpenAIResponsesCodexAdaptation !== undefined &&
       typeof enableOpenAIResponsesCodexAdaptation !== 'boolean'
     ) {
@@ -1734,6 +1744,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
           ? Number(weeklyResetHour)
           : 0,
       disableGptFastMode: disableGptFastMode === true,
+      enableClaudeThinkingSignatureLossyFallback:
+        enableClaudeThinkingSignatureLossyFallback === true,
       enableOpenAIResponsesCodexAdaptation:
         enableOpenAIResponsesCodexAdaptation !== undefined
           ? enableOpenAIResponsesCodexAdaptation
@@ -1785,7 +1797,8 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       activationUnit,
       expirationMode,
       icon,
-      serviceRates
+      serviceRates,
+      enableClaudeThinkingSignatureLossyFallback
     } = req.body
 
     // 输入验证
@@ -1832,6 +1845,15 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: 'IP whitelist cannot be empty when enabled' })
     }
 
+    if (
+      enableClaudeThinkingSignatureLossyFallback !== undefined &&
+      typeof enableClaudeThinkingSignatureLossyFallback !== 'boolean'
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'enableClaudeThinkingSignatureLossyFallback must be a boolean' })
+    }
+
     // 生成批量API Keys
     const createdKeys = []
     const errors = []
@@ -1869,7 +1891,9 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           activationUnit,
           expirationMode,
           icon,
-          serviceRates
+          serviceRates,
+          enableClaudeThinkingSignatureLossyFallback:
+            enableClaudeThinkingSignatureLossyFallback === true
         })
 
         // 保留原始 API Key 供返回
@@ -1955,8 +1979,19 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
     if (updates.enableIpWhitelist !== undefined && typeof updates.enableIpWhitelist !== 'boolean') {
       return res.status(400).json({ error: 'Enable IP whitelist must be a boolean' })
     }
-    if (updates.disableGptFastMode !== undefined && typeof updates.disableGptFastMode !== 'boolean') {
+    if (
+      updates.disableGptFastMode !== undefined &&
+      typeof updates.disableGptFastMode !== 'boolean'
+    ) {
       return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
+    }
+    if (
+      updates.enableClaudeThinkingSignatureLossyFallback !== undefined &&
+      typeof updates.enableClaudeThinkingSignatureLossyFallback !== 'boolean'
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'enableClaudeThinkingSignatureLossyFallback must be a boolean' })
     }
     if (updates.ipWhitelist !== undefined) {
       if (!Array.isArray(updates.ipWhitelist)) {
@@ -2051,6 +2086,10 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         }
         if (updates.disableGptFastMode !== undefined) {
           finalUpdates.disableGptFastMode = updates.disableGptFastMode
+        }
+        if (updates.enableClaudeThinkingSignatureLossyFallback !== undefined) {
+          finalUpdates.enableClaudeThinkingSignatureLossyFallback =
+            updates.enableClaudeThinkingSignatureLossyFallback
         }
         if (updates.weeklyResetDay !== undefined) {
           const day = Number(updates.weeklyResetDay)
@@ -2204,6 +2243,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
+      enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
       openaiResponsesPayloadRules
@@ -2427,6 +2467,16 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
       }
       updates.disableGptFastMode = disableGptFastMode
+    }
+
+    if (enableClaudeThinkingSignatureLossyFallback !== undefined) {
+      if (typeof enableClaudeThinkingSignatureLossyFallback !== 'boolean') {
+        return res
+          .status(400)
+          .json({ error: 'enableClaudeThinkingSignatureLossyFallback must be a boolean' })
+      }
+      updates.enableClaudeThinkingSignatureLossyFallback =
+        enableClaudeThinkingSignatureLossyFallback
     }
 
     if (enableOpenAIResponsesCodexAdaptation !== undefined) {

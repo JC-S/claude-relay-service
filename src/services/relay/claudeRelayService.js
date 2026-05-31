@@ -258,6 +258,107 @@ class ClaudeRelayService {
     )
   }
 
+  _isClaudeThinkingSignatureLossyFallbackEnabled(data = {}) {
+    return (
+      data.enableClaudeThinkingSignatureLossyFallback === true ||
+      data.enableClaudeThinkingSignatureLossyFallback === 'true'
+    )
+  }
+
+  _isInvalidThinkingSignatureError(statusCode, body) {
+    if (statusCode !== 400) {
+      return false
+    }
+
+    const message = this._extractErrorMessage(body)
+    if (!message) {
+      return false
+    }
+
+    if (message.includes('Invalid `signature` in `thinking` block')) {
+      return true
+    }
+
+    const lowerMessage = message.toLowerCase()
+    return (
+      lowerMessage.includes('invalid') &&
+      lowerMessage.includes('signature') &&
+      lowerMessage.includes('thinking')
+    )
+  }
+
+  _extractUpstreamRequestId(body) {
+    if (!body) {
+      return null
+    }
+
+    try {
+      const parsed = typeof body === 'string' ? JSON.parse(body) : body
+      return parsed?.request_id || parsed?.requestId || parsed?.error?.request_id || null
+    } catch (error) {
+      return null
+    }
+  }
+
+  _stripAssistantThinkingBlocksForOfficialFallback(body) {
+    const clonedBody = safeClone(body || {})
+    if (!Array.isArray(clonedBody.messages)) {
+      return { body: clonedBody, strippedCount: 0, removedEmptyAssistantMessages: 0 }
+    }
+
+    let strippedCount = 0
+    let removedEmptyAssistantMessages = 0
+    const messages = []
+
+    for (const message of clonedBody.messages) {
+      if (message?.role !== 'assistant' || !Array.isArray(message.content)) {
+        messages.push(message)
+        continue
+      }
+
+      const content = message.content.filter((block) => {
+        const shouldStrip = block?.type === 'thinking'
+        if (shouldStrip) {
+          strippedCount++
+        }
+        return !shouldStrip
+      })
+
+      if (content.length === 0 && message.content.length > 0) {
+        removedEmptyAssistantMessages++
+        continue
+      }
+
+      messages.push({ ...message, content })
+    }
+
+    clonedBody.messages = messages
+    return { body: clonedBody, strippedCount, removedEmptyAssistantMessages }
+  }
+
+  _canRetryWithClaudeThinkingSignatureLossyFallback({
+    apiKeyData,
+    requestOptions = {},
+    accountType,
+    statusCode,
+    body,
+    responseStream = null
+  }) {
+    if (accountType !== 'claude-official') {
+      return false
+    }
+    if (!this._isClaudeThinkingSignatureLossyFallbackEnabled(apiKeyData || requestOptions)) {
+      return false
+    }
+    if (requestOptions.claudeThinkingSignatureLossyFallbackTried === true) {
+      return false
+    }
+    if (responseStream?.headersSent) {
+      return false
+    }
+    return this._isInvalidThinkingSignatureError(statusCode, body)
+  }
+
   _toPascalCaseToolName(name) {
     const parts = name.split(/[_-]/).filter(Boolean)
     if (parts.length === 0) {
@@ -703,6 +804,62 @@ class ClaudeRelayService {
       ) {
         requestOptions = { ...requestOptions, useRandomizedToolNames: true }
         ;({ response, retryCount } = await makeRequestWithRetries(requestOptions))
+      }
+
+      if (
+        this._canRetryWithClaudeThinkingSignatureLossyFallback({
+          apiKeyData,
+          requestOptions,
+          accountType,
+          statusCode: response.statusCode,
+          body: response.body
+        })
+      ) {
+        let bodyForLossyFallback
+        try {
+          bodyForLossyFallback = JSON.parse(this.bodyStore.get(bodyStoreIdNonStream))
+        } catch (parseError) {
+          logger.error(
+            `❌ Failed to parse body for thinking signature lossy fallback: ${parseError.message}`
+          )
+          throw new Error(`Thinking signature fallback body parse failed: ${parseError.message}`)
+        }
+
+        const fallbackBody =
+          this._stripAssistantThinkingBlocksForOfficialFallback(bodyForLossyFallback)
+        if (fallbackBody.strippedCount > 0) {
+          const originalUpstreamRequestId = this._extractUpstreamRequestId(response.body)
+          logger.warn(
+            '🔁 Retrying official Claude request with lossy thinking signature fallback',
+            {
+              apiKeyId: apiKeyData.id,
+              apiKeyName: apiKeyData.name,
+              accountId,
+              accountName: account?.name,
+              model: requestBody?.model,
+              lossyThinkingSignatureFallback: true,
+              strippedThinkingBlocks: fallbackBody.strippedCount,
+              removedEmptyAssistantMessages: fallbackBody.removedEmptyAssistantMessages,
+              originalUpstreamRequestId
+            }
+          )
+
+          this.bodyStore.set(bodyStoreIdNonStream, JSON.stringify(fallbackBody.body))
+          requestOptions = {
+            ...requestOptions,
+            claudeThinkingSignatureLossyFallbackTried: true,
+            lossyThinkingSignatureFallback: true,
+            strippedThinkingBlocks: fallbackBody.strippedCount
+          }
+          ;({ response, retryCount } = await makeRequestWithRetries(requestOptions))
+          logger.info('🔁 Official Claude lossy thinking signature fallback completed', {
+            apiKeyId: apiKeyData.id,
+            accountId,
+            statusCode: response.statusCode,
+            strippedThinkingBlocks: fallbackBody.strippedCount,
+            originalUpstreamRequestId
+          })
+        }
       }
 
       // 如果进行了重试，记录最终结果
@@ -2059,7 +2216,9 @@ class ClaudeRelayService {
         {
           ...options,
           bodyStoreId,
-          isRealClaudeCodeRequest
+          isRealClaudeCodeRequest,
+          enableClaudeThinkingSignatureLossyFallback:
+            this._isClaudeThinkingSignatureLossyFallbackEnabled(apiKeyData)
         },
         isDedicatedOfficialAccount,
         // 📬 新增回调：在收到响应头时释放队列锁
@@ -2525,6 +2684,88 @@ class ClaudeRelayService {
           })
 
           res.on('end', async () => {
+            if (
+              this._canRetryWithClaudeThinkingSignatureLossyFallback({
+                requestOptions,
+                accountType,
+                statusCode: res.statusCode,
+                body: errorData,
+                responseStream
+              }) &&
+              requestOptions.bodyStoreId &&
+              this.bodyStore.has(requestOptions.bodyStoreId)
+            ) {
+              let retryBody
+              try {
+                retryBody = JSON.parse(this.bodyStore.get(requestOptions.bodyStoreId))
+              } catch (parseError) {
+                logger.error(
+                  `❌ Failed to parse body for stream thinking signature fallback: ${parseError.message}`
+                )
+                reject(
+                  new Error(
+                    `Stream thinking signature fallback body parse failed: ${parseError.message}`
+                  )
+                )
+                return
+              }
+
+              const fallbackBody = this._stripAssistantThinkingBlocksForOfficialFallback(retryBody)
+              if (fallbackBody.strippedCount > 0) {
+                const originalUpstreamRequestId = this._extractUpstreamRequestId(errorData)
+                logger.warn(
+                  '🔁 [Stream] Retrying official Claude request with lossy thinking signature fallback',
+                  {
+                    accountId,
+                    accountName: account?.name,
+                    model: body?.model,
+                    lossyThinkingSignatureFallback: true,
+                    strippedThinkingBlocks: fallbackBody.strippedCount,
+                    removedEmptyAssistantMessages: fallbackBody.removedEmptyAssistantMessages,
+                    originalUpstreamRequestId
+                  }
+                )
+
+                this.bodyStore.set(requestOptions.bodyStoreId, JSON.stringify(fallbackBody.body))
+                try {
+                  const retryResult = await this._makeClaudeStreamRequestWithUsageCapture(
+                    fallbackBody.body,
+                    accessToken,
+                    proxyAgent,
+                    clientHeaders,
+                    responseStream,
+                    usageCallback,
+                    accountId,
+                    accountType,
+                    sessionHash,
+                    streamTransformer,
+                    {
+                      ...requestOptions,
+                      claudeThinkingSignatureLossyFallbackTried: true,
+                      lossyThinkingSignatureFallback: true,
+                      strippedThinkingBlocks: fallbackBody.strippedCount
+                    },
+                    isDedicatedOfficialAccount,
+                    onResponseStart,
+                    retryCount
+                  )
+                  logger.info(
+                    '🔁 [Stream] Official Claude lossy thinking signature fallback completed',
+                    {
+                      accountId,
+                      retryResolved: true,
+                      strippedThinkingBlocks: fallbackBody.strippedCount,
+                      originalUpstreamRequestId
+                    }
+                  )
+                  resolve(retryResult)
+                } catch (retryError) {
+                  reject(retryError)
+                }
+                return
+              }
+            }
+
             const upstreamErrorContext = upstreamErrorHelper.logUpstreamErrorResponse({
               provider: 'claude-official',
               accountId,

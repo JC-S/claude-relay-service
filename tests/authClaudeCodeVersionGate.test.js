@@ -136,6 +136,20 @@ describe('authenticateApiKey Claude Code version gate', () => {
     expect(next).toHaveBeenCalled()
   })
 
+  test('passes Claude thinking signature lossy fallback toggle to req.apiKey', async () => {
+    mockValidApiKey({
+      enableClaudeThinkingSignatureLossyFallback: true
+    })
+    const req = createReq('claude-cli/2.1.150 (external, cli)')
+    const res = createRes()
+    const next = jest.fn()
+
+    await authenticateApiKey(req, res, next)
+
+    expect(next).toHaveBeenCalled()
+    expect(req.apiKey.enableClaudeThinkingSignatureLossyFallback).toBe(true)
+  })
+
   test('does not apply version gate when Claude Code is not enabled for the API key', async () => {
     mockValidApiKey({
       allowedClients: ['codex_cli']

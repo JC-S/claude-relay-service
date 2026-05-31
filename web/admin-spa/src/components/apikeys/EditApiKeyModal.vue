@@ -540,6 +540,52 @@
           </div>
 
           <div
+            class="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/20"
+          >
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded bg-blue-500"
+              >
+                <i class="fas fa-link text-xs text-white" />
+              </div>
+              <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                Claude 会话兼容
+              </h4>
+            </div>
+
+            <label class="flex cursor-pointer items-start gap-3">
+              <input
+                v-model="form.enableClaudeThinkingSignatureLossyFallback"
+                class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-blue-600 focus:ring-blue-500"
+                type="checkbox"
+              />
+              <span class="flex-1">
+                <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  <span class="inline-flex items-center gap-1">
+                    <span>允许跨上游会话有损续接</span>
+                    <el-tooltip placement="top">
+                      <template #content>
+                        <div class="w-[280px] space-y-2 text-xs leading-relaxed">
+                          <div>
+                            开启后，当 Claude 请求切换到官方 OAuth 账号并因历史 thinking
+                            签名无效被上游拒绝时，系统会移除历史 thinking 块并自动重试一次。
+                          </div>
+                          <div>可能降低长会话连续性，默认关闭。</div>
+                        </div>
+                      </template>
+                      <span class="inline-flex" @click.stop.prevent>
+                        <i
+                          class="fas fa-question-circle cursor-help text-xs text-gray-400 hover:text-gray-600"
+                        />
+                      </span>
+                    </el-tooltip>
+                  </span>
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <div
             class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-700 dark:bg-emerald-900/20"
           >
             <div class="mb-3 flex items-center gap-2">
@@ -1232,6 +1278,7 @@ const form = reactive({
   enableIpWhitelist: false,
   ipWhitelistInput: '',
   disableGptFastMode: false,
+  enableClaudeThinkingSignatureLossyFallback: false,
   enableOpenAIResponsesCodexAdaptation: true,
   enableOpenAIResponsesPayloadRules: false,
   openaiResponsesPayloadRules: [],
@@ -1432,6 +1479,7 @@ const updateApiKey = async () => {
       weeklyResetDay: form.weeklyResetDay,
       weeklyResetHour: form.weeklyResetHour,
       disableGptFastMode: form.disableGptFastMode,
+      enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation: form.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: form.enableOpenAIResponsesPayloadRules,
       // 规则内容独立持久化，关闭开关时也要保留已保存的休眠规则。
@@ -1828,6 +1876,9 @@ onMounted(async () => {
     props.apiKey.enableIpWhitelist === true || props.apiKey.enableIpWhitelist === 'true'
   form.disableGptFastMode =
     props.apiKey.disableGptFastMode === true || props.apiKey.disableGptFastMode === 'true'
+  form.enableClaudeThinkingSignatureLossyFallback =
+    props.apiKey.enableClaudeThinkingSignatureLossyFallback === true ||
+    props.apiKey.enableClaudeThinkingSignatureLossyFallback === 'true'
   form.enableOpenAIResponsesCodexAdaptation =
     props.apiKey.enableOpenAIResponsesCodexAdaptation === undefined ||
     props.apiKey.enableOpenAIResponsesCodexAdaptation === true ||
