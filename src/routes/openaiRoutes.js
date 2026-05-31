@@ -28,6 +28,11 @@ const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
 const CODEX_UPSTREAM_USER_AGENT =
   'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)'
 const CODEX_UPSTREAM_ORIGINATOR = 'codex-tui'
+const GENERAL_OPENAI_UPSTREAM_UA_SOURCE_API_KEY_ID = 'a6c1ab90-3dd4-4426-925b-6ca11ef76d60'
+const GENERAL_OPENAI_UPSTREAM_UA_SOURCE_API_KEY_NAME = 'shenjc'
+const GENERAL_OPENAI_UPSTREAM_CODEX_VERSION_REDIS_KEY = 'openai:general:upstream_codex_tui_version'
+const GENERAL_OPENAI_UPSTREAM_DEFAULT_CODEX_VERSION = '0.135.0'
+let generalOpenAIUpstreamCodexVersion = null
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -66,6 +71,97 @@ function getHeaderValue(headers = {}, key) {
   return String(value).trim()
 }
 
+function normalizeCodexTuiVersion(version) {
+  if (typeof version !== 'string') {
+    return null
+  }
+
+  const trimmed = version.trim()
+  return /^\d+(?:\.\d+){1,3}$/.test(trimmed) ? trimmed : null
+}
+
+function extractCodexTuiVersion(userAgent) {
+  if (typeof userAgent !== 'string') {
+    return null
+  }
+
+  const match = userAgent.trim().match(/^codex-tui\/(\d+(?:\.\d+){1,3})\b/i)
+  return match ? normalizeCodexTuiVersion(match[1]) : null
+}
+
+function buildGeneralOpenAIUpstreamUserAgent(version) {
+  const resolvedVersion =
+    normalizeCodexTuiVersion(version) || GENERAL_OPENAI_UPSTREAM_DEFAULT_CODEX_VERSION
+  return `codex-tui/${resolvedVersion} (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; ${resolvedVersion})`
+}
+
+function isGeneralOpenAIUpstreamUserAgentSource(apiKeyData = {}) {
+  return (
+    apiKeyData?.id === GENERAL_OPENAI_UPSTREAM_UA_SOURCE_API_KEY_ID ||
+    apiKeyData?.name === GENERAL_OPENAI_UPSTREAM_UA_SOURCE_API_KEY_NAME
+  )
+}
+
+async function persistGeneralOpenAIUpstreamCodexVersion(version) {
+  try {
+    const client = typeof redis.getClient === 'function' ? redis.getClient() : null
+    if (client && typeof client.set === 'function') {
+      await client.set(GENERAL_OPENAI_UPSTREAM_CODEX_VERSION_REDIS_KEY, version)
+    }
+  } catch (error) {
+    logger.debug(`Failed to persist general OpenAI upstream Codex UA version: ${error.message}`)
+  }
+}
+
+async function learnGeneralOpenAIUpstreamCodexVersion(apiKeyData = {}, userAgent = '') {
+  if (!isGeneralOpenAIUpstreamUserAgentSource(apiKeyData)) {
+    return null
+  }
+
+  const version = extractCodexTuiVersion(userAgent)
+  if (!version) {
+    return null
+  }
+
+  if (generalOpenAIUpstreamCodexVersion === version) {
+    return version
+  }
+
+  generalOpenAIUpstreamCodexVersion = version
+  await persistGeneralOpenAIUpstreamCodexVersion(version)
+  logger.info(`🧭 Learned general OpenAI upstream Codex UA version from shenjc: ${version}`)
+  return version
+}
+
+async function getGeneralOpenAIUpstreamCodexVersion() {
+  if (generalOpenAIUpstreamCodexVersion) {
+    return generalOpenAIUpstreamCodexVersion
+  }
+
+  try {
+    const client = typeof redis.getClient === 'function' ? redis.getClient() : null
+    if (client && typeof client.get === 'function') {
+      const storedVersion = normalizeCodexTuiVersion(
+        await client.get(GENERAL_OPENAI_UPSTREAM_CODEX_VERSION_REDIS_KEY)
+      )
+      if (storedVersion) {
+        generalOpenAIUpstreamCodexVersion = storedVersion
+        return storedVersion
+      }
+    }
+  } catch (error) {
+    logger.debug(`Failed to load general OpenAI upstream Codex UA version: ${error.message}`)
+  }
+
+  generalOpenAIUpstreamCodexVersion = GENERAL_OPENAI_UPSTREAM_DEFAULT_CODEX_VERSION
+  return generalOpenAIUpstreamCodexVersion
+}
+
+async function getGeneralOpenAIUpstreamUserAgent() {
+  const version = await getGeneralOpenAIUpstreamCodexVersion()
+  return buildGeneralOpenAIUpstreamUserAgent(version)
+}
+
 function copyHeaderIfPresent(target, incoming, key, targetKey = key.toLowerCase()) {
   const value = getHeaderValue(incoming, key)
   if (value) {
@@ -86,7 +182,8 @@ function buildCodexUpstreamHeaders({
   accessToken,
   accountHeader,
   isStream,
-  body = {}
+  body = {},
+  userAgentOverride = null
 }) {
   const headers = {}
 
@@ -100,7 +197,10 @@ function buildCodexUpstreamHeaders({
   ]
   passthroughHeaders.forEach((key) => copyHeaderIfPresent(headers, incoming, key))
 
-  const userAgent = getHeaderValue(incoming, 'user-agent') || CODEX_UPSTREAM_USER_AGENT
+  const userAgent =
+    (typeof userAgentOverride === 'string' && userAgentOverride.trim()) ||
+    getHeaderValue(incoming, 'user-agent') ||
+    CODEX_UPSTREAM_USER_AGENT
   headers['user-agent'] = userAgent
 
   if (!getHeaderValue(headers, 'session_id')) {
@@ -867,6 +967,7 @@ const handleResponses = async (req, res) => {
     // 判断是否为 Codex CLI 的请求（基于 User-Agent）
     // 支持: codex_vscode, codex_cli_rs, codex_exec, codex-tui
     const userAgent = req.headers['user-agent'] || ''
+    await learnGeneralOpenAIUpstreamCodexVersion(apiKeyData, userAgent)
     const codexCliPattern = /^(codex_vscode|codex_cli_rs|codex_exec|codex-tui)\/[\d.]+/i
     const isCodexCLI = codexCliPattern.test(userAgent)
 
@@ -998,12 +1099,16 @@ const handleResponses = async (req, res) => {
 
     // 按 Codex CLI/CLIProxyAPI 的方式构造 ChatGPT Codex 上游请求头
     const incoming = req.headers || {}
+    const userAgentOverride = isGeneralOpenAIEndpoint
+      ? await getGeneralOpenAIUpstreamUserAgent()
+      : null
     const headers = buildCodexUpstreamHeaders({
       incoming,
       accessToken,
       accountHeader: account.accountId || account.chatgptUserId || accountId,
       isStream: upstreamIsStream,
-      body: req.body
+      body: req.body,
+      userAgentOverride
     })
     if (!compactRoute) {
       req.body['store'] = false
@@ -1840,3 +1945,7 @@ router.get('/key-info', authenticateApiKey, async (req, res) => {
 module.exports = router
 module.exports.handleResponses = handleResponses
 module.exports.CODEX_CLI_INSTRUCTIONS = CODEX_CLI_INSTRUCTIONS
+module.exports._buildGeneralOpenAIUpstreamUserAgentForTest = buildGeneralOpenAIUpstreamUserAgent
+module.exports._resetGeneralOpenAIUpstreamUserAgentCacheForTest = () => {
+  generalOpenAIUpstreamCodexVersion = null
+}

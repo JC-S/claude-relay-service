@@ -463,7 +463,7 @@ class CodexToOpenAIConverter {
 
     // reasoning 配置
     result.reasoning = {
-      effort: chatBody.reasoning_effort || 'medium',
+      effort: chatBody.reasoning?.effort || chatBody.reasoning_effort || 'medium',
       summary: 'auto'
     }
 

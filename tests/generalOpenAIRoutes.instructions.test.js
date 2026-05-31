@@ -108,6 +108,25 @@ describe('/general OpenAI-compatible instructions handling', () => {
     expect(response.body.path).toBe('/v1/responses')
   })
 
+  test('chat completions preserve Responses-style reasoning effort', async () => {
+    const app = buildApp()
+
+    const response = await request(app)
+      .post('/general/v1/chat/completions')
+      .send({
+        model: 'gpt-5.5',
+        stream: false,
+        reasoning: { effort: 'xhigh' },
+        messages: [{ role: 'user', content: 'call ping' }]
+      })
+
+    expect(response.status).toBe(200)
+    expect(response.body.requestBody.reasoning).toEqual({
+      effort: 'xhigh',
+      summary: 'auto'
+    })
+  })
+
   test('responses add empty instructions only when missing', async () => {
     const app = buildApp()
 

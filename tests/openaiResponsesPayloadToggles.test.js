@@ -169,6 +169,7 @@ function createRes() {
 describe('openai responses payload toggles', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    openaiRoutes._resetGeneralOpenAIUpstreamUserAgentCacheForTest()
 
     unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
       accountId: 'resp-1',
@@ -290,6 +291,9 @@ describe('openai responses payload toggles', () => {
       { allowedAccountTypes: ['openai'] }
     )
     expect(axios.post.mock.calls[0][1].instructions).toBeUndefined()
+    expect(axios.post.mock.calls[0][2].headers['user-agent']).toBe(
+      'codex-tui/0.135.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.135.0)'
+    )
   })
 
   test('general non-stream responses force Codex upstream stream and aggregate response', async () => {
@@ -627,6 +631,73 @@ describe('openai responses payload toggles', () => {
       'user-agent': 'openai-node/4.0',
       session_id: 'cache-session'
     })
+  })
+
+  test('general endpoint overrides upstream user-agent using shenjc Codex TUI version', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.4',
+        usage: {
+          input_tokens: 8,
+          output_tokens: 2,
+          total_tokens: 10
+        }
+      },
+      headers: {}
+    })
+
+    const sourceReq = createReq({
+      body: {
+        model: 'gpt-5.4',
+        prompt_cache_key: 'source-session',
+        stream: false
+      },
+      userAgent: 'codex-tui/0.136.2 (Ubuntu 22.4.0; aarch64) xterm-256color (codex-tui; 0.136.2)',
+      apiKeyOverrides: {
+        id: 'a6c1ab90-3dd4-4426-925b-6ca11ef76d60',
+        name: 'shenjc',
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesPayloadRules: false
+      }
+    })
+
+    await openaiRoutes.handleResponses(sourceReq, createRes())
+
+    const generalReq = createReq({
+      body: {
+        model: 'gpt-5.4',
+        prompt_cache_key: 'general-session',
+        stream: false
+      },
+      userAgent: 'claude-cli/1.0.110 (external, cli, browser-fallback)',
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesPayloadRules: false
+      }
+    })
+    generalReq.originalUrl = '/general/v1/responses'
+    generalReq._generalOpenAIEndpoint = true
+    generalReq._openAISchedulerOptions = { allowedAccountTypes: ['openai'] }
+
+    await openaiRoutes.handleResponses(generalReq, createRes())
+
+    expect(axios.post.mock.calls[0][2].headers['user-agent']).toBe(
+      'codex-tui/0.136.2 (Ubuntu 22.4.0; aarch64) xterm-256color (codex-tui; 0.136.2)'
+    )
+    expect(axios.post.mock.calls[1][2].headers['user-agent']).toBe(
+      'codex-tui/0.136.2 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.136.2)'
+    )
   })
 
   test('preserves incoming Codex upstream headers for openai oauth accounts', async () => {
