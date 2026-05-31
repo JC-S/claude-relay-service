@@ -1,4 +1,5 @@
 const express = require('express')
+const crypto = require('crypto')
 const { authenticateApiKey } = require('../middleware/auth')
 const apiKeyService = require('../services/apiKeyService')
 const modelService = require('../services/modelService')
@@ -18,6 +19,17 @@ const GENERAL_RESPONSES_COMPAT_PATHS = [
   GENERAL_RESPONSES_PATH,
   `${GENERAL_RESPONSES_PATH}${GENERAL_RESPONSES_PATH}`
 ]
+const GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH = 64
+const GENERAL_PROMPT_CACHE_API_KEY_HASH_LENGTH = 10
+const GENERAL_PROMPT_CACHE_MODEL_SEGMENT_MAX_LENGTH = 16
+const GENERAL_PROMPT_CACHE_VALUE_HASH_LENGTH = 16
+const GENERAL_PROMPT_CACHE_SOURCE_CODES = {
+  session_id: 's',
+  'x-session-id': 'x',
+  conversation_id: 'c',
+  fallback: 'f',
+  preserved: 'p'
+}
 
 function sendOpenAIError(
   res,
@@ -49,6 +61,237 @@ function isModelRestricted(apiKeyData = {}, model) {
     Array.isArray(apiKeyData.restrictedModels) &&
     apiKeyData.restrictedModels.includes(model)
   )
+}
+
+function getHeaderValue(headers = {}, key) {
+  const direct = headers[key]
+  if (direct !== undefined) {
+    return Array.isArray(direct) ? direct.find((item) => item) : direct
+  }
+
+  const lowerKey = key.toLowerCase()
+  const lower = headers[lowerKey]
+  if (lower !== undefined) {
+    return Array.isArray(lower) ? lower.find((item) => item) : lower
+  }
+
+  return undefined
+}
+
+function normalizeNonEmptyString(value) {
+  if (value === undefined || value === null) {
+    return ''
+  }
+  const str = String(value).trim()
+  return str || ''
+}
+
+function normalizeModelFamily(model) {
+  const value = normalizeNonEmptyString(model).toLowerCase()
+  if (!value) {
+    return 'unknown'
+  }
+
+  const match = value.match(/^gpt-\d+(?:\.\d+)?/)
+  if (match) {
+    return match[0]
+  }
+
+  return value.replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown'
+}
+
+function stableNormalize(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => stableNormalize(item))
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        if (value[key] !== undefined) {
+          acc[key] = stableNormalize(value[key])
+        }
+        return acc
+      }, {})
+  }
+
+  return value
+}
+
+function stableHash(value, length = 16) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(stableNormalize(value)))
+    .digest('hex')
+    .slice(0, length)
+}
+
+function getPromptCacheModelSegment(modelFamily) {
+  const normalized = normalizeModelFamily(modelFamily)
+  if (normalized.length <= GENERAL_PROMPT_CACHE_MODEL_SEGMENT_MAX_LENGTH) {
+    return normalized
+  }
+
+  return `m${stableHash(normalized, 8)}`
+}
+
+function getPromptCacheSourceCode(source) {
+  return GENERAL_PROMPT_CACHE_SOURCE_CODES[source] || 'u'
+}
+
+function buildGeneralPromptCacheKey(apiKeyId, modelFamily, source, value) {
+  const candidate = [
+    'g',
+    stableHash(apiKeyId || 'unknown', GENERAL_PROMPT_CACHE_API_KEY_HASH_LENGTH),
+    getPromptCacheModelSegment(modelFamily),
+    getPromptCacheSourceCode(source),
+    stableHash(value, GENERAL_PROMPT_CACHE_VALUE_HASH_LENGTH)
+  ].join(':')
+
+  if (candidate.length <= GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH) {
+    return candidate
+  }
+
+  return `g:${stableHash(
+    { apiKeyId, modelFamily, source, value },
+    GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH - 2
+  )}`
+}
+
+function enforcePromptCacheKeyLimit(req, source = 'preserved') {
+  if (!req.body || typeof req.body !== 'object') {
+    return false
+  }
+
+  const currentKey = normalizeNonEmptyString(req.body.prompt_cache_key)
+  if (!currentKey || currentKey.length <= GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH) {
+    return false
+  }
+
+  const apiKeyId = normalizeNonEmptyString(req.apiKey?.id) || 'unknown'
+  const modelFamily = normalizeModelFamily(req.body.model)
+  req.body.prompt_cache_key = buildGeneralPromptCacheKey(apiKeyId, modelFamily, source, currentKey)
+  logger.debug(
+    `General OpenAI prompt_cache_key exceeded ${GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH} chars; compressed for API key ${apiKeyId}`
+  )
+  return true
+}
+
+function extractLeadingSystemInput(input) {
+  if (!Array.isArray(input)) {
+    return []
+  }
+
+  const leading = []
+  for (const item of input) {
+    if (!item || item.type !== 'message' || !['developer', 'system'].includes(item.role)) {
+      break
+    }
+    leading.push(item)
+  }
+  return leading
+}
+
+function buildStaticPrefixFingerprint(body = {}, modelFamily) {
+  return {
+    modelFamily,
+    instructions: body.instructions,
+    tools: body.tools,
+    tool_choice: body.tool_choice,
+    text: body.text,
+    reasoning: body.reasoning,
+    parallel_tool_calls: body.parallel_tool_calls,
+    leadingSystemInput: extractLeadingSystemInput(body.input)
+  }
+}
+
+function getSessionSource(req) {
+  const sessionIdHeader = normalizeNonEmptyString(getHeaderValue(req.headers, 'session_id'))
+  if (sessionIdHeader) {
+    return { source: 'session_id', value: sessionIdHeader }
+  }
+
+  const sessionIdBody = normalizeNonEmptyString(req.body?.session_id)
+  if (sessionIdBody) {
+    return { source: 'session_id', value: sessionIdBody }
+  }
+
+  const xSessionId = normalizeNonEmptyString(getHeaderValue(req.headers, 'x-session-id'))
+  if (xSessionId) {
+    return { source: 'x-session-id', value: xSessionId }
+  }
+
+  const conversationId = normalizeNonEmptyString(req.body?.conversation_id)
+  if (conversationId) {
+    return { source: 'conversation_id', value: conversationId }
+  }
+
+  return null
+}
+
+function applyGeneralPromptCacheAssist(req) {
+  if (
+    req?._generalOpenAIEndpoint !== true ||
+    req?.apiKey?.enableGeneralPromptCacheAssist !== true ||
+    !req.body ||
+    typeof req.body !== 'object'
+  ) {
+    return { applied: false, reason: 'disabled' }
+  }
+
+  const { body } = req
+  const apiKeyId = normalizeNonEmptyString(req.apiKey.id) || 'unknown'
+  const modelFamily = normalizeModelFamily(body.model)
+  const existingPromptCacheKey = normalizeNonEmptyString(body.prompt_cache_key)
+  let keySource = 'preserved'
+
+  if (!existingPromptCacheKey) {
+    const sessionSource = getSessionSource(req)
+    if (sessionSource) {
+      keySource = sessionSource.source
+      body.prompt_cache_key = buildGeneralPromptCacheKey(
+        apiKeyId,
+        modelFamily,
+        sessionSource.source,
+        sessionSource.value
+      )
+    } else {
+      keySource = 'fallback'
+      body.prompt_cache_key = buildGeneralPromptCacheKey(
+        apiKeyId,
+        modelFamily,
+        'fallback',
+        buildStaticPrefixFingerprint(body, modelFamily)
+      )
+    }
+
+    logger.debug(
+      `General OpenAI prompt cache assist set prompt_cache_key via ${keySource} for API key ${apiKeyId}`
+    )
+  } else {
+    logger.debug(`General OpenAI prompt cache assist preserved prompt_cache_key for ${apiKeyId}`)
+    if (enforcePromptCacheKeyLimit(req, 'preserved')) {
+      keySource = 'preserved-compressed'
+    }
+  }
+
+  return {
+    applied: true,
+    keySource,
+    promptCacheKey: body.prompt_cache_key
+  }
+}
+
+function stripUnsupportedGeneralOpenAIFields(req) {
+  if (!req.body || typeof req.body !== 'object') {
+    return
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body, 'prompt_cache_retention')) {
+    delete req.body.prompt_cache_retention
+    logger.debug('General OpenAI request removed unsupported prompt_cache_retention field')
+  }
 }
 
 function requireGeneralOpenAIAccess(req, res, next) {
@@ -182,6 +425,9 @@ function prepareGeneralResponsesRequest(req) {
   if (req.body) {
     req.body.stream = true
   }
+  stripUnsupportedGeneralOpenAIFields(req)
+  applyGeneralPromptCacheAssist(req)
+  enforcePromptCacheKeyLimit(req, 'preserved')
 }
 
 function normalizeGeneralRequestPath(req, mountedPath) {
@@ -279,3 +525,5 @@ router.post(GENERAL_CHAT_COMPLETIONS_COMPAT_PATHS, async (req, res) => {
 
 module.exports = router
 module.exports.hasGeneralOpenAIAccess = hasGeneralOpenAIAccess
+module.exports.applyGeneralPromptCacheAssist = applyGeneralPromptCacheAssist
+module.exports._normalizeModelFamilyForTest = normalizeModelFamily

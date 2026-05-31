@@ -783,6 +783,19 @@
                 </span>
               </span>
             </label>
+
+            <label class="mt-3 flex cursor-pointer items-start gap-3">
+              <input
+                v-model="form.enableGeneralPromptCacheAssist"
+                class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                type="checkbox"
+              />
+              <span class="flex-1">
+                <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  增强 /general Prompt Cache
+                </span>
+              </span>
+            </label>
           </div>
 
           <div>
@@ -1231,6 +1244,7 @@ const form = reactive({
   enableIpWhitelist: false,
   ipWhitelistInput: '',
   enableGeneralOpenAIEndpoint: false,
+  enableGeneralPromptCacheAssist: false,
   enableClaudeThinkingSignatureLossyFallback: false,
   tags: []
 })
@@ -1670,6 +1684,7 @@ const createApiKey = async () => {
       enableIpWhitelist: form.enableIpWhitelist,
       ipWhitelist,
       enableGeneralOpenAIEndpoint: form.enableGeneralOpenAIEndpoint,
+      enableGeneralPromptCacheAssist: form.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback
     }
 

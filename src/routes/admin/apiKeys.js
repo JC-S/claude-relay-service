@@ -1500,6 +1500,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
       enableGeneralOpenAIEndpoint,
+      enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
@@ -1665,6 +1666,13 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
     }
 
     if (
+      enableGeneralPromptCacheAssist !== undefined &&
+      typeof enableGeneralPromptCacheAssist !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableGeneralPromptCacheAssist must be a boolean' })
+    }
+
+    if (
       enableClaudeThinkingSignatureLossyFallback !== undefined &&
       typeof enableClaudeThinkingSignatureLossyFallback !== 'boolean'
     ) {
@@ -1753,6 +1761,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
           : 0,
       disableGptFastMode: disableGptFastMode === true,
       enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
+      enableGeneralPromptCacheAssist: enableGeneralPromptCacheAssist === true,
       enableClaudeThinkingSignatureLossyFallback:
         enableClaudeThinkingSignatureLossyFallback === true,
       enableOpenAIResponsesCodexAdaptation:
@@ -1808,6 +1817,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       icon,
       serviceRates,
       enableGeneralOpenAIEndpoint,
+      enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback
     } = req.body
 
@@ -1863,6 +1873,13 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
     }
 
     if (
+      enableGeneralPromptCacheAssist !== undefined &&
+      typeof enableGeneralPromptCacheAssist !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableGeneralPromptCacheAssist must be a boolean' })
+    }
+
+    if (
       enableClaudeThinkingSignatureLossyFallback !== undefined &&
       typeof enableClaudeThinkingSignatureLossyFallback !== 'boolean'
     ) {
@@ -1910,6 +1927,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           icon,
           serviceRates,
           enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
+          enableGeneralPromptCacheAssist: enableGeneralPromptCacheAssist === true,
           enableClaudeThinkingSignatureLossyFallback:
             enableClaudeThinkingSignatureLossyFallback === true
         })
@@ -2002,6 +2020,12 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
       typeof updates.disableGptFastMode !== 'boolean'
     ) {
       return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
+    }
+    if (
+      updates.enableGeneralPromptCacheAssist !== undefined &&
+      typeof updates.enableGeneralPromptCacheAssist !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableGeneralPromptCacheAssist must be a boolean' })
     }
     if (
       updates.enableClaudeThinkingSignatureLossyFallback !== undefined &&
@@ -2104,6 +2128,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         }
         if (updates.disableGptFastMode !== undefined) {
           finalUpdates.disableGptFastMode = updates.disableGptFastMode
+        }
+        if (updates.enableGeneralPromptCacheAssist !== undefined) {
+          finalUpdates.enableGeneralPromptCacheAssist = updates.enableGeneralPromptCacheAssist
         }
         if (updates.enableClaudeThinkingSignatureLossyFallback !== undefined) {
           finalUpdates.enableClaudeThinkingSignatureLossyFallback =
@@ -2262,6 +2289,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
       enableGeneralOpenAIEndpoint,
+      enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
@@ -2493,6 +2521,13 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'enableGeneralOpenAIEndpoint must be a boolean' })
       }
       updates.enableGeneralOpenAIEndpoint = enableGeneralOpenAIEndpoint
+    }
+
+    if (enableGeneralPromptCacheAssist !== undefined) {
+      if (typeof enableGeneralPromptCacheAssist !== 'boolean') {
+        return res.status(400).json({ error: 'enableGeneralPromptCacheAssist must be a boolean' })
+      }
+      updates.enableGeneralPromptCacheAssist = enableGeneralPromptCacheAssist
     }
 
     if (enableClaudeThinkingSignatureLossyFallback !== undefined) {

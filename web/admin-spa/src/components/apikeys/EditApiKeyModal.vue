@@ -711,6 +711,19 @@
                 </span>
               </label>
 
+              <label class="flex cursor-pointer items-start gap-3">
+                <input
+                  v-model="form.enableGeneralPromptCacheAssist"
+                  class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                  type="checkbox"
+                />
+                <span class="flex-1">
+                  <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    增强 /general Prompt Cache
+                  </span>
+                </span>
+              </label>
+
               <div
                 v-if="form.enableOpenAIResponsesPayloadRules"
                 class="rounded-lg border border-emerald-100 bg-white/70 p-3 dark:border-emerald-800 dark:bg-gray-800/40"
@@ -1297,6 +1310,7 @@ const form = reactive({
   ipWhitelistInput: '',
   disableGptFastMode: false,
   enableGeneralOpenAIEndpoint: false,
+  enableGeneralPromptCacheAssist: false,
   enableClaudeThinkingSignatureLossyFallback: false,
   enableOpenAIResponsesCodexAdaptation: true,
   enableOpenAIResponsesPayloadRules: false,
@@ -1499,6 +1513,7 @@ const updateApiKey = async () => {
       weeklyResetHour: form.weeklyResetHour,
       disableGptFastMode: form.disableGptFastMode,
       enableGeneralOpenAIEndpoint: form.enableGeneralOpenAIEndpoint,
+      enableGeneralPromptCacheAssist: form.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation: form.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: form.enableOpenAIResponsesPayloadRules,
@@ -1899,6 +1914,9 @@ onMounted(async () => {
   form.enableGeneralOpenAIEndpoint =
     props.apiKey.enableGeneralOpenAIEndpoint === true ||
     props.apiKey.enableGeneralOpenAIEndpoint === 'true'
+  form.enableGeneralPromptCacheAssist =
+    props.apiKey.enableGeneralPromptCacheAssist === true ||
+    props.apiKey.enableGeneralPromptCacheAssist === 'true'
   form.enableClaudeThinkingSignatureLossyFallback =
     props.apiKey.enableClaudeThinkingSignatureLossyFallback === true ||
     props.apiKey.enableClaudeThinkingSignatureLossyFallback === 'true'

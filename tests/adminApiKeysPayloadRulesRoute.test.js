@@ -212,4 +212,25 @@ describe('admin api keys route payload rule updates', () => {
     expect(res.status).not.toHaveBeenCalled()
     expect(res.body.success).toBe(true)
   })
+
+  test('accepts general prompt cache assist toggle updates', async () => {
+    const handler = findPutHandler('/api-keys/:keyId')
+    const res = createResponse()
+
+    await handler(
+      {
+        params: { keyId: 'key-6' },
+        body: {
+          enableGeneralPromptCacheAssist: true
+        }
+      },
+      res
+    )
+
+    expect(apiKeyService.updateApiKey).toHaveBeenCalledWith('key-6', {
+      enableGeneralPromptCacheAssist: true
+    })
+    expect(res.status).not.toHaveBeenCalled()
+    expect(res.body.success).toBe(true)
+  })
 })

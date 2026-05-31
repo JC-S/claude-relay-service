@@ -32,6 +32,7 @@ const GENERAL_OPENAI_UPSTREAM_UA_SOURCE_API_KEY_ID = 'a6c1ab90-3dd4-4426-925b-6c
 const GENERAL_OPENAI_UPSTREAM_UA_SOURCE_API_KEY_NAME = 'shenjc'
 const GENERAL_OPENAI_UPSTREAM_CODEX_VERSION_REDIS_KEY = 'openai:general:upstream_codex_tui_version'
 const GENERAL_OPENAI_UPSTREAM_DEFAULT_CODEX_VERSION = '0.135.0'
+const GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH = 64
 let generalOpenAIUpstreamCodexVersion = null
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
@@ -500,6 +501,43 @@ function applyCodexCliAdaptation(body = {}) {
   })
 
   body.instructions = CODEX_CLI_INSTRUCTIONS
+}
+
+function buildShortGeneralPromptCacheKey(body = {}, apiKeyData = {}) {
+  const key = body.prompt_cache_key
+  return `g:${crypto
+    .createHash('sha256')
+    .update(
+      JSON.stringify({
+        apiKeyId: apiKeyData.id || 'unknown',
+        model: body.model || 'unknown',
+        promptCacheKey: key
+      })
+    )
+    .digest('hex')
+    .slice(0, GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH - 2)}`
+}
+
+function stripUnsupportedGeneralOpenAIFields(body = {}, apiKeyData = {}) {
+  if (!body || typeof body !== 'object') {
+    return
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'prompt_cache_retention')) {
+    delete body.prompt_cache_retention
+    logger.info('📦 General OpenAI request removed unsupported prompt_cache_retention field')
+  }
+
+  const promptCacheKey =
+    body.prompt_cache_key === undefined || body.prompt_cache_key === null
+      ? ''
+      : String(body.prompt_cache_key).trim()
+  if (promptCacheKey.length > GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH) {
+    body.prompt_cache_key = buildShortGeneralPromptCacheKey(body, apiKeyData)
+    logger.info(
+      `📦 General OpenAI request compressed prompt_cache_key to ${GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH} chars`
+    )
+  }
 }
 
 async function applyRateLimitTracking(
@@ -1000,6 +1038,8 @@ const handleResponses = async (req, res) => {
           '📦 General OpenAI Responses request is passing through without Codex adaptation'
         )
       }
+
+      stripUnsupportedGeneralOpenAIFields(req.body, apiKeyData)
     } else if (shouldUseToggleControlledFlow) {
       const shouldApplyCodexAdaptation =
         apiKeyData.enableOpenAIResponsesCodexAdaptation === true && !isCodexCLI

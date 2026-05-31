@@ -209,6 +209,7 @@ class ApiKeyService {
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       disableGptFastMode = false,
       enableGeneralOpenAIEndpoint = false,
+      enableGeneralPromptCacheAssist = false,
       enableClaudeThinkingSignatureLossyFallback = false,
       enableOpenAIResponsesCodexAdaptation = true,
       enableOpenAIResponsesPayloadRules = false,
@@ -276,6 +277,7 @@ class ApiKeyService {
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       disableGptFastMode: String(disableGptFastMode === true),
       enableGeneralOpenAIEndpoint: String(enableGeneralOpenAIEndpoint === true),
+      enableGeneralPromptCacheAssist: String(enableGeneralPromptCacheAssist === true),
       enableClaudeThinkingSignatureLossyFallback: String(
         enableClaudeThinkingSignatureLossyFallback === true
       ),
@@ -354,6 +356,10 @@ class ApiKeyService {
       disableGptFastMode: parseBooleanWithDefault(keyData.disableGptFastMode, false),
       enableGeneralOpenAIEndpoint: parseBooleanWithDefault(
         keyData.enableGeneralOpenAIEndpoint,
+        false
+      ),
+      enableGeneralPromptCacheAssist: parseBooleanWithDefault(
+        keyData.enableGeneralPromptCacheAssist,
         false
       ),
       enableClaudeThinkingSignatureLossyFallback: parseBooleanWithDefault(
@@ -532,6 +538,10 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       )
+      const enableGeneralPromptCacheAssist = parseBooleanWithDefault(
+        keyData.enableGeneralPromptCacheAssist,
+        false
+      )
       const enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
         keyData.enableClaudeThinkingSignatureLossyFallback,
         false
@@ -576,6 +586,7 @@ class ApiKeyService {
           serviceRates,
           disableGptFastMode,
           enableGeneralOpenAIEndpoint,
+          enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
@@ -688,6 +699,10 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       )
+      const enableGeneralPromptCacheAssist = parseBooleanWithDefault(
+        keyData.enableGeneralPromptCacheAssist,
+        false
+      )
       const enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
         keyData.enableClaudeThinkingSignatureLossyFallback,
         false
@@ -743,6 +758,7 @@ class ApiKeyService {
           usage,
           disableGptFastMode,
           enableGeneralOpenAIEndpoint,
+          enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
@@ -949,6 +965,10 @@ class ApiKeyService {
         key.disableGptFastMode = parseBooleanWithDefault(key.disableGptFastMode, false)
         key.enableGeneralOpenAIEndpoint = parseBooleanWithDefault(
           key.enableGeneralOpenAIEndpoint,
+          false
+        )
+        key.enableGeneralPromptCacheAssist = parseBooleanWithDefault(
+          key.enableGeneralPromptCacheAssist,
           false
         )
         key.enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
@@ -1226,6 +1246,10 @@ class ApiKeyService {
           key.enableGeneralOpenAIEndpoint,
           false
         )
+        key.enableGeneralPromptCacheAssist = parseBooleanWithDefault(
+          key.enableGeneralPromptCacheAssist,
+          false
+        )
         key.enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
           key.enableClaudeThinkingSignatureLossyFallback,
           false
@@ -1444,6 +1468,7 @@ class ApiKeyService {
         'weeklyResetHour', // 周费用重置时 (0-23)
         'disableGptFastMode',
         'enableGeneralOpenAIEndpoint',
+        'enableGeneralPromptCacheAssist',
         'enableClaudeThinkingSignatureLossyFallback',
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
@@ -1477,6 +1502,7 @@ class ApiKeyService {
             field === 'isActivated' ||
             field === 'disableGptFastMode' ||
             field === 'enableGeneralOpenAIEndpoint' ||
+            field === 'enableGeneralPromptCacheAssist' ||
             field === 'enableClaudeThinkingSignatureLossyFallback' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
             field === 'enableOpenAIResponsesPayloadRules'
@@ -2560,6 +2586,10 @@ class ApiKeyService {
         disableGptFastMode: parseBooleanWithDefault(keyData.disableGptFastMode, false),
         enableGeneralOpenAIEndpoint: parseBooleanWithDefault(
           keyData.enableGeneralOpenAIEndpoint,
+          false
+        ),
+        enableGeneralPromptCacheAssist: parseBooleanWithDefault(
+          keyData.enableGeneralPromptCacheAssist,
           false
         ),
         enableClaudeThinkingSignatureLossyFallback: parseBooleanWithDefault(

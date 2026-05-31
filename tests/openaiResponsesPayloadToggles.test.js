@@ -270,7 +270,8 @@ describe('openai responses payload toggles', () => {
         stream: false,
         temperature: 0.2,
         service_tier: 'priority',
-        prompt_cache_key: 'general-session'
+        prompt_cache_key: 'general-session',
+        prompt_cache_retention: '24h'
       }
     })
     req.originalUrl = '/general/v1/responses'
@@ -283,6 +284,7 @@ describe('openai responses payload toggles', () => {
     expect(req.body.instructions).toBeUndefined()
     expect(req.body.temperature).toBe(0.2)
     expect(req.body.service_tier).toBe('priority')
+    expect(req.body.prompt_cache_retention).toBeUndefined()
     expect(req.body.store).toBe(false)
     expect(unifiedOpenAIScheduler.selectAccountForApiKey).toHaveBeenCalledWith(
       req.apiKey,
@@ -291,9 +293,64 @@ describe('openai responses payload toggles', () => {
       { allowedAccountTypes: ['openai'] }
     )
     expect(axios.post.mock.calls[0][1].instructions).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].prompt_cache_retention).toBeUndefined()
     expect(axios.post.mock.calls[0][2].headers['user-agent']).toBe(
       'codex-tui/0.135.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.135.0)'
     )
+  })
+
+  test('general responses strip prompt_cache_retention after payload rules', async () => {
+    const longPromptCacheKey = 'rule-cache-key-'.repeat(8)
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValueOnce({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValueOnce({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    openaiAccountService.decrypt.mockReturnValueOnce('decrypted-token')
+    apiKeyService.recordUsage.mockResolvedValueOnce({ realCost: 0, ratedCost: 0 })
+    axios.post.mockResolvedValueOnce({
+      status: 200,
+      data: {
+        model: 'gpt-5.4',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          total_tokens: 12
+        }
+      },
+      headers: {}
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.4',
+        stream: false,
+        prompt_cache_key: 'general-rule-session'
+      },
+      apiKeyOverrides: {
+        enableOpenAIResponsesPayloadRules: true,
+        openaiResponsesPayloadRules: [
+          { path: 'prompt_cache_key', valueType: 'string', value: longPromptCacheKey },
+          { path: 'prompt_cache_retention', valueType: 'string', value: '24h' }
+        ]
+      }
+    })
+    req.originalUrl = '/general/v1/responses'
+    req._generalOpenAIEndpoint = true
+    req._openAISchedulerOptions = { allowedAccountTypes: ['openai'] }
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(req.body.prompt_cache_retention).toBeUndefined()
+    expect(req.body.prompt_cache_key).not.toBe(longPromptCacheKey)
+    expect(req.body.prompt_cache_key.length).toBeLessThanOrEqual(64)
+    expect(axios.post.mock.calls[0][1].prompt_cache_retention).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].prompt_cache_key.length).toBeLessThanOrEqual(64)
   })
 
   test('general non-stream responses force Codex upstream stream and aggregate response', async () => {

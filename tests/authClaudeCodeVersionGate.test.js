@@ -150,6 +150,22 @@ describe('authenticateApiKey Claude Code version gate', () => {
     expect(req.apiKey.enableClaudeThinkingSignatureLossyFallback).toBe(true)
   })
 
+  test('passes general prompt cache assist toggle to req.apiKey', async () => {
+    mockValidApiKey({
+      enableGeneralOpenAIEndpoint: true,
+      enableGeneralPromptCacheAssist: true
+    })
+    const req = createReq('claude-cli/2.1.150 (external, cli)')
+    const res = createRes()
+    const next = jest.fn()
+
+    await authenticateApiKey(req, res, next)
+
+    expect(next).toHaveBeenCalled()
+    expect(req.apiKey.enableGeneralOpenAIEndpoint).toBe(true)
+    expect(req.apiKey.enableGeneralPromptCacheAssist).toBe(true)
+  })
+
   test('does not apply version gate when Claude Code is not enabled for the API key', async () => {
     mockValidApiKey({
       allowedClients: ['codex_cli']
