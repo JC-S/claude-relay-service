@@ -24,6 +24,7 @@ const openaiGeminiRoutes = require('./routes/openaiGeminiRoutes')
 const standardGeminiRoutes = require('./routes/standardGeminiRoutes')
 const openaiClaudeRoutes = require('./routes/openaiClaudeRoutes')
 const openaiRoutes = require('./routes/openaiRoutes')
+const generalOpenAIRoutes = require('./routes/generalOpenAIRoutes')
 const droidRoutes = require('./routes/droidRoutes')
 const userRoutes = require('./routes/userRoutes')
 const azureOpenaiRoutes = require('./routes/azureOpenaiRoutes')
@@ -362,6 +363,7 @@ class Application {
       this.app.use('/openai/claude', openaiClaudeRoutes)
       this.app.use('/openai', unifiedRoutes) // 复用统一智能路由，支持 /openai/v1/chat/completions
       this.app.use('/openai', openaiRoutes) // Codex API 路由（/openai/responses, /openai/v1/responses）
+      this.app.use('/general', generalOpenAIRoutes) // 通用 OpenAI 兼容入口，仅调度 OpenAI OAuth 账号
       // Droid 路由：支持多种 Factory.ai 端点
       this.app.use('/droid', droidRoutes) // Droid (Factory.ai) API 转发
       this.app.use('/azure', azureOpenaiRoutes)

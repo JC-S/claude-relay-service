@@ -11,6 +11,20 @@ class UnifiedOpenAIScheduler {
     this.SESSION_MAPPING_PREFIX = 'unified_openai_session_mapping:'
   }
 
+  _isAccountTypeAllowed(accountType, options = {}) {
+    const allowedAccountTypes = Array.isArray(options.allowedAccountTypes)
+      ? options.allowedAccountTypes
+      : []
+    return allowedAccountTypes.length === 0 || allowedAccountTypes.includes(accountType)
+  }
+
+  _createAccountTypeNotAllowedError(accountType, context = 'OpenAI account selection') {
+    const error = new Error(`${context} does not allow ${accountType} accounts`)
+    error.statusCode = 403
+    error.code = 'account_type_not_allowed'
+    return error
+  }
+
   // 🔧 辅助方法：检查账户是否被限流（兼容字符串和对象格式）
   _isRateLimited(rateLimitStatus) {
     if (!rateLimitStatus) {
@@ -119,7 +133,12 @@ class UnifiedOpenAIScheduler {
   }
 
   // 🎯 统一调度OpenAI账号
-  async selectAccountForApiKey(apiKeyData, sessionHash = null, requestedModel = null) {
+  async selectAccountForApiKey(
+    apiKeyData,
+    sessionHash = null,
+    requestedModel = null,
+    options = {}
+  ) {
     try {
       // 如果API Key绑定了专属账户或分组，优先使用
       if (apiKeyData.openaiAccountId) {
@@ -129,7 +148,13 @@ class UnifiedOpenAIScheduler {
           logger.info(
             `🎯 API key ${apiKeyData.name} is bound to group ${groupId}, selecting from group`
           )
-          return await this.selectAccountFromGroup(groupId, sessionHash, requestedModel, apiKeyData)
+          return await this.selectAccountFromGroup(
+            groupId,
+            sessionHash,
+            requestedModel,
+            apiKeyData,
+            options
+          )
         }
 
         // 普通专属账户 - 根据前缀判断是 OpenAI 还是 OpenAI-Responses 类型
@@ -145,6 +170,13 @@ class UnifiedOpenAIScheduler {
           // 普通 OpenAI 账户
           boundAccount = await openaiAccountService.getAccount(apiKeyData.openaiAccountId)
           accountType = 'openai'
+        }
+
+        if (!this._isAccountTypeAllowed(accountType, options)) {
+          throw this._createAccountTypeNotAllowedError(
+            accountType,
+            `Dedicated account ${apiKeyData.openaiAccountId}`
+          )
         }
 
         const isActiveBoundAccount =
@@ -276,31 +308,42 @@ class UnifiedOpenAIScheduler {
       if (sessionHash) {
         const mappedAccount = await this._getSessionMapping(sessionHash)
         if (mappedAccount) {
-          // 验证映射的账户是否仍然可用
-          const isAvailable = await this._isAccountAvailable(
-            mappedAccount.accountId,
-            mappedAccount.accountType
-          )
-          if (isAvailable) {
-            // 🚀 智能会话续期（续期 unified 映射键，按配置）
-            await this._extendSessionMappingTTL(sessionHash)
+          if (!this._isAccountTypeAllowed(mappedAccount.accountType, options)) {
             logger.info(
-              `🎯 Using sticky session account: ${mappedAccount.accountId} (${mappedAccount.accountType}) for session ${sessionHash}`
-            )
-            // 更新账户的最后使用时间
-            await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
-            return mappedAccount
-          } else {
-            logger.warn(
-              `⚠️ Mapped account ${mappedAccount.accountId} is no longer available, selecting new account`
+              `🎯 Sticky session account ${mappedAccount.accountId} (${mappedAccount.accountType}) is not allowed by current selection options, selecting new account`
             )
             await this._deleteSessionMapping(sessionHash)
+          } else {
+            // 验证映射的账户是否仍然可用
+            const isAvailable = await this._isAccountAvailable(
+              mappedAccount.accountId,
+              mappedAccount.accountType
+            )
+            if (isAvailable) {
+              // 🚀 智能会话续期（续期 unified 映射键，按配置）
+              await this._extendSessionMappingTTL(sessionHash)
+              logger.info(
+                `🎯 Using sticky session account: ${mappedAccount.accountId} (${mappedAccount.accountType}) for session ${sessionHash}`
+              )
+              // 更新账户的最后使用时间
+              await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
+              return mappedAccount
+            } else {
+              logger.warn(
+                `⚠️ Mapped account ${mappedAccount.accountId} is no longer available, selecting new account`
+              )
+              await this._deleteSessionMapping(sessionHash)
+            }
           }
         }
       }
 
       // 获取所有可用账户
-      const availableAccounts = await this._getAllAvailableAccounts(apiKeyData, requestedModel)
+      const availableAccounts = await this._getAllAvailableAccounts(
+        apiKeyData,
+        requestedModel,
+        options
+      )
 
       if (availableAccounts.length === 0) {
         // 提供更详细的错误信息
@@ -353,14 +396,16 @@ class UnifiedOpenAIScheduler {
   }
 
   // 📋 获取所有可用账户（仅共享池）
-  async _getAllAvailableAccounts(apiKeyData, requestedModel = null) {
+  async _getAllAvailableAccounts(apiKeyData, requestedModel = null, options = {}) {
     const availableAccounts = []
 
     // 注意：专属账户的处理已经在 selectAccountForApiKey 中完成
     // 这里只处理共享池账户
 
     // 获取所有OpenAI账户（共享池）
-    const openaiAccounts = await openaiAccountService.getAllAccounts()
+    const openaiAccounts = this._isAccountTypeAllowed('openai', options)
+      ? await openaiAccountService.getAllAccounts()
+      : []
     for (let account of openaiAccounts) {
       if (
         account.isActive &&
@@ -434,7 +479,9 @@ class UnifiedOpenAIScheduler {
     }
 
     // 获取所有 OpenAI-Responses 账户（共享池）
-    const openaiResponsesAccounts = await openaiResponsesAccountService.getAllAccounts()
+    const openaiResponsesAccounts = this._isAccountTypeAllowed('openai-responses', options)
+      ? await openaiResponsesAccountService.getAllAccounts()
+      : []
     for (const account of openaiResponsesAccounts) {
       if (
         (account.isActive === true || account.isActive === 'true') &&
@@ -812,7 +859,13 @@ class UnifiedOpenAIScheduler {
   }
 
   // 👥 从分组中选择账户
-  async selectAccountFromGroup(groupId, sessionHash = null, requestedModel = null) {
+  async selectAccountFromGroup(
+    groupId,
+    sessionHash = null,
+    requestedModel = null,
+    _apiKeyData = null,
+    options = {}
+  ) {
     try {
       // 获取分组信息
       const group = await accountGroupService.getGroup(groupId)
@@ -834,26 +887,33 @@ class UnifiedOpenAIScheduler {
       if (sessionHash) {
         const mappedAccount = await this._getSessionMapping(sessionHash)
         if (mappedAccount) {
-          // 验证映射的账户是否仍然可用并且在分组中
-          const isInGroup = await this._isAccountInGroup(mappedAccount.accountId, groupId)
-          if (isInGroup) {
-            const isAvailable = await this._isAccountAvailable(
-              mappedAccount.accountId,
-              mappedAccount.accountType
+          if (!this._isAccountTypeAllowed(mappedAccount.accountType, options)) {
+            logger.info(
+              `🎯 Sticky session group account ${mappedAccount.accountId} (${mappedAccount.accountType}) is not allowed by current selection options, selecting new account`
             )
-            if (isAvailable) {
-              // 🚀 智能会话续期（续期 unified 映射键，按配置）
-              await this._extendSessionMappingTTL(sessionHash)
-              logger.info(
-                `🎯 Using sticky session account from group: ${mappedAccount.accountId} (${mappedAccount.accountType})`
+            await this._deleteSessionMapping(sessionHash)
+          } else {
+            // 验证映射的账户是否仍然可用并且在分组中
+            const isInGroup = await this._isAccountInGroup(mappedAccount.accountId, groupId)
+            if (isInGroup) {
+              const isAvailable = await this._isAccountAvailable(
+                mappedAccount.accountId,
+                mappedAccount.accountType
               )
-              // 更新账户的最后使用时间
-              await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
-              return mappedAccount
+              if (isAvailable) {
+                // 🚀 智能会话续期（续期 unified 映射键，按配置）
+                await this._extendSessionMappingTTL(sessionHash)
+                logger.info(
+                  `🎯 Using sticky session account from group: ${mappedAccount.accountId} (${mappedAccount.accountType})`
+                )
+                // 更新账户的最后使用时间
+                await this.updateAccountLastUsed(mappedAccount.accountId, mappedAccount.accountType)
+                return mappedAccount
+              }
             }
+            // 如果账户不可用或不在分组中，删除映射
+            await this._deleteSessionMapping(sessionHash)
           }
-          // 如果账户不可用或不在分组中，删除映射
-          await this._deleteSessionMapping(sessionHash)
         }
       }
 
@@ -873,9 +933,13 @@ class UnifiedOpenAIScheduler {
         let accountType = 'openai'
 
         // 如果 OpenAI 账户不存在，尝试从 OpenAI-Responses 账户服务获取
-        if (!account) {
+        if (!account && this._isAccountTypeAllowed('openai-responses', options)) {
           account = await openaiResponsesAccountService.getAccount(memberId)
           accountType = 'openai-responses'
+        }
+
+        if (!this._isAccountTypeAllowed(accountType, options)) {
+          continue
         }
 
         if (

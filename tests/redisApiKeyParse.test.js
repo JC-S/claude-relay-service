@@ -25,6 +25,7 @@ describe('redis api key parsing', () => {
       enableOpenAIResponsesPayloadRules: 'true',
       enableIpWhitelist: 'true',
       disableGptFastMode: 'true',
+      enableGeneralOpenAIEndpoint: 'true',
       enableClaudeThinkingSignatureLossyFallback: 'true',
       ipWhitelist: JSON.stringify(['203.0.113.10', '2001:db8::1']),
       openaiResponsesPayloadRules: JSON.stringify([
@@ -36,6 +37,7 @@ describe('redis api key parsing', () => {
     expect(parsed.enableOpenAIResponsesPayloadRules).toBe(true)
     expect(parsed.enableIpWhitelist).toBe(true)
     expect(parsed.disableGptFastMode).toBe(true)
+    expect(parsed.enableGeneralOpenAIEndpoint).toBe(true)
     expect(parsed.enableClaudeThinkingSignatureLossyFallback).toBe(true)
     expect(parsed.ipWhitelist).toEqual(['203.0.113.10', '2001:db8::1'])
     expect(parsed.openaiResponsesPayloadRules).toEqual([
@@ -50,6 +52,7 @@ describe('redis api key parsing', () => {
     expect(parsed.enableOpenAIResponsesPayloadRules).toBe(false)
     expect(parsed.enableIpWhitelist).toBe(false)
     expect(parsed.disableGptFastMode).toBe(false)
+    expect(parsed.enableGeneralOpenAIEndpoint).toBe(false)
     expect(parsed.enableClaudeThinkingSignatureLossyFallback).toBe(false)
     expect(parsed.ipWhitelist).toEqual([])
     expect(parsed.openaiResponsesPayloadRules).toEqual([])

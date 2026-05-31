@@ -693,6 +693,24 @@
                 </span>
               </label>
 
+              <label class="flex cursor-pointer items-start gap-3">
+                <input
+                  v-model="form.enableGeneralOpenAIEndpoint"
+                  class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                  type="checkbox"
+                />
+                <span class="flex-1">
+                  <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    启用 /general OpenAI 兼容入口
+                  </span>
+                  <span class="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                    开启后，该 API Key 可访问
+                    /general/v1/models、/general/v1/chat/completions、/general/v1/responses。该入口仅调度
+                    OpenAI OAuth 账号，暂不检查客户端类型。
+                  </span>
+                </span>
+              </label>
+
               <div
                 v-if="form.enableOpenAIResponsesPayloadRules"
                 class="rounded-lg border border-emerald-100 bg-white/70 p-3 dark:border-emerald-800 dark:bg-gray-800/40"
@@ -1278,6 +1296,7 @@ const form = reactive({
   enableIpWhitelist: false,
   ipWhitelistInput: '',
   disableGptFastMode: false,
+  enableGeneralOpenAIEndpoint: false,
   enableClaudeThinkingSignatureLossyFallback: false,
   enableOpenAIResponsesCodexAdaptation: true,
   enableOpenAIResponsesPayloadRules: false,
@@ -1479,6 +1498,7 @@ const updateApiKey = async () => {
       weeklyResetDay: form.weeklyResetDay,
       weeklyResetHour: form.weeklyResetHour,
       disableGptFastMode: form.disableGptFastMode,
+      enableGeneralOpenAIEndpoint: form.enableGeneralOpenAIEndpoint,
       enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation: form.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: form.enableOpenAIResponsesPayloadRules,
@@ -1876,6 +1896,9 @@ onMounted(async () => {
     props.apiKey.enableIpWhitelist === true || props.apiKey.enableIpWhitelist === 'true'
   form.disableGptFastMode =
     props.apiKey.disableGptFastMode === true || props.apiKey.disableGptFastMode === 'true'
+  form.enableGeneralOpenAIEndpoint =
+    props.apiKey.enableGeneralOpenAIEndpoint === true ||
+    props.apiKey.enableGeneralOpenAIEndpoint === 'true'
   form.enableClaudeThinkingSignatureLossyFallback =
     props.apiKey.enableClaudeThinkingSignatureLossyFallback === true ||
     props.apiKey.enableClaudeThinkingSignatureLossyFallback === 'true'

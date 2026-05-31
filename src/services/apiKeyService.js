@@ -208,6 +208,7 @@ class ApiKeyService {
       weeklyResetDay = 1, // 周费用重置日 (1=周一 ... 7=周日)
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       disableGptFastMode = false,
+      enableGeneralOpenAIEndpoint = false,
       enableClaudeThinkingSignatureLossyFallback = false,
       enableOpenAIResponsesCodexAdaptation = true,
       enableOpenAIResponsesPayloadRules = false,
@@ -274,6 +275,7 @@ class ApiKeyService {
       weeklyResetDay: String(weeklyResetDay || 1), // 周费用重置日 (1-7)
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       disableGptFastMode: String(disableGptFastMode === true),
+      enableGeneralOpenAIEndpoint: String(enableGeneralOpenAIEndpoint === true),
       enableClaudeThinkingSignatureLossyFallback: String(
         enableClaudeThinkingSignatureLossyFallback === true
       ),
@@ -350,6 +352,10 @@ class ApiKeyService {
       createdBy: keyData.createdBy,
       serviceRates: JSON.parse(keyData.serviceRates || '{}'), // API Key 级别服务倍率
       disableGptFastMode: parseBooleanWithDefault(keyData.disableGptFastMode, false),
+      enableGeneralOpenAIEndpoint: parseBooleanWithDefault(
+        keyData.enableGeneralOpenAIEndpoint,
+        false
+      ),
       enableClaudeThinkingSignatureLossyFallback: parseBooleanWithDefault(
         keyData.enableClaudeThinkingSignatureLossyFallback,
         false
@@ -522,6 +528,10 @@ class ApiKeyService {
         false
       )
       const disableGptFastMode = parseBooleanWithDefault(keyData.disableGptFastMode, false)
+      const enableGeneralOpenAIEndpoint = parseBooleanWithDefault(
+        keyData.enableGeneralOpenAIEndpoint,
+        false
+      )
       const enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
         keyData.enableClaudeThinkingSignatureLossyFallback,
         false
@@ -565,6 +575,7 @@ class ApiKeyService {
           tags,
           serviceRates,
           disableGptFastMode,
+          enableGeneralOpenAIEndpoint,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
@@ -673,6 +684,10 @@ class ApiKeyService {
         false
       )
       const disableGptFastMode = parseBooleanWithDefault(keyData.disableGptFastMode, false)
+      const enableGeneralOpenAIEndpoint = parseBooleanWithDefault(
+        keyData.enableGeneralOpenAIEndpoint,
+        false
+      )
       const enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
         keyData.enableClaudeThinkingSignatureLossyFallback,
         false
@@ -727,6 +742,7 @@ class ApiKeyService {
           tags,
           usage,
           disableGptFastMode,
+          enableGeneralOpenAIEndpoint,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
@@ -931,6 +947,10 @@ class ApiKeyService {
         key.enableClientRestriction = key.enableClientRestriction === 'true'
         key.enableIpWhitelist = key.enableIpWhitelist === 'true'
         key.disableGptFastMode = parseBooleanWithDefault(key.disableGptFastMode, false)
+        key.enableGeneralOpenAIEndpoint = parseBooleanWithDefault(
+          key.enableGeneralOpenAIEndpoint,
+          false
+        )
         key.enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
           key.enableClaudeThinkingSignatureLossyFallback,
           false
@@ -1201,6 +1221,11 @@ class ApiKeyService {
         key.enableClientRestriction =
           key.enableClientRestriction === 'true' || key.enableClientRestriction === true
         key.enableIpWhitelist = key.enableIpWhitelist === 'true' || key.enableIpWhitelist === true
+        key.disableGptFastMode = parseBooleanWithDefault(key.disableGptFastMode, false)
+        key.enableGeneralOpenAIEndpoint = parseBooleanWithDefault(
+          key.enableGeneralOpenAIEndpoint,
+          false
+        )
         key.enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
           key.enableClaudeThinkingSignatureLossyFallback,
           false
@@ -1418,6 +1443,7 @@ class ApiKeyService {
         'weeklyResetDay', // 周费用重置日 (1-7)
         'weeklyResetHour', // 周费用重置时 (0-23)
         'disableGptFastMode',
+        'enableGeneralOpenAIEndpoint',
         'enableClaudeThinkingSignatureLossyFallback',
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
@@ -1450,6 +1476,7 @@ class ApiKeyService {
             field === 'enableIpWhitelist' ||
             field === 'isActivated' ||
             field === 'disableGptFastMode' ||
+            field === 'enableGeneralOpenAIEndpoint' ||
             field === 'enableClaudeThinkingSignatureLossyFallback' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
             field === 'enableOpenAIResponsesPayloadRules'
@@ -2531,6 +2558,10 @@ class ApiKeyService {
         enableIpWhitelist: keyData.enableIpWhitelist === 'true',
         ipWhitelist: normalizeIpWhitelist(keyData.ipWhitelist),
         disableGptFastMode: parseBooleanWithDefault(keyData.disableGptFastMode, false),
+        enableGeneralOpenAIEndpoint: parseBooleanWithDefault(
+          keyData.enableGeneralOpenAIEndpoint,
+          false
+        ),
         enableClaudeThinkingSignatureLossyFallback: parseBooleanWithDefault(
           keyData.enableClaudeThinkingSignatureLossyFallback,
           false

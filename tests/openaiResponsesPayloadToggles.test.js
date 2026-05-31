@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const { Readable } = require('stream')
 
 const mockRouter = {
   get: jest.fn(),
@@ -102,6 +103,7 @@ const apiKeyService = require('../src/services/apiKeyService')
 const openaiAccountService = require('../src/services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../src/services/relay/openaiResponsesRelayService')
+const { IncrementalSSEParser } = require('../src/utils/sseParser')
 const openaiRoutes = require('../src/routes/openaiRoutes')
 
 function createHash(value) {
@@ -233,6 +235,221 @@ describe('openai responses payload toggles', () => {
       createHash('session-b'),
       'gpt-5'
     )
+  })
+
+  test('general responses use only OpenAI OAuth accounts and skip Codex adaptation', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValueOnce({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValueOnce({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    openaiAccountService.decrypt.mockReturnValueOnce('decrypted-token')
+    apiKeyService.recordUsage.mockResolvedValueOnce({ realCost: 0, ratedCost: 0 })
+    axios.post.mockResolvedValueOnce({
+      status: 200,
+      data: {
+        model: 'gpt-5',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          total_tokens: 12
+        }
+      },
+      headers: {}
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5-2025-08-07',
+        stream: false,
+        temperature: 0.2,
+        service_tier: 'priority',
+        prompt_cache_key: 'general-session'
+      }
+    })
+    req.originalUrl = '/general/v1/responses'
+    req._generalOpenAIEndpoint = true
+    req._openAISchedulerOptions = { allowedAccountTypes: ['openai'] }
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(req.body.model).toBe('gpt-5')
+    expect(req.body.instructions).toBeUndefined()
+    expect(req.body.temperature).toBe(0.2)
+    expect(req.body.service_tier).toBe('priority')
+    expect(req.body.store).toBe(false)
+    expect(unifiedOpenAIScheduler.selectAccountForApiKey).toHaveBeenCalledWith(
+      req.apiKey,
+      createHash('general-session'),
+      'gpt-5',
+      { allowedAccountTypes: ['openai'] }
+    )
+    expect(axios.post.mock.calls[0][1].instructions).toBeUndefined()
+  })
+
+  test('general non-stream responses force Codex upstream stream and aggregate response', async () => {
+    IncrementalSSEParser.mockImplementationOnce(() => {
+      let buffer = ''
+      return {
+        feed: jest.fn((chunk) => {
+          buffer += chunk
+          const events = []
+          let idx
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, idx)
+            buffer = buffer.slice(idx + 2)
+            for (const line of raw.split('\n')) {
+              if (!line.startsWith('data: ')) {
+                continue
+              }
+              const payload = line.slice(6).trim()
+              if (payload && payload !== '[DONE]') {
+                events.push({ type: 'data', data: JSON.parse(payload) })
+              }
+            }
+          }
+          return events
+        }),
+        getRemaining: jest.fn(() => buffer)
+      }
+    })
+
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValueOnce({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValueOnce({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    openaiAccountService.decrypt.mockReturnValueOnce('decrypted-token')
+    apiKeyService.recordUsage.mockResolvedValueOnce({ realCost: 0, ratedCost: 0 })
+
+    const completedEvent = {
+      type: 'response.completed',
+      response: {
+        id: 'resp_1',
+        model: 'gpt-5.4',
+        output: [],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          total_tokens: 12
+        }
+      }
+    }
+    const upstreamEvents = [
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          content: []
+        }
+      },
+      {
+        type: 'response.content_part.added',
+        output_index: 0,
+        content_index: 0,
+        part: {
+          type: 'output_text',
+          annotations: [],
+          logprobs: [],
+          text: ''
+        }
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: '你好，'
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: '世界。'
+      },
+      {
+        type: 'response.output_text.done',
+        output_index: 0,
+        content_index: 0,
+        text: '你好，世界。'
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          content: []
+        }
+      },
+      completedEvent
+    ]
+    axios.post.mockResolvedValueOnce({
+      status: 200,
+      data: Readable.from(upstreamEvents.map((event) => `data: ${JSON.stringify(event)}\n\n`)),
+      headers: {}
+    })
+
+    const req = createReq({
+      body: {
+        model: 'gpt-5.4',
+        instructions: '',
+        input: 'Hello World.',
+        stream: true,
+        prompt_cache_key: 'general-aggregate-session'
+      }
+    })
+    req.originalUrl = '/general/v1/responses'
+    req._generalOpenAIEndpoint = true
+    req._openAISchedulerOptions = { allowedAccountTypes: ['openai'] }
+    req._downstreamStream = false
+    req._forceCodexUpstreamStream = true
+
+    const res = createRes()
+    await openaiRoutes.handleResponses(req, res)
+
+    expect(axios.post).toHaveBeenCalled()
+    expect(axios.post.mock.calls[0][1]).toMatchObject({
+      model: 'gpt-5.4',
+      stream: true,
+      instructions: '',
+      store: false
+    })
+    expect(axios.post.mock.calls[0][2].responseType).toBe('stream')
+    expect(res.headers['Content-Type']).toBe('application/json')
+    expect(res.payload).toMatchObject({
+      id: 'resp_1',
+      model: 'gpt-5.4',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 2,
+        total_tokens: 12
+      },
+      output: [
+        {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: '你好，世界。' }]
+        }
+      ]
+    })
+    expect(apiKeyService.recordUsage).toHaveBeenCalled()
+    expect(apiKeyService.recordUsage.mock.calls[0][1]).toBe(10)
+    expect(apiKeyService.recordUsage.mock.calls[0][2]).toBe(2)
   })
 
   test('applies payload rules directly on the original payload when adaptation is off', async () => {
@@ -693,7 +910,9 @@ describe('openai responses payload toggles', () => {
     expect(req.body.service_tier).toBeUndefined()
     expect(req._serviceTier).toBeNull()
     expect(openaiResponsesRelayService.handleRequest).toHaveBeenCalled()
-    expect(openaiResponsesRelayService.handleRequest.mock.calls[0][0].body.service_tier).toBeUndefined()
+    expect(
+      openaiResponsesRelayService.handleRequest.mock.calls[0][0].body.service_tier
+    ).toBeUndefined()
     expect(openaiResponsesRelayService.handleRequest.mock.calls[0][0]._serviceTier).toBeNull()
   })
 

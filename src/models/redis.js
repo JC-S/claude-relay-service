@@ -779,6 +779,7 @@ class RedisClient {
       'enableClientRestriction',
       'enableIpWhitelist',
       'disableGptFastMode',
+      'enableGeneralOpenAIEndpoint',
       'enableClaudeThinkingSignatureLossyFallback',
       'enableOpenAIResponsesCodexAdaptation',
       'enableOpenAIResponsesPayloadRules',
@@ -801,6 +802,9 @@ class RedisClient {
     }
     if (parsed.disableGptFastMode === undefined) {
       parsed.disableGptFastMode = false
+    }
+    if (parsed.enableGeneralOpenAIEndpoint === undefined) {
+      parsed.enableGeneralOpenAIEndpoint = false
     }
     if (parsed.enableClaudeThinkingSignatureLossyFallback === undefined) {
       parsed.enableClaudeThinkingSignatureLossyFallback = false

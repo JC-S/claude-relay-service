@@ -191,4 +191,25 @@ describe('admin api keys route payload rule updates', () => {
     expect(res.status).not.toHaveBeenCalled()
     expect(res.body.success).toBe(true)
   })
+
+  test('accepts general OpenAI endpoint toggle updates', async () => {
+    const handler = findPutHandler('/api-keys/:keyId')
+    const res = createResponse()
+
+    await handler(
+      {
+        params: { keyId: 'key-5' },
+        body: {
+          enableGeneralOpenAIEndpoint: true
+        }
+      },
+      res
+    )
+
+    expect(apiKeyService.updateApiKey).toHaveBeenCalledWith('key-5', {
+      enableGeneralOpenAIEndpoint: true
+    })
+    expect(res.status).not.toHaveBeenCalled()
+    expect(res.body.success).toBe(true)
+  })
 })

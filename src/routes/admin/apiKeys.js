@@ -1499,6 +1499,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
+      enableGeneralOpenAIEndpoint,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
@@ -1657,6 +1658,13 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
     }
 
     if (
+      enableGeneralOpenAIEndpoint !== undefined &&
+      typeof enableGeneralOpenAIEndpoint !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableGeneralOpenAIEndpoint must be a boolean' })
+    }
+
+    if (
       enableClaudeThinkingSignatureLossyFallback !== undefined &&
       typeof enableClaudeThinkingSignatureLossyFallback !== 'boolean'
     ) {
@@ -1744,6 +1752,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
           ? Number(weeklyResetHour)
           : 0,
       disableGptFastMode: disableGptFastMode === true,
+      enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
       enableClaudeThinkingSignatureLossyFallback:
         enableClaudeThinkingSignatureLossyFallback === true,
       enableOpenAIResponsesCodexAdaptation:
@@ -1798,6 +1807,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       expirationMode,
       icon,
       serviceRates,
+      enableGeneralOpenAIEndpoint,
       enableClaudeThinkingSignatureLossyFallback
     } = req.body
 
@@ -1843,6 +1853,13 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
 
     if (enableIpWhitelist === true && batchIpWhitelistValidation.entries.length === 0) {
       return res.status(400).json({ error: 'IP whitelist cannot be empty when enabled' })
+    }
+
+    if (
+      enableGeneralOpenAIEndpoint !== undefined &&
+      typeof enableGeneralOpenAIEndpoint !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableGeneralOpenAIEndpoint must be a boolean' })
     }
 
     if (
@@ -1892,6 +1909,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           expirationMode,
           icon,
           serviceRates,
+          enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
           enableClaudeThinkingSignatureLossyFallback:
             enableClaudeThinkingSignatureLossyFallback === true
         })
@@ -2243,6 +2261,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
+      enableGeneralOpenAIEndpoint,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
@@ -2467,6 +2486,13 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
       }
       updates.disableGptFastMode = disableGptFastMode
+    }
+
+    if (enableGeneralOpenAIEndpoint !== undefined) {
+      if (typeof enableGeneralOpenAIEndpoint !== 'boolean') {
+        return res.status(400).json({ error: 'enableGeneralOpenAIEndpoint must be a boolean' })
+      }
+      updates.enableGeneralOpenAIEndpoint = enableGeneralOpenAIEndpoint
     }
 
     if (enableClaudeThinkingSignatureLossyFallback !== undefined) {

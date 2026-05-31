@@ -437,8 +437,293 @@ async function applyRateLimitTracking(
   }
 }
 
+function cloneJson(value) {
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+  return JSON.parse(JSON.stringify(value))
+}
+
+function getCodexOutputIndex(eventData = {}) {
+  const index = eventData.output_index
+  if (Number.isInteger(index) && index >= 0) {
+    return index
+  }
+  const parsed = Number(index)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+function createCodexNonStreamOutputAggregator() {
+  const states = new Map()
+  const fallbackItems = []
+
+  const ensureState = (outputIndex) => {
+    if (!states.has(outputIndex)) {
+      states.set(outputIndex, {
+        outputIndex,
+        item: null,
+        itemType: '',
+        sawItemDone: false,
+        contentParts: new Map(),
+        summaryParts: new Map(),
+        functionArgs: '',
+        hasArgsFinal: false,
+        functionDelta: ''
+      })
+    }
+    return states.get(outputIndex)
+  }
+
+  const ensurePartState = (parts, index) => {
+    const safeIndex = Number.isInteger(index) && index >= 0 ? index : 0
+    if (!parts.has(safeIndex)) {
+      parts.set(safeIndex, {
+        raw: null,
+        text: '',
+        hasFinal: false,
+        delta: ''
+      })
+    }
+    return parts.get(safeIndex)
+  }
+
+  const process = (eventData = {}) => {
+    const eventType = eventData.type
+    let outputIndex
+    let state
+
+    switch (eventType) {
+      case 'response.output_item.added':
+      case 'response.output_item.done':
+        if (!eventData.item || typeof eventData.item !== 'object') {
+          return
+        }
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          if (eventType === 'response.output_item.done') {
+            fallbackItems.push(cloneJson(eventData.item))
+          }
+          return
+        }
+        state = ensureState(outputIndex)
+        if (!state.sawItemDone || eventType === 'response.output_item.done' || !state.item) {
+          state.item = cloneJson(eventData.item)
+          state.itemType = eventData.item.type || state.itemType
+        }
+        if (eventType === 'response.output_item.done') {
+          state.sawItemDone = true
+        }
+        return
+
+      case 'response.content_part.added':
+      case 'response.content_part.done':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        state = ensureState(outputIndex)
+        {
+          const partState = ensurePartState(
+            state.contentParts,
+            Number(eventData.content_index || 0)
+          )
+          if (eventData.part && typeof eventData.part === 'object') {
+            partState.raw = cloneJson(eventData.part)
+          }
+          if (eventType === 'response.content_part.done') {
+            partState.text = eventData.part?.text || ''
+            partState.hasFinal = true
+          }
+        }
+        return
+
+      case 'response.output_text.delta':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        state = ensureState(outputIndex)
+        ensurePartState(state.contentParts, Number(eventData.content_index || 0)).delta +=
+          eventData.delta || ''
+        return
+
+      case 'response.output_text.done':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        state = ensureState(outputIndex)
+        {
+          const partState = ensurePartState(
+            state.contentParts,
+            Number(eventData.content_index || 0)
+          )
+          partState.text = eventData.text || ''
+          partState.hasFinal = true
+        }
+        return
+
+      case 'response.reasoning_summary_part.added':
+      case 'response.reasoning_summary_part.done':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        state = ensureState(outputIndex)
+        {
+          const partState = ensurePartState(
+            state.summaryParts,
+            Number(eventData.summary_index || 0)
+          )
+          if (eventData.part && typeof eventData.part === 'object') {
+            partState.raw = cloneJson(eventData.part)
+          }
+          if (eventType === 'response.reasoning_summary_part.done') {
+            partState.text = eventData.part?.text || ''
+            partState.hasFinal = true
+          }
+        }
+        return
+
+      case 'response.reasoning_summary_text.delta':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        state = ensureState(outputIndex)
+        ensurePartState(state.summaryParts, Number(eventData.summary_index || 0)).delta +=
+          eventData.delta || ''
+        return
+
+      case 'response.reasoning_summary_text.done':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        state = ensureState(outputIndex)
+        {
+          const partState = ensurePartState(
+            state.summaryParts,
+            Number(eventData.summary_index || 0)
+          )
+          partState.text = eventData.text || ''
+          partState.hasFinal = true
+        }
+        return
+
+      case 'response.function_call_arguments.delta':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        ensureState(outputIndex).functionDelta += eventData.delta || ''
+        return
+
+      case 'response.function_call_arguments.done':
+        outputIndex = getCodexOutputIndex(eventData)
+        if (outputIndex === null) {
+          return
+        }
+        state = ensureState(outputIndex)
+        state.functionArgs = eventData.arguments || ''
+        state.hasArgsFinal = true
+        return
+
+      default:
+        return
+    }
+  }
+
+  const finalizePartArray = (parts, fallbackTemplate) =>
+    [...parts.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, partState]) => {
+        const part = cloneJson(partState.raw) || cloneJson(fallbackTemplate)
+        const text = partState.hasFinal ? partState.text : partState.delta || part.text || ''
+        part.text = text
+        return part
+      })
+
+  const finalizeItem = (state) => {
+    const item = cloneJson(state.item) || { type: state.itemType || 'message' }
+    switch (item.type) {
+      case 'message': {
+        const content = finalizePartArray(state.contentParts, {
+          type: 'output_text',
+          annotations: [],
+          logprobs: [],
+          text: ''
+        })
+        if (content.length > 0) {
+          item.content = content
+        }
+        return item
+      }
+      case 'reasoning': {
+        const summary = finalizePartArray(state.summaryParts, {
+          type: 'summary_text',
+          text: ''
+        })
+        if (summary.length > 0) {
+          item.summary = summary
+        }
+        return item
+      }
+      case 'function_call':
+        if (state.hasArgsFinal || state.functionDelta) {
+          item.arguments = state.hasArgsFinal ? state.functionArgs : state.functionDelta
+        }
+        return item
+      default:
+        return item
+    }
+  }
+
+  const patchCompleted = (completedEvent) => {
+    if (!completedEvent?.response) {
+      return completedEvent
+    }
+
+    const outputItems = [...states.values()]
+      .sort((left, right) => left.outputIndex - right.outputIndex)
+      .map(finalizeItem)
+      .filter(Boolean)
+      .concat(fallbackItems)
+
+    if (outputItems.length === 0) {
+      return completedEvent
+    }
+
+    const existingOutput = Array.isArray(completedEvent.response.output)
+      ? completedEvent.response.output
+      : []
+    const seen = new Set(outputItems.map((item) => JSON.stringify(item)))
+    const mergedOutput = outputItems.concat(
+      existingOutput.filter((item) => {
+        const key = JSON.stringify(item)
+        if (seen.has(key)) {
+          return false
+        }
+        seen.add(key)
+        return true
+      })
+    )
+
+    const patchedEvent = cloneJson(completedEvent)
+    patchedEvent.response.output = mergedOutput
+    return patchedEvent
+  }
+
+  return { process, patchCompleted }
+}
+
 // 使用统一调度器选择 OpenAI 账户
-async function getOpenAIAuthToken(apiKeyData, sessionId = null, requestedModel = null) {
+async function getOpenAIAuthToken(
+  apiKeyData,
+  sessionId = null,
+  requestedModel = null,
+  schedulerOptions = null
+) {
   try {
     // 生成会话哈希（如果有会话ID）
     const sessionHash = sessionId
@@ -446,11 +731,11 @@ async function getOpenAIAuthToken(apiKeyData, sessionId = null, requestedModel =
       : null
 
     // 使用统一调度器选择账户
-    const result = await unifiedOpenAIScheduler.selectAccountForApiKey(
-      apiKeyData,
-      sessionHash,
-      requestedModel
-    )
+    const schedulerArgs = [apiKeyData, sessionHash, requestedModel]
+    if (schedulerOptions && Object.keys(schedulerOptions).length > 0) {
+      schedulerArgs.push(schedulerOptions)
+    }
+    const result = await unifiedOpenAIScheduler.selectAccountForApiKey(...schedulerArgs)
 
     if (!result || !result.accountId) {
       const error = new Error('No available OpenAI account found')
@@ -588,8 +873,33 @@ const handleResponses = async (req, res) => {
     const standardResponsesRoute = isStandardResponsesRoute(req)
     const compactRoute = isCompactResponsesRoute(req)
     const shouldUseToggleControlledFlow = standardResponsesRoute && !compactRoute
+    const isGeneralOpenAIEndpoint = req._generalOpenAIEndpoint === true
 
-    if (shouldUseToggleControlledFlow) {
+    if (isGeneralOpenAIEndpoint && compactRoute) {
+      return res.status(404).json({
+        error: {
+          message: '/general does not support responses compact',
+          type: 'invalid_request_error',
+          code: 'not_supported'
+        }
+      })
+    }
+
+    if (isGeneralOpenAIEndpoint && shouldUseToggleControlledFlow) {
+      normalizeGpt5ModelForCodex(req.body)
+
+      if (apiKeyData.enableOpenAIResponsesPayloadRules === true) {
+        req.body = requestBodyRuleService.applyRules(
+          req.body,
+          apiKeyData.openaiResponsesPayloadRules
+        )
+        logger.info('🧩 General OpenAI Responses request applied API key payload rules')
+      } else {
+        logger.info(
+          '📦 General OpenAI Responses request is passing through without Codex adaptation'
+        )
+      }
+    } else if (shouldUseToggleControlledFlow) {
       const shouldApplyCodexAdaptation =
         apiKeyData.enableOpenAIResponsesCodexAdaptation === true && !isCodexCLI
       const shouldApplyPayloadRules = apiKeyData.enableOpenAIResponsesPayloadRules === true
@@ -643,7 +953,15 @@ const handleResponses = async (req, res) => {
 
     const requestedModel = req.body?.model || null
     const schedulerModel = getCodexCompatibleModel(requestedModel)
-    const isStream = req.body?.stream !== false // 默认为流式（兼容现有行为）
+    const downstreamIsStream =
+      typeof req._downstreamStream === 'boolean'
+        ? req._downstreamStream
+        : req.body?.stream !== false
+    const upstreamIsStream = req._forceCodexUpstreamStream === true ? true : downstreamIsStream
+    if (req._forceCodexUpstreamStream === true && req.body) {
+      req.body.stream = true
+    }
+    const isStream = downstreamIsStream
 
     if (schedulerModel !== requestedModel) {
       logger.info(
@@ -652,11 +970,16 @@ const handleResponses = async (req, res) => {
     }
 
     // 使用调度器选择账户
-    ;({ accessToken, accountId, accountType, proxy, account } = await getOpenAIAuthToken(
-      apiKeyData,
-      sessionId,
-      schedulerModel
-    ))
+    {
+      const schedulerOptions = req._openAISchedulerOptions || null
+      const tokenArgs = [apiKeyData, sessionId, schedulerModel]
+      if (schedulerOptions && Object.keys(schedulerOptions).length > 0) {
+        tokenArgs.push(schedulerOptions)
+      }
+      ;({ accessToken, accountId, accountType, proxy, account } = await getOpenAIAuthToken(
+        ...tokenArgs
+      ))
+    }
 
     // 如果是 OpenAI-Responses 账户，使用专门的中继服务处理
     if (accountType === 'openai-responses') {
@@ -679,7 +1002,7 @@ const handleResponses = async (req, res) => {
       incoming,
       accessToken,
       accountHeader: account.accountId || account.chatgptUserId || accountId,
-      isStream,
+      isStream: upstreamIsStream,
       body: req.body
     })
     if (!compactRoute) {
@@ -727,7 +1050,7 @@ const handleResponses = async (req, res) => {
 
       if (localAddress) {
         axiosConfig.httpsAgent = getHttpsAgentForLocalAddress(localAddress, {
-          stream: isStream
+          stream: upstreamIsStream
         })
         axiosConfig.proxy = false
         req.upstreamNicIp = localAddress
@@ -744,7 +1067,7 @@ const handleResponses = async (req, res) => {
     }
 
     const sendUpstreamRequest = () => {
-      if (isStream) {
+      if (upstreamIsStream) {
         return axios.post(codexEndpoint, req.body, {
           ...axiosConfig,
           responseType: 'stream'
@@ -787,7 +1110,7 @@ const handleResponses = async (req, res) => {
     while (upstream.status === 429) {
       logger.warn(`🚫 Rate limit detected for OpenAI account ${accountId} (Codex API)`)
 
-      const rateLimitInfo = await parseOpenAIRateLimitResponse(upstream, isStream)
+      const rateLimitInfo = await parseOpenAIRateLimitResponse(upstream, upstreamIsStream)
       rateLimitErrorData = rateLimitInfo.errorData
       rateLimitResetsInSeconds = rateLimitInfo.resetsInSeconds
 
@@ -826,7 +1149,7 @@ const handleResponses = async (req, res) => {
           rateLimitErrorData,
           rateLimitResetsInSeconds
         )
-        sendOpenAIRateLimitResponse(res, isStream, errorResponse)
+        sendOpenAIRateLimitResponse(res, downstreamIsStream, errorResponse)
         return
       }
 
@@ -840,7 +1163,7 @@ const handleResponses = async (req, res) => {
           rateLimitErrorData,
           rateLimitResetsInSeconds
         )
-        sendOpenAIRateLimitResponse(res, isStream, errorResponse)
+        sendOpenAIRateLimitResponse(res, downstreamIsStream, errorResponse)
         return
       }
 
@@ -870,7 +1193,7 @@ const handleResponses = async (req, res) => {
       let errorData = null
 
       try {
-        if (isStream && upstream.data && typeof upstream.data.on === 'function') {
+        if (upstreamIsStream && upstream.data && typeof upstream.data.on === 'function') {
           const chunks = []
           await new Promise((resolve, reject) => {
             upstream.data.on('data', (chunk) => chunks.push(chunk))
@@ -987,7 +1310,7 @@ const handleResponses = async (req, res) => {
     let rateLimitDetected = false
     let streamRateLimitResetsInSeconds = null
 
-    if (!isStream) {
+    if (!isStream && !upstreamIsStream) {
       // 非流式响应处理
       try {
         logger.info(`📄 Processing OpenAI non-stream response for model: ${upstreamRequestedModel}`)
@@ -1086,6 +1409,156 @@ const handleResponses = async (req, res) => {
             `🚫 Rate limit detected in stream, resets in ${streamRateLimitResetsInSeconds} seconds`
           )
         }
+      }
+    }
+
+    if (!isStream && upstreamIsStream) {
+      try {
+        logger.info(
+          `📄 Aggregating OpenAI Codex stream response for non-stream downstream request: ${upstreamRequestedModel}`
+        )
+
+        let completedEvent = null
+        let terminalEvent = null
+        const outputAggregator = createCodexNonStreamOutputAggregator()
+
+        await new Promise((resolve, reject) => {
+          upstream.data.on('data', (chunk) => {
+            try {
+              const events = sseParser.feed(chunk.toString())
+              for (const event of events) {
+                if (event.type !== 'data' || !event.data) {
+                  continue
+                }
+                outputAggregator.process(event.data)
+                processSSEEvent(event.data)
+                if (event.data.type === 'response.completed' && event.data.response) {
+                  completedEvent = event.data
+                } else if (
+                  event.data.type === 'response.failed' ||
+                  event.data.type === 'error' ||
+                  event.data.error
+                ) {
+                  terminalEvent = event.data
+                }
+              }
+            } catch (error) {
+              reject(error)
+            }
+          })
+
+          upstream.data.on('end', () => {
+            try {
+              const remaining = sseParser.getRemaining()
+              if (remaining.trim()) {
+                const events = sseParser.feed('\n\n')
+                for (const event of events) {
+                  if (event.type !== 'data' || !event.data) {
+                    continue
+                  }
+                  outputAggregator.process(event.data)
+                  processSSEEvent(event.data)
+                  if (event.data.type === 'response.completed' && event.data.response) {
+                    completedEvent = event.data
+                  } else if (
+                    event.data.type === 'response.failed' ||
+                    event.data.type === 'error' ||
+                    event.data.error
+                  ) {
+                    terminalEvent = event.data
+                  }
+                }
+              }
+              resolve()
+            } catch (error) {
+              reject(error)
+            }
+          })
+
+          upstream.data.on('error', reject)
+        })
+
+        if (!completedEvent) {
+          const errorPayload = terminalEvent || {
+            error: {
+              message: 'Upstream stream closed before response.completed',
+              type: 'upstream_error',
+              code: 'stream_incomplete'
+            }
+          }
+          return res.status(502).json(errorPayload)
+        }
+
+        completedEvent = outputAggregator.patchCompleted(completedEvent)
+
+        if (!usageReported && usageData) {
+          try {
+            const totalInputTokens = usageData.input_tokens || 0
+            const outputTokens = usageData.output_tokens || 0
+            const cacheReadTokens = extractOpenAICacheReadTokens(usageData)
+            const actualInputTokens = Math.max(0, totalInputTokens - cacheReadTokens)
+            const modelToRecord = actualModel || upstreamRequestedModel || 'gpt-4'
+
+            const aggregateCosts = await apiKeyService.recordUsage(
+              apiKeyData.id,
+              actualInputTokens,
+              outputTokens,
+              0,
+              cacheReadTokens,
+              modelToRecord,
+              accountId,
+              'openai',
+              req._serviceTier,
+              createRequestDetailMeta(req, {
+                requestBody: req.body,
+                stream: false,
+                statusCode: res.statusCode
+              })
+            )
+
+            logger.info(
+              `📊 Recorded OpenAI aggregated usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), Output: ${outputTokens}, Total: ${usageData.total_tokens || totalInputTokens + outputTokens}, Model: ${modelToRecord} (actual: ${actualModel}, requested: ${upstreamRequestedModel})`
+            )
+            usageReported = true
+
+            await applyRateLimitTracking(
+              req,
+              {
+                inputTokens: actualInputTokens,
+                outputTokens,
+                cacheCreateTokens: 0,
+                cacheReadTokens
+              },
+              modelToRecord,
+              'openai-non-stream-aggregated',
+              'openai',
+              aggregateCosts
+            )
+          } catch (error) {
+            logger.error('Failed to record OpenAI aggregated usage:', error)
+          }
+        }
+
+        if (upstream.status === 200) {
+          const isRateLimited = await unifiedOpenAIScheduler.isAccountRateLimited(accountId)
+          if (isRateLimited) {
+            logger.info(
+              `✅ Removing rate limit for OpenAI account ${accountId} after successful aggregated response`
+            )
+            await unifiedOpenAIScheduler.removeAccountRateLimit(accountId, 'openai')
+          }
+        }
+
+        const responsePayload = req._generalOpenAIChatCompletions
+          ? completedEvent
+          : completedEvent.response || completedEvent
+        return res.json(responsePayload)
+      } catch (error) {
+        logger.error('Failed to aggregate OpenAI stream response:', error)
+        if (!res.headersSent) {
+          return res.status(502).json({ error: { message: 'Failed to process upstream stream' } })
+        }
+        return undefined
       }
     }
 

@@ -230,6 +230,11 @@ function isTokenCountRequest(req) {
   return false
 }
 
+function isGeneralOpenAIEndpoint(req) {
+  const original = normalizeRequestPath(req.originalUrl || '')
+  return original === '/general' || original.startsWith('/general/')
+}
+
 /**
  * 等待并发槽位（排队机制核心）
  *
@@ -503,10 +508,11 @@ const authenticateApiKey = async (req, res, next) => {
     }
 
     const skipKeyRestrictions = isTokenCountRequest(req)
+    const skipClientRestriction = skipKeyRestrictions || isGeneralOpenAIEndpoint(req)
 
     // 🔒 检查客户端限制（使用新的验证器）
     if (
-      !skipKeyRestrictions &&
+      !skipClientRestriction &&
       validation.keyData.enableClientRestriction &&
       validation.keyData.allowedClients?.length > 0
     ) {
@@ -1367,6 +1373,7 @@ const authenticateApiKey = async (req, res, next) => {
       totalCostLimit: validation.keyData.totalCostLimit,
       totalCost: validation.keyData.totalCost,
       disableGptFastMode: validation.keyData.disableGptFastMode,
+      enableGeneralOpenAIEndpoint: validation.keyData.enableGeneralOpenAIEndpoint,
       enableClaudeThinkingSignatureLossyFallback:
         validation.keyData.enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation: validation.keyData.enableOpenAIResponsesCodexAdaptation,

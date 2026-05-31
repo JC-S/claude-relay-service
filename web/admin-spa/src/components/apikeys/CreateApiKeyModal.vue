@@ -752,6 +752,39 @@
             </label>
           </div>
 
+          <div
+            class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-700 dark:bg-emerald-900/20"
+          >
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded bg-emerald-500"
+              >
+                <i class="fas fa-plug text-xs text-white" />
+              </div>
+              <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                OpenAI 兼容入口
+              </h4>
+            </div>
+
+            <label class="flex cursor-pointer items-start gap-3">
+              <input
+                v-model="form.enableGeneralOpenAIEndpoint"
+                class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                type="checkbox"
+              />
+              <span class="flex-1">
+                <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  启用 /general OpenAI 兼容入口
+                </span>
+                <span class="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                  开启后，该 API Key 可访问
+                  /general/v1/models、/general/v1/chat/completions、/general/v1/responses。该入口仅调度
+                  OpenAI OAuth 账号，暂不检查客户端类型。
+                </span>
+              </span>
+            </label>
+          </div>
+
           <div>
             <div class="mb-2 flex items-center justify-between">
               <label class="text-sm font-semibold text-gray-700 dark:text-gray-300"
@@ -1197,6 +1230,7 @@ const form = reactive({
   allowedClients: [],
   enableIpWhitelist: false,
   ipWhitelistInput: '',
+  enableGeneralOpenAIEndpoint: false,
   enableClaudeThinkingSignatureLossyFallback: false,
   tags: []
 })
@@ -1635,6 +1669,7 @@ const createApiKey = async () => {
       allowedClients: form.allowedClients,
       enableIpWhitelist: form.enableIpWhitelist,
       ipWhitelist,
+      enableGeneralOpenAIEndpoint: form.enableGeneralOpenAIEndpoint,
       enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback
     }
 
