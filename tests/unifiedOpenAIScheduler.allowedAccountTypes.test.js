@@ -11,6 +11,8 @@ jest.mock('../src/services/account/openaiResponsesAccountService', () => ({
   getAllAccounts: jest.fn(),
   checkAndClearRateLimit: jest.fn(),
   isSubscriptionExpired: jest.fn(() => false),
+  markAccountRateLimited: jest.fn(),
+  updateAccount: jest.fn(),
   recordUsage: jest.fn()
 }))
 
@@ -99,5 +101,40 @@ describe('unifiedOpenAIScheduler allowed account types', () => {
       accountType: 'openai'
     })
     expect(openaiResponsesAccountService.getAllAccounts).not.toHaveBeenCalled()
+  })
+})
+
+describe('unifiedOpenAIScheduler OpenAI Responses auto protection', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  test('does not force-disable scheduling when auto protection is disabled', async () => {
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'resp-1',
+      disableAutoProtection: 'true'
+    })
+
+    await scheduler.markAccountRateLimited('resp-1', 'openai-responses', null, 120)
+
+    expect(openaiResponsesAccountService.markAccountRateLimited).toHaveBeenCalledWith('resp-1', 2)
+    expect(openaiResponsesAccountService.updateAccount).not.toHaveBeenCalled()
+  })
+
+  test('keeps force-disabling scheduling when auto protection is enabled', async () => {
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'resp-1',
+      disableAutoProtection: 'false'
+    })
+
+    await scheduler.markAccountRateLimited('resp-1', 'openai-responses', null, 120)
+
+    expect(openaiResponsesAccountService.markAccountRateLimited).toHaveBeenCalledWith('resp-1', 2)
+    expect(openaiResponsesAccountService.updateAccount).toHaveBeenCalledWith(
+      'resp-1',
+      expect.objectContaining({
+        schedulable: 'false'
+      })
+    )
   })
 })
