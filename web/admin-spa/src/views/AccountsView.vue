@@ -4240,10 +4240,10 @@ const handleCreateSuccess = () => {
   loadAccounts()
 }
 
-// 处理编辑成功
-const handleEditSuccess = () => {
+// 处理编辑成功（payload 可携带自定义提示文案，如重新授权成功）
+const handleEditSuccess = (payload = {}) => {
   showEditAccountModal.value = false
-  showToast('账户更新成功', 'success')
+  showToast(payload?.message || '账户更新成功', 'success')
   // 清空分组成员缓存，因为账户类型和分组可能发生变化
   groupMembersLoaded.value = false
   loadAccounts()

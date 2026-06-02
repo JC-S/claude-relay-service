@@ -2675,8 +2675,40 @@
           </div>
         </div>
 
+        <!-- 重新授权聚焦视图（仅 OpenAI 官方 OAuth 账户生效） -->
+        <div v-if="isEdit && reauthMode" class="space-y-6">
+          <div
+            class="rounded-xl border border-orange-200 bg-orange-50 p-4 dark:border-orange-700 dark:bg-orange-900/20"
+          >
+            <div class="flex items-start gap-3">
+              <div
+                class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-orange-500"
+              >
+                <i class="fas fa-key text-sm text-white" />
+              </div>
+              <div>
+                <h4 class="text-sm font-semibold text-orange-900 dark:text-orange-100">
+                  重新授权 OpenAI 账户
+                </h4>
+                <p class="mt-1 text-xs text-orange-700 dark:text-orange-200">
+                  重新授权会更新当前账户的 OAuth Token
+                  并重置异常状态。若刚才修改了其它字段，请先返回并点击更新保存。
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <OAuthFlow
+            ref="reauthFlowRef"
+            :platform="form.platform"
+            :proxy="form.proxy"
+            @back="exitReauthMode"
+            @success="handleReauthSuccess"
+          />
+        </div>
+
         <!-- 编辑模式 -->
-        <div v-if="isEdit" class="space-y-6">
+        <div v-if="isEdit && !reauthMode" class="space-y-6">
           <!-- 基本信息 -->
           <div>
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
@@ -4098,6 +4130,31 @@
             </div>
           </div>
 
+          <!-- OpenAI 官方账户重新授权入口 -->
+          <div
+            v-if="canReauthOpenAI"
+            class="rounded-xl border border-orange-200 bg-orange-50/70 p-4 dark:border-orange-700 dark:bg-orange-900/20"
+          >
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h4 class="text-sm font-semibold text-orange-900 dark:text-orange-100">
+                  OpenAI 账户重新授权
+                </h4>
+                <p class="mt-1 text-xs text-orange-700 dark:text-orange-200">
+                  当 Refresh Token 失效或账户 401 时，重新登录授权并恢复当前账户。
+                </p>
+              </div>
+              <button
+                class="btn btn-primary shrink-0 px-4 py-2 text-sm"
+                type="button"
+                @click="enterReauthMode"
+              >
+                <i class="fas fa-rotate-right mr-2" />
+                重新授权
+              </button>
+            </div>
+          </div>
+
           <div class="flex gap-3 pt-4">
             <button
               class="flex-1 rounded-xl bg-gray-100 px-6 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -5163,6 +5220,55 @@ const buildClaudeAccountData = (tokenInfo, accountName, clientId) => {
   }
 
   return data
+}
+
+// ========== OpenAI 账户重新授权（仅 platform === 'openai' 官方 OAuth 账户）==========
+const reauthMode = ref(false)
+const reauthFlowRef = ref(null)
+const canReauthOpenAI = computed(() => isEdit.value && form.value.platform === 'openai')
+
+const enterReauthMode = () => {
+  reauthMode.value = true
+}
+
+const exitReauthMode = () => {
+  reauthMode.value = false
+}
+
+// OAuth 成功后就地更新当前账户（独立于创建流程 handleOAuthSuccess，避免误建新账户）
+const handleReauthSuccess = async (tokenInfo) => {
+  loading.value = true
+  try {
+    const tokens = tokenInfo?.tokens || tokenInfo || {}
+    if (!tokens.accessToken || !tokens.refreshToken) {
+      showToast('授权未返回有效 Token，请重试', 'error')
+      return
+    }
+
+    const payload = {
+      openaiOauth: {
+        idToken: tokens.idToken || '',
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expires_in: tokens.expires_in
+      },
+      accountInfo: tokenInfo?.accountInfo || {}
+    }
+
+    const res = await accountsStore.reauthOpenAIAccount(props.account.id, payload)
+    if (!res?.success) {
+      showToast(res?.message || '重新授权失败', 'error')
+      return
+    }
+
+    reauthMode.value = false
+    emit('success', { message: res.message || '重新授权成功' })
+  } catch (error) {
+    showToast(error?.message || '重新授权失败', 'error')
+  } finally {
+    loading.value = false
+    reauthFlowRef.value?.resetCookieAuth?.()
+  }
 }
 
 // 处理OAuth成功（支持批量）

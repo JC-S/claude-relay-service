@@ -183,6 +183,8 @@ export const generateOpenAIAuthUrlApi = (data) =>
   request({ url: '/admin/openai-accounts/generate-auth-url', method: 'POST', data })
 export const exchangeOpenAICodeApi = (data) =>
   request({ url: '/admin/openai-accounts/exchange-code', method: 'POST', data })
+export const reauthOpenAIAccountApi = (id, data) =>
+  request({ url: `/admin/openai-accounts/${id}/reauth`, method: 'POST', data })
 
 // OpenAI Responses 账户
 export const getOpenAIResponsesAccountsApi = () =>

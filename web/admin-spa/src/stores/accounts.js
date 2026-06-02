@@ -131,6 +131,10 @@ export const useAccountsStore = defineStore('accounts', () => {
   const updateDroidAccount = (id, data) =>
     mutateAccount(httpApis.updateDroidAccountApi, fetchDroidAccounts, id, data)
 
+  // 重新授权 OpenAI 账户（OAuth 换新 token 后就地更新并重置状态，成功后自动刷新列表）
+  const reauthOpenAIAccount = (id, data) =>
+    mutateAccount(httpApis.reauthOpenAIAccountApi, fetchOpenAIAccounts, id, data)
+
   // 切换账户状态
   const toggleAccount = async (platform, id) => {
     const config = PLATFORM_CONFIG[platform]
@@ -314,6 +318,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     updateBedrockAccount,
     updateGeminiAccount,
     updateOpenAIAccount,
+    reauthOpenAIAccount,
     updateAzureOpenAIAccount,
     updateOpenAIResponsesAccount,
     updateGeminiApiAccount,

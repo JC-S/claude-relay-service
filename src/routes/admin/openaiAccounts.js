@@ -797,6 +797,79 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
   }
 })
 
+// 重新授权 OpenAI 账户（OAuth 拿到新 token 后就地更新并重置异常状态）
+// 仅用于 platform === 'openai' 的官方 OAuth 账户
+router.post('/:id/reauth', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    const { openaiOauth, accountInfo } = req.body || {}
+
+    if (!openaiOauth || typeof openaiOauth !== 'object') {
+      return res.status(400).json({ success: false, message: '缺少 OAuth Token 信息' })
+    }
+
+    const { idToken, accessToken, refreshToken, expires_in: expiresIn } = openaiOauth
+    if (!accessToken || !refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Access Token 和 Refresh Token 不能为空'
+      })
+    }
+
+    const currentAccount = await openaiAccountService.getAccount(id)
+    if (!currentAccount) {
+      return res.status(404).json({ success: false, message: '账户不存在' })
+    }
+
+    // expires_in 缺失或非法时保留原 expiresAt，避免写入 Invalid Date
+    const numericExpiresIn = Number(expiresIn)
+    const expiresAt =
+      Number.isFinite(numericExpiresIn) && numericExpiresIn > 0
+        ? new Date(Date.now() + numericExpiresIn * 1000).toISOString()
+        : currentAccount.expiresAt
+
+    // accountInfo 字段缺省时回退到现有值（复刻 PUT /:id 的写法）
+    const info = accountInfo || {}
+    const updates = {
+      openaiOauth: {
+        idToken: idToken || '',
+        accessToken,
+        refreshToken,
+        expires_in: Number.isFinite(numericExpiresIn) ? numericExpiresIn : expiresIn
+      },
+      idToken: idToken || '',
+      accessToken,
+      refreshToken,
+      expiresAt,
+      lastRefresh: new Date().toISOString(),
+      accountId: info.accountId || currentAccount.accountId || '',
+      chatgptUserId: info.chatgptUserId || currentAccount.chatgptUserId || '',
+      organizationId: info.organizationId || currentAccount.organizationId || '',
+      organizationRole: info.organizationRole || currentAccount.organizationRole || '',
+      organizationTitle: info.organizationTitle || currentAccount.organizationTitle || '',
+      planType: info.planType || currentAccount.planType || '',
+      email: info.email || currentAccount.email || '',
+      emailVerified:
+        info.emailVerified !== undefined ? info.emailVerified : currentAccount.emailVerified
+    }
+
+    // updateAccount 负责加密敏感字段；resetAccountStatus 置 active/可调度并清理异常状态
+    await openaiAccountService.updateAccount(id, updates)
+    await openaiAccountService.resetAccountStatus(id)
+
+    // 安全：不返回解密后的账户、不打印 token
+    logger.success(`🔐 Admin re-authorized OpenAI account: ${id}`)
+    return res.json({ success: true, message: '重新授权成功，账户状态已重置' })
+  } catch (error) {
+    logger.error('❌ Failed to re-authorize OpenAI account:', error)
+    return res.status(500).json({
+      success: false,
+      message: '重新授权失败',
+      error: error.message
+    })
+  }
+})
+
 // 删除 OpenAI 账户
 router.delete('/:id', authenticateAdmin, async (req, res) => {
   try {
