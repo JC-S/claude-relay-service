@@ -9,6 +9,7 @@ const inputValidator = require('../utils/inputValidator')
 const { RateLimiterRedis } = require('rate-limiter-flexible')
 const redis = require('../models/redis')
 const { authenticateUser, authenticateUserOrAdmin, requireAdmin } = require('../middleware/auth')
+const { validateIpWhitelist } = require('../utils/ipWhitelistHelper')
 
 // 🚦 配置登录速率限制
 // 只基于IP地址限制，避免攻击者恶意锁定特定账户
@@ -264,6 +265,8 @@ router.get('/api-keys', authenticateUser, async (req, res) => {
         keyPreview: key.key
           ? `${key.key.substring(0, 8)}...${key.key.substring(key.key.length - 4)}`
           : null,
+        enableIpWhitelist: key.enableIpWhitelist === true || key.enableIpWhitelist === 'true',
+        ipWhitelist: Array.isArray(key.ipWhitelist) ? key.ipWhitelist : [],
         // Include deletion fields for deleted keys
         isDeleted: key.isDeleted,
         deletedAt: key.deletedAt,
@@ -405,6 +408,102 @@ router.delete('/api-keys/:keyId', authenticateUser, async (req, res) => {
     res.status(500).json({
       error: 'API Key deletion error',
       message: 'Failed to delete API key'
+    })
+  }
+})
+
+// ✏️ 更新 API Key 的 IP 白名单（前台用户自助）
+// 仅允许修改 enableIpWhitelist 和 ipWhitelist 两个字段。
+// IP 白名单只影响 API 调用，不影响前台 UI 登录，故无需"自我锁定"检查。
+router.put('/api-keys/:keyId', authenticateUser, async (req, res) => {
+  try {
+    const { keyId } = req.params
+    const { enableIpWhitelist, ipWhitelist } = req.body || {}
+
+    const existingKey = await apiKeyService.getApiKeyById(keyId, req.user.id)
+    if (!existingKey) {
+      return res.status(404).json({
+        error: 'API key not found',
+        message: 'API key not found or you do not have permission to access it'
+      })
+    }
+
+    if (!existingKey.isActive) {
+      return res.status(400).json({
+        error: 'API key is inactive',
+        message: 'Inactive API keys cannot be updated'
+      })
+    }
+
+    const updates = {}
+    let nextEnableIpWhitelist = existingKey.enableIpWhitelist === true
+    let nextIpWhitelist = Array.isArray(existingKey.ipWhitelist) ? existingKey.ipWhitelist : []
+
+    if (enableIpWhitelist !== undefined) {
+      if (typeof enableIpWhitelist !== 'boolean') {
+        return res.status(400).json({
+          error: 'Invalid field',
+          message: 'enableIpWhitelist must be a boolean'
+        })
+      }
+      updates.enableIpWhitelist = enableIpWhitelist
+      nextEnableIpWhitelist = enableIpWhitelist
+    }
+
+    if (ipWhitelist !== undefined) {
+      if (!Array.isArray(ipWhitelist)) {
+        return res.status(400).json({
+          error: 'Invalid field',
+          message: 'ipWhitelist must be an array'
+        })
+      }
+
+      const validation = validateIpWhitelist(ipWhitelist)
+      if (!validation.valid) {
+        return res.status(400).json({
+          error: 'Invalid IP whitelist',
+          message: validation.error
+        })
+      }
+
+      updates.ipWhitelist = validation.entries
+      nextIpWhitelist = validation.entries
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        error: 'No updates',
+        message: 'No valid fields to update'
+      })
+    }
+
+    if (nextEnableIpWhitelist && nextIpWhitelist.length === 0) {
+      return res.status(400).json({
+        error: 'Invalid IP whitelist',
+        message: 'IP whitelist cannot be empty when enabled'
+      })
+    }
+
+    await apiKeyService.updateApiKey(keyId, updates)
+
+    logger.info(
+      `✏️ User ${req.user.username} updated IP whitelist for API key: ${existingKey.name}`
+    )
+
+    return res.json({
+      success: true,
+      message: 'API key IP whitelist updated successfully',
+      apiKey: {
+        id: existingKey.id,
+        enableIpWhitelist: nextEnableIpWhitelist,
+        ipWhitelist: nextIpWhitelist
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Update user API key IP whitelist error for user ${req.user?.id}:`, error)
+    return res.status(500).json({
+      error: 'API Key update error',
+      message: 'Failed to update API key'
     })
   }
 })

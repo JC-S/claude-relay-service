@@ -129,6 +129,39 @@
             </div>
           </div>
 
+          <!-- IP Whitelist -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700">IP Whitelist</label>
+            <div class="mt-1">
+              <span
+                :class="[
+                  'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+                  apiKey.enableIpWhitelist
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'bg-gray-100 text-gray-700'
+                ]"
+              >
+                {{ apiKey.enableIpWhitelist ? 'Enabled' : 'Disabled' }}
+              </span>
+            </div>
+            <div
+              v-if="
+                apiKey.enableIpWhitelist &&
+                Array.isArray(apiKey.ipWhitelist) &&
+                apiKey.ipWhitelist.length
+              "
+              class="mt-2 rounded-md border border-gray-200 bg-gray-50 p-3"
+            >
+              <div
+                v-for="entry in apiKey.ipWhitelist"
+                :key="entry"
+                class="font-mono text-xs text-gray-800"
+              >
+                {{ entry }}
+              </div>
+            </div>
+          </div>
+
           <!-- Usage Stats -->
           <div v-if="apiKey.usage" class="border-t border-gray-200 pt-4">
             <label class="mb-2 block text-sm font-medium text-gray-700">Usage Statistics</label>

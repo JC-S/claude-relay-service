@@ -160,6 +160,17 @@ export const useUserStore = defineStore('user', {
       }
     },
 
+    // ✏️ 更新API Key（仅 IP 白名单）
+    async updateApiKey(keyId, data) {
+      try {
+        const response = await axios.put(`${API_BASE}/api-keys/${keyId}`, data)
+        return response.data
+      } catch (error) {
+        console.error('Failed to update API key:', error)
+        throw error
+      }
+    },
+
     // 📊 获取使用统计
     async getUserUsageStats(params = {}) {
       try {

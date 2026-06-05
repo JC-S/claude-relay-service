@@ -124,6 +124,14 @@
                       v-if="apiKey.expiresAt && !(apiKey.isDeleted === 'true' || apiKey.deletedAt)"
                       >Expires: {{ formatDate(apiKey.expiresAt) }}</span
                     >
+                    <span
+                      v-if="apiKey.enableIpWhitelist && Array.isArray(apiKey.ipWhitelist)"
+                      class="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700"
+                    >
+                      IP whitelist: {{ apiKey.ipWhitelist.length }} rule{{
+                        apiKey.ipWhitelist.length === 1 ? '' : 's'
+                      }}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -151,6 +159,22 @@
                     />
                     <path
                       d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                    />
+                  </svg>
+                </button>
+
+                <button
+                  v-if="!(apiKey.isDeleted === 'true' || apiKey.deletedAt) && apiKey.isActive"
+                  class="inline-flex items-center rounded border border-transparent p-1 text-blue-400 hover:text-blue-600"
+                  title="Edit IP Whitelist"
+                  @click="editIpWhitelist(apiKey)"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6l8-4z"
                       stroke-linecap="round"
                       stroke-linejoin="round"
                       stroke-width="2"
@@ -233,6 +257,14 @@
       @close="showViewModal = false"
     />
 
+    <!-- Edit IP Whitelist Modal -->
+    <EditIpWhitelistModal
+      :api-key="editingApiKey"
+      :show="showEditIpWhitelistModal"
+      @close="closeEditIpWhitelistModal"
+      @saved="handleIpWhitelistSaved"
+    />
+
     <!-- Confirm Delete Modal -->
     <ConfirmModal
       confirm-class="bg-red-600 hover:bg-red-700"
@@ -252,6 +284,7 @@ import { useUserStore } from '@/stores/user'
 import { showToast, formatNumber, formatDate } from '@/utils/tools'
 import CreateApiKeyModal from './CreateApiKeyModal.vue'
 import ViewApiKeyModal from './ViewApiKeyModal.vue'
+import EditIpWhitelistModal from './EditIpWhitelistModal.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 
 const userStore = useUserStore()
@@ -264,7 +297,9 @@ const allowUserDeleteApiKeys = computed(() => userStore.config?.allowUserDeleteA
 const showCreateModal = ref(false)
 const showViewModal = ref(false)
 const showDeleteModal = ref(false)
+const showEditIpWhitelistModal = ref(false)
 const selectedApiKey = ref(null)
+const editingApiKey = ref(null)
 
 // Computed property to sort API keys by creation time (descending - newest first)
 const sortedApiKeys = computed(() => {
@@ -321,6 +356,22 @@ const handleDeleteConfirm = async () => {
 
 const handleApiKeyCreated = async () => {
   showCreateModal.value = false
+  await loadApiKeys()
+}
+
+const editIpWhitelist = (apiKey) => {
+  editingApiKey.value = apiKey
+  showEditIpWhitelistModal.value = true
+}
+
+const closeEditIpWhitelistModal = () => {
+  showEditIpWhitelistModal.value = false
+  editingApiKey.value = null
+}
+
+const handleIpWhitelistSaved = async () => {
+  showEditIpWhitelistModal.value = false
+  editingApiKey.value = null
   await loadApiKeys()
 }
 

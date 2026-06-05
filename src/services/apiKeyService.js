@@ -2528,6 +2528,8 @@ class ApiKeyService {
           userUsername: key.userUsername,
           createdBy: key.createdBy,
           droidAccountId: key.droidAccountId,
+          enableIpWhitelist: key.enableIpWhitelist === true || key.enableIpWhitelist === 'true',
+          ipWhitelist: normalizeIpWhitelist(key.ipWhitelist),
           // Include deletion fields for deleted keys
           isDeleted: key.isDeleted,
           deletedAt: key.deletedAt,
