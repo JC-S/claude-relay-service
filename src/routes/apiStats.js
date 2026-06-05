@@ -16,8 +16,14 @@ const modelsConfig = require('../../config/models')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { splitModelStatsByFastMode } = require('../utils/modelVariantHelper')
 const { normalizeIpWhitelist } = require('../utils/ipWhitelistHelper')
+const crypto = require('crypto')
 
 const router = express.Router()
+
+const CODEX_TEST_INSTRUCTIONS =
+  'You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI.'
+const CODEX_TEST_USER_AGENT =
+  'codex-tui/0.137.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.137.0)'
 
 function createModelUsageStats() {
   return {
@@ -66,9 +72,13 @@ function mergeModelUsageStats(stats, data) {
 }
 
 function calculateModelCostFromStats(model, stats) {
-  return reconcileStoredModelCost(redis.calculateModelCostFromStats(CostCalculator, stats, model), stats, {
-    formatCost: (amount) => CostCalculator.formatCost(amount)
-  })
+  return reconcileStoredModelCost(
+    redis.calculateModelCostFromStats(CostCalculator, stats, model),
+    stats,
+    {
+      formatCost: (amount) => CostCalculator.formatCost(amount)
+    }
+  )
 }
 
 function buildDisplayModelStats(model, stats) {
@@ -139,7 +149,7 @@ router.get('/models', (req, res) => {
     data: {
       claude: modelsConfig.CLAUDE_MODELS,
       gemini: modelsConfig.GEMINI_MODELS,
-      openai: modelsConfig.OPENAI_MODELS,
+      openai: modelsConfig.OPENAI_CODEX_TEST_MODELS,
       other: modelsConfig.OTHER_MODELS,
       all: modelsConfig.getAllModels(),
       platforms: modelsConfig.PLATFORM_TEST_MODELS
@@ -1213,7 +1223,7 @@ router.post('/api-key/test-openai', async (req, res) => {
   const { createOpenAITestPayload } = require('../utils/testPayloadHelper')
 
   try {
-    const { apiKey, model = 'gpt-5', prompt = 'hi' } = req.body
+    const { apiKey, model = 'gpt-5.4', prompt = 'hi' } = req.body
     const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
 
     if (!apiKey) {
@@ -1264,14 +1274,21 @@ router.post('/api-key/test-openai', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'test_start', message: 'Test started' })}\n\n`)
 
     const axios = require('axios')
-    const payload = createOpenAITestPayload(model, { prompt, maxTokens })
+    const payload = createOpenAITestPayload(model, {
+      prompt,
+      maxTokens,
+      instructions: CODEX_TEST_INSTRUCTIONS,
+      includeMaxOutputTokens: false
+    })
 
     try {
       const response = await axios.post(apiUrl, payload, {
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
-          'User-Agent': 'codex_cli_rs/1.0.0'
+          'User-Agent': CODEX_TEST_USER_AGENT,
+          originator: 'codex-tui',
+          session_id: crypto.randomUUID()
         },
         timeout: 60000,
         responseType: 'stream',

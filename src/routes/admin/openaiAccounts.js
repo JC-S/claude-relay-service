@@ -16,8 +16,13 @@ const ProxyHelper = require('../../utils/proxyHelper')
 const openaiNicSelector = require('../../utils/openaiNicSelector')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
+const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
 
 const router = express.Router()
+
+const CODEX_TEST_USER_AGENT =
+  'codex-tui/0.135.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.135.0)'
+const CODEX_TEST_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
 
 // OpenAI OAuth 配置
 const OPENAI_CONFIG = {
@@ -81,6 +86,73 @@ function validateOpenAIInterleaveState({ enabled, ttlHours, proxy }) {
   }
 
   return null
+}
+
+function extractOpenAIResponseText(data) {
+  if (typeof data === 'string') {
+    return extractOpenAISSEText(data)
+  }
+
+  if (!data || typeof data !== 'object') {
+    return ''
+  }
+
+  if (typeof data.output_text === 'string') {
+    return data.output_text
+  }
+
+  let responseText = ''
+  const { output } = data
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      if (item?.type === 'message' && Array.isArray(item.content)) {
+        for (const block of item.content) {
+          if (block?.type === 'output_text' && block.text) {
+            responseText += block.text
+          } else if (block?.type === 'text' && block.text) {
+            responseText += block.text
+          }
+        }
+      }
+    }
+  }
+
+  return responseText
+}
+
+function extractOpenAISSEText(sseText) {
+  let deltaText = ''
+  let completedText = ''
+
+  for (const line of sseText.split(/\r?\n/)) {
+    if (!line.startsWith('data:')) {
+      continue
+    }
+
+    const jsonStr = line.slice(5).trim()
+    if (!jsonStr || jsonStr === '[DONE]') {
+      continue
+    }
+
+    try {
+      const event = JSON.parse(jsonStr)
+      if (event.type === 'response.output_text.delta' && event.delta) {
+        deltaText += event.delta
+      } else if (event.type === 'response.output_text.done' && event.text && !deltaText) {
+        deltaText += event.text
+      } else if (event.delta?.text) {
+        deltaText += event.delta.text
+      }
+
+      if (event.type === 'response.completed' && event.response) {
+        completedText = extractOpenAIResponseText(event.response)
+      }
+    } catch {
+      // ignore malformed SSE fragments
+    }
+  }
+
+  return deltaText || completedText
 }
 
 // 生成 OpenAI OAuth 授权 URL
@@ -954,6 +1026,115 @@ router.put('/:id/toggle', authenticateAdmin, async (req, res) => {
       success: false,
       message: '切换账户状态失败',
       error: error.message
+    })
+  }
+})
+
+router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+  const { model = 'gpt-5' } = req.body || {}
+  const startTime = Date.now()
+
+  try {
+    let account = await openaiAccountService.getAccount(accountId)
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: '账户不存在'
+      })
+    }
+
+    if (openaiAccountService.isTokenExpired(account)) {
+      if (!account.refreshToken) {
+        return res.status(401).json({
+          success: false,
+          message: 'Access Token 已过期，且没有可用 Refresh Token'
+        })
+      }
+      await openaiAccountService.refreshAccountToken(accountId)
+      account = await openaiAccountService.getAccount(accountId)
+    }
+
+    if (!account?.accessToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'Access Token 不存在'
+      })
+    }
+
+    const accessToken = openaiAccountService.decrypt(account.accessToken)
+    if (!accessToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'Access Token 解密失败'
+      })
+    }
+
+    const payload = createOpenAITestPayload(model, { stream: true })
+    payload.instructions = ''
+    payload.store = false
+    delete payload.max_output_tokens
+
+    const requestConfig = {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'chatgpt-account-id': account.accountId || account.chatgptUserId || accountId,
+        host: 'chatgpt.com',
+        accept: 'text/event-stream',
+        'content-type': 'application/json',
+        connection: 'Keep-Alive',
+        originator: 'codex-tui',
+        session_id: crypto.randomUUID(),
+        'user-agent': CODEX_TEST_USER_AGENT
+      },
+      timeout: 30000,
+      validateStatus: () => true
+    }
+
+    const proxyAgent = ProxyHelper.createProxyAgent(account.proxy)
+    if (proxyAgent) {
+      requestConfig.httpAgent = proxyAgent
+      requestConfig.httpsAgent = proxyAgent
+      requestConfig.proxy = false
+    }
+
+    const response = await axios.post(CODEX_TEST_ENDPOINT, payload, requestConfig)
+    const latency = Date.now() - startTime
+
+    if (response.status < 200 || response.status >= 300) {
+      const message = extractErrorMessage(response.data, `API Error: ${response.status}`)
+      logger.error(`❌ OpenAI OAuth account test failed: ${accountId}`, message)
+      return res.status(response.status).json({
+        success: false,
+        error: 'Test failed',
+        message,
+        latency
+      })
+    }
+
+    const responseText = extractOpenAIResponseText(response.data)
+    logger.success(
+      `✅ OpenAI OAuth account test passed: ${account.name} (${accountId}), latency: ${latency}ms`
+    )
+
+    return res.json({
+      success: true,
+      data: {
+        accountId,
+        accountName: account.name,
+        model: response.data?.model || model,
+        latency,
+        responseText: (responseText || 'Test passed').substring(0, 200)
+      }
+    })
+  } catch (error) {
+    const latency = Date.now() - startTime
+    logger.error(`❌ OpenAI OAuth account test failed: ${accountId}`, error.message)
+    return res.status(500).json({
+      success: false,
+      error: 'Test failed',
+      message: extractErrorMessage(error.response?.data, error.message),
+      latency
     })
   }
 })

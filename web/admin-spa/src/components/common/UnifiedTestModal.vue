@@ -334,6 +334,7 @@ const platformFallbackModels = {
   'claude-console': 'claude-sonnet-4-5-20250929',
   gemini: 'gemini-2.5-pro',
   'gemini-api': 'gemini-2.5-flash',
+  openai: 'gpt-5.4',
   'openai-responses': 'gpt-5',
   droid: 'claude-sonnet-4-5-20250929',
   ccr: 'claude-sonnet-4-5-20250929'
@@ -388,7 +389,7 @@ const apikeyServiceConfigs = {
   openai: {
     name: 'OpenAI (Codex)',
     endpoint: '/api-key/test-openai',
-    defaultModel: 'gpt-5',
+    defaultModel: 'gpt-5.4',
     displayEndpoint: '/openai/responses'
   }
 }
@@ -432,6 +433,11 @@ const platformConfigs = {
     label: 'Gemini API',
     icon: 'fas fa-gem',
     badge: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+  },
+  openai: {
+    label: 'OpenAI OAuth',
+    icon: 'fas fa-openai',
+    badge: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
   },
   'openai-responses': {
     label: 'OpenAI Responses',
@@ -527,6 +533,7 @@ const getAccountEndpoint = () => {
     bedrock: `${APP_CONFIG.apiPrefix}/admin/bedrock-accounts/${props.account.id}/test`,
     gemini: `${APP_CONFIG.apiPrefix}/admin/gemini-accounts/${props.account.id}/test`,
     'gemini-api': `${APP_CONFIG.apiPrefix}/admin/gemini-api-accounts/${props.account.id}/test`,
+    openai: `${APP_CONFIG.apiPrefix}/admin/openai-accounts/${props.account.id}/test`,
     'openai-responses': `${APP_CONFIG.apiPrefix}/admin/openai-responses-accounts/${props.account.id}/test`,
     'azure-openai': `${APP_CONFIG.apiPrefix}/admin/azure-openai-accounts/${props.account.id}/test`,
     droid: `${APP_CONFIG.apiPrefix}/admin/droid-accounts/${props.account.id}/test`,

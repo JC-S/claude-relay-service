@@ -278,8 +278,9 @@ function createGeminiTestPayload(_model = 'gemini-2.5-pro', options = {}) {
  * @returns {object} 测试请求体
  */
 function createOpenAITestPayload(model = 'gpt-5', options = {}) {
-  const { prompt = 'hi', maxTokens = 100, stream = true } = options
-  return {
+  const { prompt = 'hi', maxTokens = 100, stream = true, instructions = null } = options
+  const includeMaxOutputTokens = options.includeMaxOutputTokens !== false
+  const payload = {
     model,
     input: [
       {
@@ -287,9 +288,18 @@ function createOpenAITestPayload(model = 'gpt-5', options = {}) {
         content: prompt
       }
     ],
-    max_output_tokens: maxTokens,
     stream
   }
+
+  if (includeMaxOutputTokens) {
+    payload.max_output_tokens = maxTokens
+  }
+
+  if (typeof instructions === 'string') {
+    payload.instructions = instructions
+  }
+
+  return payload
 }
 
 /**
@@ -328,6 +338,9 @@ function extractErrorMessage(json, fallback) {
   // 直接 message
   if (json.message && typeof json.message === 'string') {
     return json.message
+  }
+  if (json.detail && typeof json.detail === 'string') {
+    return json.detail
   }
   // {error: {message: "..."}}
   if (json.error?.message) {

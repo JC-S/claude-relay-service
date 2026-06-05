@@ -42,6 +42,18 @@ const OPENAI_MODELS = [
   { value: 'codex-mini', label: 'Codex Mini' }
 ]
 
+const OPENAI_CODEX_TEST_MODELS = [
+  { value: 'gpt-5.4', label: 'GPT-5.4' },
+  { value: 'gpt-5.5', label: 'GPT-5.5' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' }
+]
+
+const OPENAI_OAUTH_TEST_MODELS = [
+  ...OPENAI_MODELS.filter((model) => model.value === 'gpt-5.4'),
+  ...OPENAI_MODELS.filter((model) => model.value !== 'gpt-5.4')
+]
+
 const BEDROCK_MODELS = [
   { value: 'us.anthropic.claude-opus-4-6-20250610-v1:0', label: 'Claude Opus 4.6' },
   { value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5' },
@@ -64,6 +76,7 @@ const PLATFORM_TEST_MODELS = {
   bedrock: BEDROCK_MODELS,
   gemini: GEMINI_MODELS,
   'gemini-api': GEMINI_MODELS,
+  openai: OPENAI_OAUTH_TEST_MODELS,
   'openai-responses': OPENAI_MODELS,
   'azure-openai': [],
   droid: CLAUDE_MODELS,
@@ -74,6 +87,7 @@ module.exports = {
   CLAUDE_MODELS,
   GEMINI_MODELS,
   OPENAI_MODELS,
+  OPENAI_CODEX_TEST_MODELS,
   BEDROCK_MODELS,
   OTHER_MODELS,
   PLATFORM_TEST_MODELS,
@@ -85,7 +99,7 @@ module.exports = {
       case 'gemini':
         return GEMINI_MODELS
       case 'openai':
-        return OPENAI_MODELS
+        return OPENAI_CODEX_TEST_MODELS
       default:
         return []
     }
