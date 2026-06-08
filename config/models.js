@@ -49,10 +49,7 @@ const OPENAI_CODEX_TEST_MODELS = [
   { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' }
 ]
 
-const OPENAI_OAUTH_TEST_MODELS = [
-  ...OPENAI_MODELS.filter((model) => model.value === 'gpt-5.4'),
-  ...OPENAI_MODELS.filter((model) => model.value !== 'gpt-5.4')
-]
+const OPENAI_OAUTH_TEST_MODELS = OPENAI_CODEX_TEST_MODELS
 
 const BEDROCK_MODELS = [
   { value: 'us.anthropic.claude-opus-4-6-20250610-v1:0', label: 'Claude Opus 4.6' },

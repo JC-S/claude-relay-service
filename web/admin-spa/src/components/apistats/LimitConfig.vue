@@ -293,16 +293,25 @@
           <div class="space-y-2">
             <div class="flex items-center justify-between">
               <span class="text-sm text-gray-600 dark:text-gray-400 md:text-base">IP 白名单</span>
-              <span class="text-sm font-medium text-gray-900 md:text-base">
-                <span v-if="hasIpWhitelist" class="text-orange-600">
-                  <i class="fas fa-shield-alt mr-1 text-xs md:text-sm" />
-                  限 {{ statsData.restrictions.ipWhitelist.length }} 个 IP
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-medium text-gray-900 md:text-base">
+                  <span v-if="hasIpWhitelist" class="text-orange-600">
+                    <i class="fas fa-shield-alt mr-1 text-xs md:text-sm" />
+                    限 {{ statsData.restrictions.ipWhitelist.length }} 个 IP
+                  </span>
+                  <span v-else class="text-green-600">
+                    <i class="fas fa-check-circle mr-1 text-xs md:text-sm" />
+                    不限制来源 IP
+                  </span>
                 </span>
-                <span v-else class="text-green-600">
-                  <i class="fas fa-check-circle mr-1 text-xs md:text-sm" />
-                  不限制来源 IP
-                </span>
-              </span>
+                <button
+                  class="rounded-lg border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-100 dark:border-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-300 dark:hover:bg-cyan-900/40 md:px-3 md:text-sm"
+                  type="button"
+                  @click="openIpWhitelistModal"
+                >
+                  编辑
+                </button>
+              </div>
             </div>
             <div
               v-if="hasIpWhitelist"
@@ -321,6 +330,93 @@
         </div>
       </div>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="showIpWhitelistModal"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+      >
+        <div class="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl dark:bg-gray-900 md:p-6">
+          <div class="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100">编辑 IP 白名单</h3>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                只影响当前 API Key 的接口调用，不影响统计页查询。
+              </p>
+            </div>
+            <button
+              class="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
+              type="button"
+              @click="closeIpWhitelistModal"
+            >
+              <i class="fas fa-times" />
+            </button>
+          </div>
+
+          <form class="space-y-4" @submit.prevent="saveIpWhitelist">
+            <label class="flex items-start gap-3 rounded-xl bg-gray-50 p-3 dark:bg-gray-800">
+              <input
+                v-model="ipWhitelistForm.enableIpWhitelist"
+                class="mt-1 h-4 w-4 rounded border-gray-300 text-cyan-600 focus:ring-cyan-500"
+                :disabled="savingIpWhitelist"
+                type="checkbox"
+              />
+              <span>
+                <span class="block text-sm font-medium text-gray-800 dark:text-gray-100">
+                  启用 IP 白名单
+                </span>
+                <span class="block text-xs text-gray-500 dark:text-gray-400">
+                  启用后，仅允许下方 IP 或 CIDR 来源使用此 API Key。
+                </span>
+              </span>
+            </label>
+
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                允许的 IP / CIDR
+              </label>
+              <textarea
+                v-model="ipWhitelistForm.input"
+                class="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                :disabled="savingIpWhitelist"
+                placeholder="每行一个，例如：&#10;203.0.113.10&#10;203.0.113.0/24"
+                rows="7"
+              />
+              <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                支持换行、逗号、空格或分号分隔；支持 IPv4、IPv6 和 CIDR。
+              </p>
+            </div>
+
+            <div
+              v-if="ipWhitelistError"
+              class="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-900/20 dark:text-red-300"
+            >
+              <i class="fas fa-exclamation-triangle mr-1" />
+              {{ ipWhitelistError }}
+            </div>
+
+            <div class="flex justify-end gap-3 pt-2">
+              <button
+                class="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                :disabled="savingIpWhitelist"
+                type="button"
+                @click="closeIpWhitelistModal"
+              >
+                取消
+              </button>
+              <button
+                class="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="savingIpWhitelist"
+                type="submit"
+              >
+                <i v-if="savingIpWhitelist" class="fas fa-spinner fa-spin mr-1" />
+                保存
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- 详细限制信息 -->
     <div v-if="hasModelRestrictions" class="card !overflow-visible p-4 md:p-6">
@@ -360,14 +456,21 @@
 </template>
 
 <script setup>
-import { formatNumber } from '@/utils/tools'
-import { computed } from 'vue'
+import { formatNumber, parseIpWhitelistInput, showToast } from '@/utils/tools'
+import { computed, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useApiStatsStore } from '@/stores/apistats'
 import WindowCountdown from '@/components/apikeys/WindowCountdown.vue'
 
 const apiStatsStore = useApiStatsStore()
 const { statsData, multiKeyMode, aggregatedStats, invalidKeys } = storeToRefs(apiStatsStore)
+const showIpWhitelistModal = ref(false)
+const savingIpWhitelist = ref(false)
+const ipWhitelistError = ref('')
+const ipWhitelistForm = reactive({
+  enableIpWhitelist: false,
+  input: ''
+})
 
 const hasModelRestrictions = computed(() => {
   const restriction = statsData.value?.restrictions
@@ -398,6 +501,47 @@ const hasIpWhitelist = computed(() => {
     restriction.ipWhitelist.length > 0
   )
 })
+
+const openIpWhitelistModal = () => {
+  const restriction = statsData.value?.restrictions || {}
+  ipWhitelistForm.enableIpWhitelist = restriction.enableIpWhitelist === true
+  ipWhitelistForm.input = Array.isArray(restriction.ipWhitelist)
+    ? restriction.ipWhitelist.join('\n')
+    : ''
+  ipWhitelistError.value = ''
+  showIpWhitelistModal.value = true
+}
+
+const closeIpWhitelistModal = () => {
+  if (savingIpWhitelist.value) return
+  showIpWhitelistModal.value = false
+  ipWhitelistError.value = ''
+}
+
+const saveIpWhitelist = async () => {
+  const entries = parseIpWhitelistInput(ipWhitelistForm.input)
+
+  if (ipWhitelistForm.enableIpWhitelist && entries.length === 0) {
+    ipWhitelistError.value = '启用 IP 白名单时至少需要填写一个 IP 或 CIDR'
+    return
+  }
+
+  savingIpWhitelist.value = true
+  ipWhitelistError.value = ''
+
+  try {
+    await apiStatsStore.updateCurrentIpWhitelist({
+      enableIpWhitelist: ipWhitelistForm.enableIpWhitelist,
+      ipWhitelist: entries
+    })
+    showToast('IP 白名单已更新', 'success')
+    showIpWhitelistModal.value = false
+  } catch (error) {
+    ipWhitelistError.value = error.message || '更新 IP 白名单失败'
+  } finally {
+    savingIpWhitelist.value = false
+  }
+}
 
 // 获取每日费用进度
 const getDailyCostProgress = () => {

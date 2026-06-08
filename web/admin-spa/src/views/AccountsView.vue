@@ -2764,7 +2764,7 @@ const canTestAccount = (account) => {
 }
 
 const canScheduleTestAccount = (account) => {
-  return canTestAccount(account) && account.platform !== 'openai'
+  return canTestAccount(account)
 }
 
 const openAccountTestModal = (account) => {

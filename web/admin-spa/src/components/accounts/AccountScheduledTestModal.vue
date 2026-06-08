@@ -253,6 +253,25 @@ const loadModels = async () => {
 
 onMounted(loadModels)
 
+// 不同平台的 test-config 端点
+function buildTestConfigEndpoint(platform, accountId) {
+  const map = {
+    claude: `${APP_CONFIG.apiPrefix}/admin/claude-accounts/${accountId}/test-config`,
+    openai: `${APP_CONFIG.apiPrefix}/admin/openai-accounts/${accountId}/test-config`
+  }
+  return map[platform] || ''
+}
+
+// 默认测试模型：优先取 modelOptions 列表第一项（跟随后端配置），
+// 再按平台兜底到一个常用模型，避免 modelOptions 尚未加载时出现空值
+function defaultModelForPlatform(platform) {
+  const firstOption = modelOptions.value[0]?.value
+  if (firstOption) {
+    return firstOption
+  }
+  return platform === 'openai' ? 'gpt-5.4' : 'claude-sonnet-4-5-20250929'
+}
+
 // 格式化时间戳
 function formatTimestamp(timestamp) {
   if (!timestamp) return '未知'
@@ -274,12 +293,8 @@ async function loadConfig() {
     const authToken = localStorage.getItem('authToken')
     const platform = props.account.platform
 
-    // 根据平台获取配置端点
-    let endpoint = ''
-    if (platform === 'claude') {
-      endpoint = `${APP_CONFIG.apiPrefix}/admin/claude-accounts/${props.account.id}/test-config`
-    } else {
-      // 其他平台暂不支持
+    const endpoint = buildTestConfigEndpoint(platform, props.account.id)
+    if (!endpoint) {
       loading.value = false
       return
     }
@@ -297,7 +312,7 @@ async function loadConfig() {
         config.value = {
           enabled: data.data.config.enabled || false,
           cronExpression: data.data.config.cronExpression || '0 8 * * *',
-          model: data.data.config.model || 'claude-sonnet-4-5-20250929'
+          model: data.data.config.model || defaultModelForPlatform(platform)
         }
       }
     }
@@ -332,10 +347,8 @@ async function saveConfig() {
     const authToken = localStorage.getItem('authToken')
     const platform = props.account.platform
 
-    let endpoint = ''
-    if (platform === 'claude') {
-      endpoint = `${APP_CONFIG.apiPrefix}/admin/claude-accounts/${props.account.id}/test-config`
-    } else {
+    const endpoint = buildTestConfigEndpoint(platform, props.account.id)
+    if (!endpoint) {
       saving.value = false
       return
     }
@@ -377,12 +390,14 @@ function handleClose() {
 // 监听 show 变化，加载配置
 watch(
   () => props.show,
-  (newVal) => {
+  async (newVal) => {
     if (newVal) {
+      // 每次打开都重新加载，确保 modelOptions 匹配当前账户的平台
+      await loadModels()
       config.value = {
         enabled: false,
         cronExpression: '0 8 * * *',
-        model: 'claude-sonnet-4-5-20250929'
+        model: defaultModelForPlatform(props.account?.platform)
       }
       testHistory.value = []
       loadConfig()

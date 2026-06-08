@@ -383,6 +383,38 @@ export const useApiStatsStore = defineStore('apistats', () => {
     }
   }
 
+  async function updateCurrentIpWhitelist({ enableIpWhitelist, ipWhitelist }) {
+    const trimmedKey = apiKey.value.trim()
+
+    if (!trimmedKey || multiKeyMode.value) {
+      throw new Error('请先使用单个 API Key 查询统计')
+    }
+
+    const result = await httpApis.updateStatsIpWhitelistApi({
+      apiKey: trimmedKey,
+      enableIpWhitelist,
+      ipWhitelist
+    })
+
+    if (!result.success) {
+      throw new Error(result.message || '更新 IP 白名单失败')
+    }
+
+    const nextData = result.data || { enableIpWhitelist, ipWhitelist }
+    if (statsData.value) {
+      statsData.value = {
+        ...statsData.value,
+        restrictions: {
+          ...(statsData.value.restrictions || {}),
+          enableIpWhitelist: nextData.enableIpWhitelist,
+          ipWhitelist: nextData.ipWhitelist || []
+        }
+      }
+    }
+
+    return nextData
+  }
+
   // 工具函数
 
   // 格式化费用
@@ -617,6 +649,7 @@ export const useApiStatsStore = defineStore('apistats', () => {
     loadStatsWithApiId,
     loadOemSettings,
     loadServiceRates,
+    updateCurrentIpWhitelist,
     loadApiKeyFromStorage,
     clearData,
     clearInput,

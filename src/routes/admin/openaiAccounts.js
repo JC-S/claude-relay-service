@@ -8,6 +8,7 @@ const crypto = require('crypto')
 const axios = require('axios')
 const openaiAccountService = require('../../services/account/openaiAccountService')
 const accountGroupService = require('../../services/accountGroupService')
+const accountTestSchedulerService = require('../../services/accountTestSchedulerService')
 const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
@@ -17,12 +18,16 @@ const openaiNicSelector = require('../../utils/openaiNicSelector')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
 const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
+const { OPENAI_CODEX_TEST_MODELS } = require('../../../config/models')
 
 const router = express.Router()
 
 const CODEX_TEST_USER_AGENT =
   'codex-tui/0.135.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.135.0)'
 const CODEX_TEST_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
+
+// OAuth 测试默认模型，跟随 config/models.js 中 OPENAI_CODEX_TEST_MODELS 列表第一项
+const DEFAULT_OAUTH_TEST_MODEL = OPENAI_CODEX_TEST_MODELS[0]?.value || 'gpt-5.4'
 
 // OpenAI OAuth 配置
 const OPENAI_CONFIG = {
@@ -1135,6 +1140,139 @@ router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
       error: 'Test failed',
       message: extractErrorMessage(error.response?.data, error.message),
       latency
+    })
+  }
+})
+
+// ============================================================================
+// 账户定时测试相关端点（与 claudeAccounts.js 中同名端点保持一致）
+// ============================================================================
+
+// 获取账户测试历史
+router.get('/:accountId/test-history', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+
+  try {
+    const history = await redis.getAccountTestHistory(accountId, 'openai')
+    return res.json({
+      success: true,
+      data: {
+        accountId,
+        platform: 'openai',
+        history
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Failed to get test history for OpenAI account ${accountId}:`, error)
+    return res.status(500).json({
+      error: 'Failed to get test history',
+      message: error.message
+    })
+  }
+})
+
+// 获取账户定时测试配置
+router.get('/:accountId/test-config', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+
+  try {
+    const testConfig = await redis.getAccountTestConfig(accountId, 'openai')
+    return res.json({
+      success: true,
+      data: {
+        accountId,
+        platform: 'openai',
+        config: testConfig || {
+          enabled: false,
+          cronExpression: '0 8 * * *',
+          model: DEFAULT_OAUTH_TEST_MODEL
+        }
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Failed to get test config for OpenAI account ${accountId}:`, error)
+    return res.status(500).json({
+      error: 'Failed to get test config',
+      message: error.message
+    })
+  }
+})
+
+// 设置账户定时测试配置
+router.put('/:accountId/test-config', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+  const { enabled, cronExpression, model } = req.body || {}
+
+  try {
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({
+        error: 'Invalid parameter',
+        message: 'enabled must be a boolean'
+      })
+    }
+
+    if (!cronExpression || typeof cronExpression !== 'string') {
+      return res.status(400).json({
+        error: 'Invalid parameter',
+        message: 'cronExpression is required and must be a string'
+      })
+    }
+
+    const MAX_CRON_LENGTH = 100
+    if (cronExpression.length > MAX_CRON_LENGTH) {
+      return res.status(400).json({
+        error: 'Invalid parameter',
+        message: `cronExpression too long (max ${MAX_CRON_LENGTH} characters)`
+      })
+    }
+
+    if (!accountTestSchedulerService.validateCronExpression(cronExpression)) {
+      return res.status(400).json({
+        error: 'Invalid parameter',
+        message: `Invalid cron expression: ${cronExpression}. Format: "minute hour day month weekday" (e.g., "0 8 * * *" for daily at 8:00)`
+      })
+    }
+
+    const testModel = model || DEFAULT_OAUTH_TEST_MODEL
+    if (typeof testModel !== 'string' || testModel.length > 256) {
+      return res.status(400).json({
+        error: 'Invalid parameter',
+        message: 'model must be a valid string (max 256 characters)'
+      })
+    }
+
+    const account = await openaiAccountService.getAccount(accountId)
+    if (!account) {
+      return res.status(404).json({
+        error: 'Account not found',
+        message: `OpenAI account ${accountId} not found`
+      })
+    }
+
+    await redis.saveAccountTestConfig(accountId, 'openai', {
+      enabled,
+      cronExpression,
+      model: testModel
+    })
+
+    logger.success(
+      `📝 Updated test config for OpenAI account ${accountId}: enabled=${enabled}, cronExpression=${cronExpression}, model=${testModel}`
+    )
+
+    return res.json({
+      success: true,
+      message: 'Test config updated successfully',
+      data: {
+        accountId,
+        platform: 'openai',
+        config: { enabled, cronExpression, model: testModel }
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Failed to update test config for OpenAI account ${accountId}:`, error)
+    return res.status(500).json({
+      error: 'Failed to update test config',
+      message: error.message
     })
   }
 })

@@ -21,6 +21,8 @@ export const getBatchStatsApi = (apiIds) =>
   request({ url: '/apiStats/api/batch-stats', method: 'POST', data: { apiIds } })
 export const getBatchModelStatsApi = (apiIds, period = 'daily') =>
   request({ url: '/apiStats/api/batch-model-stats', method: 'POST', data: { apiIds, period } })
+export const updateStatsIpWhitelistApi = (data) =>
+  request({ url: '/apiStats/api/ip-whitelist', method: 'PUT', data })
 
 // 认证
 export const loginApi = (data) => request({ url: '/web/auth/login', method: 'POST', data })

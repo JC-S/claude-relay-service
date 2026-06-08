@@ -15,7 +15,7 @@ const {
 const modelsConfig = require('../../config/models')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { splitModelStatsByFastMode } = require('../utils/modelVariantHelper')
-const { normalizeIpWhitelist } = require('../utils/ipWhitelistHelper')
+const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
 const crypto = require('crypto')
 
 const router = express.Router()
@@ -207,6 +207,88 @@ router.post('/api/get-key-id', async (req, res) => {
     return res.status(500).json({
       error: 'Internal server error',
       message: 'Failed to retrieve API key ID'
+    })
+  }
+})
+
+router.put('/api/ip-whitelist', async (req, res) => {
+  try {
+    const { apiKey, enableIpWhitelist, ipWhitelist } = req.body || {}
+
+    if (!apiKey) {
+      return res.status(400).json({
+        error: 'API Key is required',
+        message: 'Please provide your API Key'
+      })
+    }
+
+    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+      return res.status(400).json({
+        error: 'Invalid API key format',
+        message: 'API key format is invalid'
+      })
+    }
+
+    if (typeof enableIpWhitelist !== 'boolean') {
+      return res.status(400).json({
+        error: 'Invalid field',
+        message: 'enableIpWhitelist must be a boolean'
+      })
+    }
+
+    if (!Array.isArray(ipWhitelist)) {
+      return res.status(400).json({
+        error: 'Invalid field',
+        message: 'ipWhitelist must be an array'
+      })
+    }
+
+    const validation = await apiKeyService.validateApiKeyForStats(apiKey)
+    if (!validation.valid) {
+      const clientIP = req.ip || req.connection?.remoteAddress || 'unknown'
+      logger.security(`Invalid API key in IP whitelist update: ${validation.error} from ${clientIP}`)
+      return res.status(401).json({
+        error: 'Invalid API key',
+        message: validation.error
+      })
+    }
+
+    const ipWhitelistValidation = validateIpWhitelist(ipWhitelist)
+    if (!ipWhitelistValidation.valid) {
+      return res.status(400).json({
+        error: 'Invalid IP whitelist',
+        message: ipWhitelistValidation.error
+      })
+    }
+
+    if (enableIpWhitelist && ipWhitelistValidation.entries.length === 0) {
+      return res.status(400).json({
+        error: 'Invalid IP whitelist',
+        message: 'IP whitelist cannot be empty when enabled'
+      })
+    }
+
+    const { keyData } = validation
+    await apiKeyService.updateApiKey(keyData.id, {
+      enableIpWhitelist,
+      ipWhitelist: ipWhitelistValidation.entries
+    })
+
+    logger.info(`✏️ API key self-updated IP whitelist: ${keyData.name} (${keyData.id})`)
+
+    return res.json({
+      success: true,
+      message: 'API key IP whitelist updated successfully',
+      data: {
+        enableIpWhitelist,
+        ipWhitelist: ipWhitelistValidation.entries
+      }
+    })
+  } catch (error) {
+    logger.error('❌ Failed to update API key IP whitelist from stats page:', error)
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to update IP whitelist'
     })
   }
 })

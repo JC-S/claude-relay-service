@@ -1,10 +1,13 @@
 const redisClient = require('../../models/redis')
+const crypto = require('crypto')
 const { v4: uuidv4 } = require('uuid')
 const axios = require('axios')
 const ProxyHelper = require('../../utils/proxyHelper')
 const config = require('../../../config/config')
 const logger = require('../../utils/logger')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
+const { OPENAI_CODEX_TEST_MODELS } = require('../../../config/models')
 // const { maskToken } = require('../../utils/tokenMask')
 const {
   logRefreshStart,
@@ -24,6 +27,14 @@ const { encrypt, decrypt } = encryptor
 const OPENAI_ACCOUNT_KEY_PREFIX = 'openai:account:'
 const SHARED_OPENAI_ACCOUNTS_KEY = 'shared_openai_accounts'
 const ACCOUNT_SESSION_MAPPING_PREFIX = 'openai_session_account_mapping:'
+
+// 定时测试调用 Codex 端点所需的常量（与 routes/admin/openaiAccounts.js 中保持一致）
+const CODEX_TEST_USER_AGENT =
+  'codex-tui/0.135.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.135.0)'
+const CODEX_TEST_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
+
+// OAuth 测试默认模型，跟随 config/models.js 中 OPENAI_CODEX_TEST_MODELS 列表第一项
+const DEFAULT_OAUTH_TEST_MODEL = OPENAI_CODEX_TEST_MODELS[0]?.value || 'gpt-5.4'
 
 // 🧹 定期清理缓存（每10分钟）
 setInterval(
@@ -1255,6 +1266,116 @@ async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
   await client.hset(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, updates)
 }
 
+// 测试账户连通性（供定时测试调度器和管理路由共用）
+// 返回结构与 claudeRelayService.testAccountConnectionSync 对齐:
+//   success ? { success, message, latencyMs, model, timestamp }
+//           : { success: false, error, latencyMs, model?, timestamp }
+async function testAccountConnection(accountId, model = DEFAULT_OAUTH_TEST_MODEL) {
+  const startTime = Date.now()
+  const now = () => new Date().toISOString()
+
+  try {
+    let account = await getAccount(accountId)
+    if (!account) {
+      return {
+        success: false,
+        error: 'Account not found',
+        latencyMs: Date.now() - startTime,
+        timestamp: now()
+      }
+    }
+
+    if (isTokenExpired(account)) {
+      if (!account.refreshToken) {
+        return {
+          success: false,
+          error: 'Access token expired and no refresh token available',
+          latencyMs: Date.now() - startTime,
+          timestamp: now()
+        }
+      }
+      await refreshAccountToken(accountId)
+      account = await getAccount(accountId)
+    }
+
+    if (!account?.accessToken) {
+      return {
+        success: false,
+        error: 'Access token missing',
+        latencyMs: Date.now() - startTime,
+        timestamp: now()
+      }
+    }
+
+    const accessToken = decrypt(account.accessToken)
+    if (!accessToken) {
+      return {
+        success: false,
+        error: 'Failed to decrypt access token',
+        latencyMs: Date.now() - startTime,
+        timestamp: now()
+      }
+    }
+
+    const payload = createOpenAITestPayload(model, { stream: true })
+    payload.instructions = ''
+    payload.store = false
+    delete payload.max_output_tokens
+
+    const requestConfig = {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'chatgpt-account-id': account.accountId || account.chatgptUserId || accountId,
+        host: 'chatgpt.com',
+        accept: 'text/event-stream',
+        'content-type': 'application/json',
+        connection: 'Keep-Alive',
+        originator: 'codex-tui',
+        session_id: crypto.randomUUID(),
+        'user-agent': CODEX_TEST_USER_AGENT
+      },
+      timeout: 30000,
+      validateStatus: () => true
+    }
+
+    const proxyAgent = ProxyHelper.createProxyAgent(account.proxy)
+    if (proxyAgent) {
+      requestConfig.httpAgent = proxyAgent
+      requestConfig.httpsAgent = proxyAgent
+      requestConfig.proxy = false
+    }
+
+    const response = await axios.post(CODEX_TEST_ENDPOINT, payload, requestConfig)
+    const latencyMs = Date.now() - startTime
+
+    if (response.status < 200 || response.status >= 300) {
+      const message = extractErrorMessage(response.data, `API Error: ${response.status}`)
+      return {
+        success: false,
+        error: message,
+        latencyMs,
+        model,
+        timestamp: now()
+      }
+    }
+
+    return {
+      success: true,
+      message: 'Test passed',
+      latencyMs,
+      model: response.data?.model || model,
+      timestamp: now()
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: extractErrorMessage(error.response?.data, error.message),
+      latencyMs: Date.now() - startTime,
+      timestamp: now()
+    }
+  }
+}
+
 module.exports = {
   createAccount,
   getAccount,
@@ -1273,6 +1394,7 @@ module.exports = {
   updateAccountUsage,
   recordUsage, // 别名，指向updateAccountUsage
   updateCodexUsageSnapshot,
+  testAccountConnection,
   encrypt,
   decrypt,
   encryptor // 暴露加密器以便测试和监控
