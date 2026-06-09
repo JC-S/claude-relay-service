@@ -772,6 +772,9 @@ class RedisClient {
 
     const parsed = { ...data }
 
+    // 🔒 v2 父账号密码 hash 绝不通过批量/列表/分页读取路径返回（登录校验走 raw getApiKey）
+    delete parsed.v2PasswordHash
+
     // 布尔字段
     const boolFields = [
       'isActive',
@@ -784,7 +787,8 @@ class RedisClient {
       'enableClaudeThinkingSignatureLossyFallback',
       'enableOpenAIResponsesCodexAdaptation',
       'enableOpenAIResponsesPayloadRules',
-      'isDeleted'
+      'isDeleted',
+      'isV2Parent' // 🆕 v2 父账号标识
     ]
     for (const field of boolFields) {
       if (parsed[field] !== undefined) {
@@ -824,7 +828,8 @@ class RedisClient {
       'rateLimitWindow',
       'rateLimitCost',
       'maxConcurrency',
-      'activationDuration'
+      'activationDuration',
+      'v2TotalBudget' // 🆕 v2 父账号总账额度
     ]
     for (const field of numFields) {
       if (parsed[field] !== undefined && parsed[field] !== '') {
@@ -2939,6 +2944,57 @@ class RedisClient {
     await this.client.del(oldKey)
     // 从新的 hash_map 中移除（认证使用此结构）
     await this.client.hdel('apikey:hash_map', hashedKey)
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🆕 v2 父账号相关（邮箱索引 / 子 key 集合 / 总账汇总）
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 📧 邮箱 → 父 keyId 索引（全局唯一，HSETNX 原子抢占，返回是否成功）
+  async setV2EmailIndex(email, parentKeyId) {
+    const result = await this.client.hsetnx('v2:email_index', email, parentKeyId)
+    return result === 1
+  }
+
+  async getV2KeyIdByEmail(email) {
+    return await this.client.hget('v2:email_index', email)
+  }
+
+  async deleteV2EmailIndex(email) {
+    return await this.client.hdel('v2:email_index', email)
+  }
+
+  // 👶 子 key 集合
+  async addV2Child(parentKeyId, childKeyId) {
+    return await this.client.sadd(`v2:children:${parentKeyId}`, childKeyId)
+  }
+
+  async removeV2Child(parentKeyId, childKeyId) {
+    return await this.client.srem(`v2:children:${parentKeyId}`, childKeyId)
+  }
+
+  async getV2ChildIds(parentKeyId) {
+    return await this.client.smembers(`v2:children:${parentKeyId}`)
+  }
+
+  async deleteV2Children(parentKeyId) {
+    return await this.client.del(`v2:children:${parentKeyId}`)
+  }
+
+  // 💰 父账号总账（倍率后成本汇总，永不过期，持续累加）
+  async incrementV2ParentTotalCost(parentKeyId, amount) {
+    const totalKey = `usage:cost:v2:total:${parentKeyId}`
+    return await this.client.incrbyfloat(totalKey, amount)
+  }
+
+  async getV2ParentTotalCost(parentKeyId) {
+    const totalKey = `usage:cost:v2:total:${parentKeyId}`
+    const value = await this.client.get(totalKey)
+    return parseFloat(value || 0)
+  }
+
+  async deleteV2ParentTotalCost(parentKeyId) {
+    return await this.client.del(`usage:cost:v2:total:${parentKeyId}`)
   }
 
   // 🔗 OAuth会话管理

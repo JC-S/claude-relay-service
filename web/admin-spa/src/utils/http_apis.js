@@ -117,6 +117,20 @@ export const batchUpdateApiKeysApi = (data) =>
 export const getApiKeyUsageRecordsApi = (id, params) =>
   request({ url: `/admin/api-keys/${id}/usage-records`, method: 'GET', params })
 
+// 🆕 v2 账号
+export const upgradeApiKeyToV2Api = (id, data) =>
+  request({ url: `/admin/api-keys/${id}/upgrade-v2`, method: 'POST', data })
+export const updateV2ConfigApi = (id, data) =>
+  request({ url: `/admin/api-keys/${id}/v2-config`, method: 'PUT', data })
+export const getV2AccountApi = () => request({ url: '/admin/v2/account', method: 'GET' })
+export const getV2ApiKeysApi = (params) => request({ url: '/admin/v2/keys', method: 'GET', params })
+export const createV2ApiKeyApi = (data) => request({ url: '/admin/v2/keys', method: 'POST', data })
+export const updateV2ApiKeyApi = (id, data) =>
+  request({ url: `/admin/v2/keys/${id}`, method: 'PUT', data })
+export const deleteV2ApiKeyApi = (id) => request({ url: `/admin/v2/keys/${id}`, method: 'DELETE' })
+export const changeV2PasswordApi = (data) =>
+  request({ url: '/admin/v2/account/password', method: 'POST', data })
+
 // Claude 账户
 export const getClaudeAccountsApi = () => request({ url: '/admin/claude-accounts', method: 'GET' })
 export const createClaudeAccountApi = (data) =>

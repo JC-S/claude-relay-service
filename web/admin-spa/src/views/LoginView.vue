@@ -42,7 +42,7 @@
           <label
             class="mb-2 block text-sm font-semibold text-gray-900 dark:text-gray-100 sm:mb-3"
             for="username"
-            >用户名</label
+            >用户名 / 邮箱</label
           >
           <input
             id="username"
@@ -50,7 +50,7 @@
             autocomplete="username"
             class="form-input w-full"
             name="username"
-            placeholder="请输入用户名"
+            placeholder="请输入用户名或邮箱"
             required
             type="text"
           />

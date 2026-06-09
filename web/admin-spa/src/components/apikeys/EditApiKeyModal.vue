@@ -32,7 +32,7 @@
               class="mb-1.5 block text-xs font-semibold text-gray-700 dark:text-gray-300 sm:mb-3 sm:text-sm"
               >名称</label
             >
-            <div>
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
               <input
                 v-model="form.name"
                 class="form-input flex-1 border-gray-300 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
@@ -41,6 +41,26 @@
                 required
                 type="text"
               />
+              <button
+                v-if="apiKey.isV2Parent"
+                class="inline-flex items-center justify-center rounded-lg border border-purple-200 px-3 py-2 text-sm font-medium text-purple-600 transition-colors hover:bg-purple-50 hover:text-purple-900 dark:border-purple-700 dark:text-purple-400 dark:hover:bg-purple-900/20"
+                title="v2 管理"
+                type="button"
+                @click="emit('manage-v2', apiKey)"
+              >
+                <i class="fas fa-user-cog mr-1.5 text-xs" />
+                v2 管理
+              </button>
+              <button
+                v-else-if="!apiKey.parentKeyId"
+                class="inline-flex items-center justify-center rounded-lg border border-purple-200 px-3 py-2 text-sm font-medium text-purple-600 transition-colors hover:bg-purple-50 hover:text-purple-900 dark:border-purple-700 dark:text-purple-400 dark:hover:bg-purple-900/20"
+                title="升级为 v2"
+                type="button"
+                @click="emit('upgrade-v2', apiKey)"
+              >
+                <i class="fas fa-arrow-up mr-1.5 text-xs" />
+                升级为 v2
+              </button>
             </div>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 sm:mt-2">
               用于识别此 API Key 的用途
@@ -1188,7 +1208,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['close', 'success'])
+const emit = defineEmits(['close', 'success', 'upgrade-v2', 'manage-v2'])
 
 // const authStore = useAuthStore()
 const clientsStore = useClientsStore()

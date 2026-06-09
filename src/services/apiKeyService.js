@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const bcrypt = require('bcryptjs')
 const { v4: uuidv4 } = require('uuid')
 const config = require('../../config/config')
 const redis = require('../models/redis')
@@ -165,6 +166,43 @@ function parseOpenAIResponsesPayloadRules(rawRules) {
   return parsedRules.map((rule) => requestBodyRuleService.normalizeRule(rule)).filter(Boolean)
 }
 
+// 🆕 v2 子 key 运行时从父账号继承的字段
+// 账户绑定字段：仅在真实调用路径(validateApiKey)继承，绝不在公开 stats 路径暴露给前台
+const V2_INHERIT_ACCOUNT_FIELDS = [
+  'claudeAccountId',
+  'claudeConsoleAccountId',
+  'geminiAccountId',
+  'openaiAccountId',
+  'azureOpenaiAccountId',
+  'bedrockAccountId',
+  'droidAccountId'
+]
+// 配置字段：权限/限制/倍率/特性开关（不含账户身份），真实调用与 stats 展示都应一致继承
+const V2_INHERIT_CONFIG_FIELDS = [
+  'permissions',
+  'enableModelRestriction',
+  'restrictedModels',
+  'enableClientRestriction',
+  'allowedClients',
+  'enableIpWhitelist',
+  'ipWhitelist',
+  'concurrencyLimit',
+  'rateLimitWindow',
+  'rateLimitRequests',
+  'rateLimitCost',
+  'weeklyOpusCostLimit',
+  'weeklyResetDay',
+  'weeklyResetHour',
+  'serviceRates',
+  'disableGptFastMode',
+  'enableGeneralOpenAIEndpoint',
+  'enableGeneralPromptCacheAssist',
+  'enableClaudeThinkingSignatureLossyFallback',
+  'enableOpenAIResponsesCodexAdaptation',
+  'enableOpenAIResponsesPayloadRules',
+  'openaiResponsesPayloadRules'
+]
+
 class ApiKeyService {
   constructor() {
     this.prefix = config.security.apiKeyPrefix
@@ -284,6 +322,18 @@ class ApiKeyService {
       enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
       enableOpenAIResponsesPayloadRules: String(enableOpenAIResponsesPayloadRules === true),
       openaiResponsesPayloadRules: JSON.stringify(payloadRulesValidation.rules)
+    }
+
+    // 🆕 v2 字段（仅在升级/子 key 创建场景写入，普通 key 不污染）
+    if (options.parentKeyId) {
+      keyData.parentKeyId = options.parentKeyId // v2 子 key 归属父账号
+    }
+    if (options.isV2Parent) {
+      keyData.isV2Parent = 'true'
+      keyData.v2Email = options.v2Email || ''
+      keyData.v2PasswordHash = options.v2PasswordHash || ''
+      keyData.v2TotalBudget = String(options.v2TotalBudget || 0)
+      keyData.v2UpgradedAt = options.v2UpgradedAt || new Date().toISOString()
     }
 
     // 保存API Key数据并建立哈希映射
@@ -406,6 +456,11 @@ class ApiKeyService {
         return { valid: false, error: 'API key is disabled' }
       }
 
+      // 🆕 已软删除的 key 一律拒绝（fail-closed，防止 hash 被意外重建后恢复调用能力）
+      if (keyData.isDeleted === 'true') {
+        return { valid: false, error: 'API key has been deleted' }
+      }
+
       // 处理激活逻辑（仅在 activation 模式下）
       if (keyData.expirationMode === 'activation' && keyData.isActivated !== 'true') {
         // 首次使用，需要激活
@@ -455,6 +510,45 @@ class ApiKeyService {
         } catch (error) {
           logger.error('❌ Error checking user status during API key validation:', error)
           return { valid: false, error: 'Unable to validate user status' }
+        }
+      }
+
+      // 🆕 v2 账号逻辑
+      // 1) v2 父账号本身不可用于 API 调用（hash 已删除，此处为双保险，由 auth 层返回 403）
+      if (keyData.isV2Parent === 'true') {
+        return {
+          valid: true,
+          keyData: { id: keyData.id, name: keyData.name, isV2Parent: true }
+        }
+      }
+
+      // 2) v2 子 key：实时继承父账号配置（在费用查询/字段解析之前覆盖到 keyData）
+      let v2Budget = null
+      if (keyData.parentKeyId) {
+        const parentData = await redis.getApiKey(keyData.parentKeyId)
+        if (
+          !parentData ||
+          Object.keys(parentData).length === 0 ||
+          parentData.isV2Parent !== 'true' ||
+          parentData.isActive !== 'true' ||
+          parentData.isDeleted === 'true'
+        ) {
+          return { valid: false, error: 'Parent v2 account is disabled' }
+        }
+        // 覆盖可继承字段（账户绑定 + 配置）；保留子的 id/name/description/expiresAt/dailyCostLimit/totalCostLimit
+        for (const f of [...V2_INHERIT_ACCOUNT_FIELDS, ...V2_INHERIT_CONFIG_FIELDS]) {
+          if (parentData[f] !== undefined) {
+            keyData[f] = parentData[f]
+          }
+        }
+        // 父账号总账信息（供 auth 层做总账 402 校验）
+        const parentBudget = parseFloat(parentData.v2TotalBudget || 0)
+        const parentUsed = await redis.getV2ParentTotalCost(keyData.parentKeyId)
+        v2Budget = {
+          v2TotalBudget: parentBudget,
+          v2ParentTotalCost: parentUsed,
+          v2ParentUnlimited: !(parentBudget > 0),
+          v2ParentRemaining: parentBudget > 0 ? Math.max(0, parentBudget - parentUsed) : null
         }
       }
 
@@ -590,7 +684,11 @@ class ApiKeyService {
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
-          openaiResponsesPayloadRules
+          openaiResponsesPayloadRules,
+          // 🆕 v2 字段：子 key 归属与父账号总账（父账号已在上方提前返回）
+          isV2Parent: false,
+          parentKeyId: keyData.parentKeyId || null,
+          ...(v2Budget || {})
         }
       }
     } catch (error) {
@@ -647,6 +745,20 @@ class ApiKeyService {
           logger.warn(`Failed to check user status for API key ${keyData.id}:`, userError)
         }
       }
+
+      // 🆕 v2 父账号不可作为 stats key（hash 已删除，此处双保险）
+      if (keyData.isV2Parent === 'true') {
+        const keyName = keyData.name || 'Unknown'
+        return {
+          valid: false,
+          error: `API Key "${keyName}" 是 v2 父账号，无法用于统计查询`,
+          keyName
+        }
+      }
+
+      // 🆕 v2 子 key：继承父账号的「配置」字段（权限/模型限制/客户端限制/IP白名单/serviceRates 等），
+      // 使统计/测试展示与真实调用一致；但绝不继承账户绑定 ID，避免公开 stats 泄漏上游账户身份。
+      await this._overlayV2ParentConfigForStats(keyData)
 
       // 获取当日费用
       const [dailyCost, costStats] = await Promise.all([
@@ -729,6 +841,9 @@ class ApiKeyService {
           azureOpenaiAccountId: keyData.azureOpenaiAccountId,
           bedrockAccountId: keyData.bedrockAccountId,
           droidAccountId: keyData.droidAccountId,
+          // 🆕 v2 子 key 标识（父 key id）：仅供服务端识别 v2 子 key（如拒绝其自助改继承配置）。
+          // 公开 stats 响应为显式构造对象、不含该字段，不会泄漏给前台。
+          parentKeyId: keyData.parentKeyId || null,
           permissions: normalizePermissions(keyData.permissions),
           tokenLimit: parseInt(keyData.tokenLimit),
           concurrencyLimit: parseInt(keyData.concurrencyLimit || 0),
@@ -769,6 +884,45 @@ class ApiKeyService {
       logger.error('❌ API key validation error (stats):', error)
       return { valid: false, error: 'Internal validation error' }
     }
+  }
+
+  // 🆕 为 v2 子 key 就地继承父账号的「配置」字段（权限/限制/倍率/特性开关，不含账户绑定 ID）。
+  // 供 validateApiKeyForStats 与公开 stats 的 apiId 查询路径共用，确保展示与真实调用一致，
+  // 同时绝不在公开 stats 暴露上游账户身份。直接修改并返回传入的 keyData。
+  async _overlayV2ParentConfigForStats(keyData) {
+    if (!keyData || !keyData.parentKeyId) {
+      return keyData
+    }
+    const parentData = await redis.getApiKey(keyData.parentKeyId)
+    if (
+      parentData &&
+      Object.keys(parentData).length > 0 &&
+      parentData.isV2Parent === 'true' &&
+      parentData.isActive === 'true' &&
+      parentData.isDeleted !== 'true'
+    ) {
+      for (const f of V2_INHERIT_CONFIG_FIELDS) {
+        if (parentData[f] !== undefined) {
+          keyData[f] = parentData[f]
+        }
+      }
+    }
+    return keyData
+  }
+
+  // 🆕 公开 stats 的 apiId 查询路径专用：按 id 取原始 keyData，拒绝 v2 父账号，
+  // 并为 v2 子 key 继承父账号「配置」字段（不含账户绑定）。返回判别式结果，HTTP 响应由路由层决定。
+  async getApiKeyForPublicStatsById(apiId) {
+    const keyData = await redis.getApiKey(apiId)
+    if (!keyData || Object.keys(keyData).length === 0) {
+      return { found: false, isV2Parent: false, keyData: null }
+    }
+    // v2 父账号不可通过公开统计接口查询（避免泄漏其上游账户绑定/账户身份信息）
+    if (keyData.isV2Parent === 'true') {
+      return { found: true, isV2Parent: true, keyData: null }
+    }
+    await this._overlayV2ParentConfigForStats(keyData)
+    return { found: true, isV2Parent: false, keyData }
   }
 
   // 🏷️ 获取所有标签（合并索引和全局集合）
@@ -1115,6 +1269,7 @@ class ApiKeyService {
         }
 
         delete key.apiKey // 不返回哈希后的key
+        delete key.v2PasswordHash // 🔒 绝不返回 v2 密码 hash
       }
 
       return apiKeys
@@ -1357,6 +1512,7 @@ class ApiKeyService {
         }
         delete key.apiKey
         delete key.ccrAccountId
+        delete key.v2PasswordHash // 🔒 绝不返回 v2 密码 hash
 
         // 不获取 lastUsage（太慢），设为 null
         key.lastUsage = null
@@ -1472,7 +1628,8 @@ class ApiKeyService {
         'enableClaudeThinkingSignatureLossyFallback',
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
-        'openaiResponsesPayloadRules'
+        'openaiResponsesPayloadRules',
+        'v2TotalBudget' // 🆕 v2 父账号总账额度（仅管理员可改，故意不含 isV2Parent/parentKeyId）
       ]
       const updatedData = { ...keyData }
 
@@ -1522,7 +1679,13 @@ class ApiKeyService {
 
       // 传递hashedKey以确保映射表一致性
       // keyData.apiKey 存储的就是 hashedKey（见generateApiKey第123行）
-      await redis.setApiKey(keyId, updatedData, keyData.apiKey)
+      // 🆕 仅对「可调用」的 key 重建 hash 映射：已软删除 / v2 父账号本就不应存在映射，
+      // 否则任意管理更新（如改 v2 总额）会复活其映射，破坏 fail-closed 不变量。
+      const shouldKeepHash = keyData.isDeleted !== 'true' && keyData.isV2Parent !== 'true'
+      await redis.setApiKey(keyId, updatedData, shouldKeepHash ? keyData.apiKey : null)
+      if (!shouldKeepHash && keyData.apiKey) {
+        await redis.deleteApiKeyHash(keyData.apiKey)
+      }
 
       // 同步更新 API Key 索引
       try {
@@ -1639,7 +1802,8 @@ class ApiKeyService {
       await redis.client.hdel(keyName, 'isDeleted', 'deletedAt', 'deletedBy', 'deletedByType')
 
       // 重新建立哈希映射（恢复API Key的使用能力）
-      if (keyData.apiKey) {
+      // 🆕 v2 父账号恢复后仍不可直接 API 调用，故不重建 hash 映射
+      if (keyData.apiKey && keyData.isV2Parent !== 'true') {
         await redis.setApiKeyHash(keyData.apiKey, {
           id: keyId,
           name: keyData.name,
@@ -1674,7 +1838,12 @@ class ApiKeyService {
 
       logger.success(`Restored API key: ${keyId} by ${restoredBy} (${restoredByType})`)
 
-      return { success: true, apiKey: updatedData }
+      // 🆕 返回前剥离敏感字段（apiKey hash、v2 密码 hash），任何响应都不得包含
+      const safeApiKey = { ...updatedData }
+      delete safeApiKey.apiKey
+      delete safeApiKey.v2PasswordHash
+
+      return { success: true, apiKey: safeApiKey }
     } catch (error) {
       logger.error('❌ Failed to restore API key:', error)
       throw error
@@ -1692,6 +1861,21 @@ class ApiKeyService {
       // 确保只能彻底删除已经软删除的key
       if (keyData.isDeleted !== 'true') {
         throw new Error('只能彻底删除已经删除的API Key')
+      }
+
+      // 🆕 v2 父账号：仍有未彻底删除的子 key 时拒绝永久删除（避免产生孤儿子 key）
+      if (keyData.isV2Parent === 'true') {
+        const childIds = await redis.getV2ChildIds(keyId)
+        let liveChildren = 0
+        for (const childId of childIds) {
+          const child = await redis.getApiKey(childId)
+          if (child && Object.keys(child).length > 0) {
+            liveChildren++
+          }
+        }
+        if (liveChildren > 0) {
+          throw new Error('请先彻底删除该 v2 父账号下的所有子 key，再永久删除父账号')
+        }
       }
 
       // 删除所有相关的使用统计数据
@@ -1725,6 +1909,19 @@ class ApiKeyService {
 
       // 删除API Key本身
       await redis.deleteApiKey(keyId)
+
+      // 🆕 v2 父账号：清理邮箱索引、子 key 集合、总账键
+      if (keyData.isV2Parent === 'true') {
+        if (keyData.v2Email) {
+          await redis.deleteV2EmailIndex((keyData.v2Email || '').toLowerCase())
+        }
+        await redis.deleteV2Children(keyId)
+        await redis.deleteV2ParentTotalCost(keyId)
+      }
+      // 🆕 v2 子 key：从父账号的子 key 集合移除
+      if (keyData.parentKeyId) {
+        await redis.removeV2Child(keyData.parentKeyId, keyId)
+      }
 
       logger.success(`🗑️ Permanently deleted API key: ${keyId}`)
 
@@ -1852,6 +2049,10 @@ class ApiKeyService {
       // 获取API Key数据以确定关联的账户
       const keyData = await redis.getApiKey(keyId)
       if (keyData && Object.keys(keyData).length > 0) {
+        // 🆕 v2 子 key：把倍率后成本汇总到父账号总账（与总账 402 校验同口径）
+        if (keyData.parentKeyId && ratedCost > 0) {
+          await redis.incrementV2ParentTotalCost(keyData.parentKeyId, ratedCost)
+        }
         // 更新最后使用时间
         const lastUsedAt = new Date().toISOString()
         keyData.lastUsedAt = lastUsedAt
@@ -1913,7 +2114,8 @@ class ApiKeyService {
         realCost: Number(realCost.toFixed(6)),
         costBreakdown: costInfo?.costs || undefined,
         realCostBreakdown: costInfo?.costs || undefined,
-        isLongContext: isLongContextRequest
+        isLongContext: isLongContextRequest,
+        parentKeyId: keyData?.parentKeyId || null
       }
 
       await redis.addUsageRecord(keyId, usageRecord)
@@ -1956,10 +2158,17 @@ class ApiKeyService {
         return // 不是 claude 账户，直接返回
       }
 
-      // 获取 key 的重置配置
+      // 获取 key 的重置配置（v2 子 key 使用父账号的周重置配置，但 weekly cost 仍记到 child）
       const keyData = await redis.getApiKey(keyId)
-      const resetDay = parseInt(keyData?.weeklyResetDay || 1)
-      const resetHour = parseInt(keyData?.weeklyResetHour || 0)
+      let resetConfigSource = keyData
+      if (keyData?.parentKeyId) {
+        const parentData = await redis.getApiKey(keyData.parentKeyId)
+        if (parentData && Object.keys(parentData).length > 0) {
+          resetConfigSource = parentData
+        }
+      }
+      const resetDay = parseInt(resetConfigSource?.weeklyResetDay || 1)
+      const resetHour = parseInt(resetConfigSource?.weeklyResetHour || 0)
 
       // 记录 Opus 周费用（倍率成本和真实成本）
       await redis.incrementWeeklyOpusCost(keyId, ratedCost, realCost, resetDay, resetHour)
@@ -2109,6 +2318,10 @@ class ApiKeyService {
       // 获取API Key数据以确定关联的账户
       const keyData = await redis.getApiKey(keyId)
       if (keyData && Object.keys(keyData).length > 0) {
+        // 🆕 v2 子 key：把倍率后成本汇总到父账号总账（与总账 402 校验同口径）
+        if (keyData.parentKeyId && ratedCostWithDetails > 0) {
+          await redis.incrementV2ParentTotalCost(keyData.parentKeyId, ratedCostWithDetails)
+        }
         // 更新最后使用时间
         const lastUsedAt = new Date().toISOString()
         keyData.lastUsedAt = lastUsedAt
@@ -2186,7 +2399,8 @@ class ApiKeyService {
         },
         pricingSource: costInfo.pricingSource || null,
         usedFallbackPricing: costInfo.usedFallbackPricing === true,
-        isLongContext: costInfo.isLongContextRequest || false
+        isLongContext: costInfo.isLongContextRequest || false,
+        parentKeyId: keyData?.parentKeyId || null
       }
 
       await redis.addUsageRecord(keyId, usageRecord)
@@ -2608,7 +2822,13 @@ class ApiKeyService {
         ),
         openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(
           keyData.openaiResponsesPayloadRules
-        )
+        ),
+        // 🆕 v2 展示字段（管理员可见，绝不含 v2PasswordHash）
+        isV2Parent: keyData.isV2Parent === 'true',
+        parentKeyId: keyData.parentKeyId || '',
+        v2Email: keyData.v2Email || '',
+        v2TotalBudget: parseFloat(keyData.v2TotalBudget || 0),
+        v2UpgradedAt: keyData.v2UpgradedAt || ''
       }
     } catch (error) {
       logger.error('❌ Failed to get API key by ID:', error)
@@ -2622,6 +2842,11 @@ class ApiKeyService {
       const existingKey = await redis.getApiKey(keyId)
       if (!existingKey) {
         throw new Error('API key not found')
+      }
+
+      // 🆕 v2 父账号不可重新生成 API secret（保持不可直接调用）；v2 子 key 可重生成且归属不变
+      if (existingKey.isV2Parent === 'true') {
+        throw new Error('A v2 parent account cannot regenerate its API secret')
       }
 
       // 生成新的key
@@ -2859,11 +3084,18 @@ class ApiKeyService {
       // 获取全局倍率
       const globalRate = await serviceRatesService.getServiceRate(service)
 
-      // 获取 Key 倍率
+      // 获取 Key 倍率（v2 子 key 的倍率实时继承自父账号，一处改动覆盖全部调用点）
       const keyData = await redis.getApiKey(keyId)
+      let rateSource = keyData
+      if (keyData?.parentKeyId) {
+        const parentData = await redis.getApiKey(keyData.parentKeyId)
+        if (parentData && Object.keys(parentData).length > 0) {
+          rateSource = parentData
+        }
+      }
       let keyRates = {}
       try {
-        keyRates = JSON.parse(keyData?.serviceRates || '{}')
+        keyRates = JSON.parse(rateSource?.serviceRates || '{}')
       } catch (e) {
         keyRates = {}
       }
@@ -2991,6 +3223,348 @@ class ApiKeyService {
       logger.error('❌ Failed to extend expiry:', error)
       throw error
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🆕 v2 账号：升级 / 配置管理 / 子 key 体系
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 邮箱基础格式校验
+  _isValidEmail(email) {
+    return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  }
+
+  // ⬆️ 将一个普通 API Key 单向升级为 v2 父账号
+  async upgradeToV2Parent(keyId, { email, password, totalBudget } = {}) {
+    const keyData = await redis.getApiKey(keyId)
+    if (!keyData || Object.keys(keyData).length === 0) {
+      throw new Error('API key not found')
+    }
+    if (keyData.isDeleted === 'true') {
+      throw new Error('Cannot upgrade a deleted API key')
+    }
+    if (keyData.isV2Parent === 'true') {
+      throw new Error('API key is already a v2 parent account')
+    }
+    if (keyData.parentKeyId) {
+      throw new Error('A v2 child key cannot be upgraded')
+    }
+    // 不允许已属于用户体系的 key 升级，避免与现有用户体系混用
+    if (keyData.userId) {
+      throw new Error('An API key owned by a user cannot be upgraded to a v2 account')
+    }
+
+    const normalizedEmail = (email || '').trim().toLowerCase()
+    if (!this._isValidEmail(normalizedEmail)) {
+      throw new Error('Invalid email format')
+    }
+
+    // 拒绝与管理员用户名相同的邮箱（登录先试管理员，避免混淆）
+    const adminData = await redis.getSession('admin_credentials')
+    if (adminData?.username && adminData.username.toLowerCase() === normalizedEmail) {
+      throw new Error('This email conflicts with the administrator account')
+    }
+
+    if (!password || password.length < 8) {
+      throw new Error('Password must be at least 8 characters long')
+    }
+
+    const budget = Number(totalBudget)
+    if (!Number.isFinite(budget) || budget < 0) {
+      throw new Error('Total budget must be a non-negative number')
+    }
+
+    // 原子抢占邮箱（HSETNX）
+    const reserved = await redis.setV2EmailIndex(normalizedEmail, keyId)
+    if (!reserved) {
+      const err = new Error('This email is already used by another v2 account')
+      err.code = 'EMAIL_CONFLICT'
+      throw err
+    }
+
+    try {
+      const v2PasswordHash = await bcrypt.hash(password, 10)
+      const updatedData = {
+        ...keyData,
+        isV2Parent: 'true',
+        v2Email: normalizedEmail,
+        v2PasswordHash,
+        v2TotalBudget: String(budget),
+        v2UpgradedAt: new Date().toISOString(),
+        // 父账号在管理列表里仍显示为启用，但 API 调用不可用（hash 已删除）
+        isActive: 'true'
+      }
+      await redis.setApiKey(keyId, updatedData)
+
+      // 删除父 key 的 hash 映射（同时清旧/新结构）→ 原 secret 立即不可直接调用
+      if (keyData.apiKey) {
+        await redis.deleteApiKeyHash(keyData.apiKey)
+      }
+
+      // 同步索引，保证管理员列表可显示
+      try {
+        const apiKeyIndexService = require('./apiKeyIndexService')
+        await apiKeyIndexService.updateIndex(
+          keyId,
+          { isActive: true },
+          {
+            name: keyData.name,
+            isActive: keyData.isActive === 'true',
+            isDeleted: keyData.isDeleted === 'true',
+            tags: JSON.parse(keyData.tags || '[]')
+          }
+        )
+      } catch (err) {
+        logger.warn(`Failed to update API Key index after v2 upgrade ${keyId}:`, err.message)
+      }
+
+      logger.success(`⬆️ Upgraded API key ${keyId} to v2 parent account (${normalizedEmail})`)
+      return { success: true, keyId, v2Email: normalizedEmail, v2TotalBudget: budget }
+    } catch (error) {
+      // 失败回滚：仅当邮箱索引仍指向本 key 时删除，避免悬挂索引
+      try {
+        const owner = await redis.getV2KeyIdByEmail(normalizedEmail)
+        if (owner === keyId) {
+          await redis.deleteV2EmailIndex(normalizedEmail)
+        }
+      } catch (rollbackErr) {
+        logger.error('❌ Failed to rollback v2 email index after upgrade error:', rollbackErr)
+      }
+      logger.error('❌ Failed to upgrade API key to v2 parent:', error)
+      throw error
+    }
+  }
+
+  // 🔎 通过邮箱查找 v2 父账号（返回 raw keyData，含 v2PasswordHash，仅供登录校验，禁止外泄）
+  async findV2ByEmail(email) {
+    const normalizedEmail = (email || '').trim().toLowerCase()
+    if (!normalizedEmail) {
+      return null
+    }
+    const parentKeyId = await redis.getV2KeyIdByEmail(normalizedEmail)
+    if (!parentKeyId) {
+      return null
+    }
+    const keyData = await redis.getApiKey(parentKeyId)
+    if (!keyData || Object.keys(keyData).length === 0) {
+      return null
+    }
+    if (
+      keyData.isV2Parent !== 'true' ||
+      keyData.isDeleted === 'true' ||
+      keyData.isActive !== 'true'
+    ) {
+      return null
+    }
+    return { id: parentKeyId, ...keyData }
+  }
+
+  // 💰 更新 v2 父账号总账额度（仅管理员）
+  async updateV2TotalBudget(parentKeyId, totalBudget) {
+    const keyData = await redis.getApiKey(parentKeyId)
+    if (!keyData || keyData.isV2Parent !== 'true') {
+      throw new Error('Not a v2 parent account')
+    }
+    const budget = Number(totalBudget)
+    if (!Number.isFinite(budget) || budget < 0) {
+      throw new Error('Total budget must be a non-negative number')
+    }
+    await redis.client.hset(`apikey:${parentKeyId}`, 'v2TotalBudget', String(budget))
+    logger.success(`💰 Updated v2 total budget for ${parentKeyId}: $${budget}`)
+    return { success: true, v2TotalBudget: budget }
+  }
+
+  // 🔑 管理员重置 v2 密码
+  async resetV2Password(parentKeyId, password) {
+    const keyData = await redis.getApiKey(parentKeyId)
+    if (!keyData || keyData.isV2Parent !== 'true') {
+      throw new Error('Not a v2 parent account')
+    }
+    if (!password || password.length < 8) {
+      throw new Error('Password must be at least 8 characters long')
+    }
+    const v2PasswordHash = await bcrypt.hash(password, 10)
+    await redis.client.hset(`apikey:${parentKeyId}`, 'v2PasswordHash', v2PasswordHash)
+    logger.success(`🔑 Admin reset v2 password for ${parentKeyId}`)
+    return { success: true }
+  }
+
+  // 🔑 v2 自助修改密码（校验当前密码）
+  async changeV2Password(parentKeyId, currentPassword, newPassword) {
+    const keyData = await redis.getApiKey(parentKeyId)
+    if (!keyData || keyData.isV2Parent !== 'true') {
+      throw new Error('Not a v2 parent account')
+    }
+    const matched = await bcrypt.compare(currentPassword || '', keyData.v2PasswordHash || '')
+    if (!matched) {
+      const err = new Error('Current password is incorrect')
+      err.code = 'INVALID_PASSWORD'
+      throw err
+    }
+    if (!newPassword || newPassword.length < 8) {
+      throw new Error('Password must be at least 8 characters long')
+    }
+    const v2PasswordHash = await bcrypt.hash(newPassword, 10)
+    await redis.client.hset(`apikey:${parentKeyId}`, 'v2PasswordHash', v2PasswordHash)
+    logger.success(`🔑 v2 account changed own password: ${parentKeyId}`)
+    return { success: true }
+  }
+
+  // 📧 管理员修改 v2 邮箱（事务式维护邮箱索引一致性）
+  async changeV2Email(parentKeyId, newEmail) {
+    const keyData = await redis.getApiKey(parentKeyId)
+    if (!keyData || keyData.isV2Parent !== 'true') {
+      throw new Error('Not a v2 parent account')
+    }
+    const normalizedEmail = (newEmail || '').trim().toLowerCase()
+    if (!this._isValidEmail(normalizedEmail)) {
+      throw new Error('Invalid email format')
+    }
+    const oldEmail = (keyData.v2Email || '').toLowerCase()
+    if (normalizedEmail === oldEmail) {
+      return { success: true, v2Email: normalizedEmail }
+    }
+    const adminData = await redis.getSession('admin_credentials')
+    if (adminData?.username && adminData.username.toLowerCase() === normalizedEmail) {
+      throw new Error('This email conflicts with the administrator account')
+    }
+    // 先抢占新邮箱，再改 key，再删旧邮箱；失败回滚新邮箱索引
+    const reserved = await redis.setV2EmailIndex(normalizedEmail, parentKeyId)
+    if (!reserved) {
+      const err = new Error('This email is already used by another v2 account')
+      err.code = 'EMAIL_CONFLICT'
+      throw err
+    }
+    try {
+      await redis.client.hset(`apikey:${parentKeyId}`, 'v2Email', normalizedEmail)
+      if (oldEmail) {
+        await redis.deleteV2EmailIndex(oldEmail)
+      }
+      logger.success(`📧 Changed v2 email for ${parentKeyId}: ${oldEmail} -> ${normalizedEmail}`)
+      return { success: true, v2Email: normalizedEmail }
+    } catch (error) {
+      try {
+        const owner = await redis.getV2KeyIdByEmail(normalizedEmail)
+        if (owner === parentKeyId) {
+          await redis.deleteV2EmailIndex(normalizedEmail)
+        }
+      } catch (rollbackErr) {
+        logger.error('❌ Failed to rollback v2 email index after email change error:', rollbackErr)
+      }
+      throw error
+    }
+  }
+
+  // 📊 v2 账号总账摘要（不含任何上游账户信息）
+  async getV2AccountSummary(parentKeyId) {
+    const keyData = await redis.getApiKey(parentKeyId)
+    if (!keyData || keyData.isV2Parent !== 'true') {
+      throw new Error('Not a v2 parent account')
+    }
+    const budget = parseFloat(keyData.v2TotalBudget || 0)
+    const used = await redis.getV2ParentTotalCost(parentKeyId)
+    const unlimited = !(budget > 0)
+    return {
+      v2Email: keyData.v2Email || '',
+      name: keyData.name || '',
+      v2TotalBudget: budget,
+      used,
+      remaining: unlimited ? null : Math.max(0, budget - used),
+      unlimited
+    }
+  }
+
+  // 🔑 v2 创建子 key（仅受限字段；其余配置运行时实时继承父账号）
+  async createV2Child(parentKeyId, { name, description, dailyCostLimit, totalCostLimit } = {}) {
+    const parent = await redis.getApiKey(parentKeyId)
+    if (!parent || Object.keys(parent).length === 0 || parent.isV2Parent !== 'true') {
+      throw new Error('Not a v2 parent account')
+    }
+    if (parent.isDeleted === 'true' || parent.isActive !== 'true') {
+      throw new Error('v2 parent account is disabled')
+    }
+    if (!name || !name.trim()) {
+      throw new Error('API key name is required')
+    }
+    for (const [field, val] of [
+      ['dailyCostLimit', dailyCostLimit],
+      ['totalCostLimit', totalCostLimit]
+    ]) {
+      if (
+        val !== undefined &&
+        val !== null &&
+        val !== '' &&
+        (Number.isNaN(Number(val)) || Number(val) < 0)
+      ) {
+        throw new Error(`${field} must be a non-negative number`)
+      }
+    }
+
+    // 只传受限字段 + 归属信息；不复制父账号绑定/权限/限制/倍率，保证实时继承
+    const newKey = await this.generateApiKey({
+      name: name.trim(),
+      description: (description || '').trim(),
+      dailyCostLimit: dailyCostLimit || 0,
+      totalCostLimit: totalCostLimit || 0,
+      permissions: [],
+      parentKeyId,
+      createdBy: 'v2'
+    })
+
+    await redis.addV2Child(parentKeyId, newKey.id)
+    logger.success(`🔑 v2 parent ${parentKeyId} created child key ${newKey.id}`)
+    return newKey
+  }
+
+  // 🔒 子 key 视图（fail-closed 白名单：绝不可能出现上游账户/权限/倍率字段）
+  _toV2ChildView(key) {
+    if (!key || typeof key !== 'object') {
+      return null
+    }
+    return {
+      id: key.id,
+      name: key.name,
+      description: key.description,
+      maskedKey: key.maskedKey || null,
+      isActive: key.isActive === true || key.isActive === 'true',
+      createdAt: key.createdAt,
+      lastUsedAt: key.lastUsedAt || null,
+      expiresAt: key.expiresAt || null,
+      dailyCostLimit: parseFloat(key.dailyCostLimit || 0),
+      totalCostLimit: parseFloat(key.totalCostLimit || 0),
+      dailyCost: key.dailyCost || 0,
+      totalCost: key.totalCost || 0,
+      usage: key.usage || null,
+      currentConcurrency: key.currentConcurrency || 0,
+      currentWindowRequests: key.currentWindowRequests || 0,
+      currentWindowCost: key.currentWindowCost || 0,
+      isDeleted: key.isDeleted === true || key.isDeleted === 'true'
+    }
+  }
+
+  // 📋 获取 v2 父账号的子 key 列表（已最小化）
+  async getV2Children(parentKeyId, includeDeleted = false) {
+    const allKeys = await this.getAllApiKeysFast(includeDeleted)
+    return allKeys
+      .filter((k) => k.parentKeyId === parentKeyId)
+      .map((k) => this._toV2ChildView(k))
+      .filter(Boolean)
+  }
+
+  // 🔐 校验子 key 归属（不归属/不存在均按 404，避免探测其它 key 是否存在）
+  async assertV2ChildOwnership(parentKeyId, childKeyId) {
+    const child = await redis.getApiKey(childKeyId)
+    if (
+      !child ||
+      Object.keys(child).length === 0 ||
+      child.parentKeyId !== parentKeyId ||
+      child.isDeleted === 'true' // 已软删除的子 key 不可再被 update/delete 操作（防止复活）
+    ) {
+      const err = new Error('API key not found')
+      err.code = 'NOT_FOUND'
+      throw err
+    }
+    return child
   }
 }
 

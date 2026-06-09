@@ -9,6 +9,7 @@ export const useAuthStore = defineStore('auth', () => {
   const isLoggedIn = ref(false)
   const authToken = ref(localStorage.getItem('authToken') || '')
   const username = ref('')
+  const userRole = ref(localStorage.getItem('userRole') || '') // 🆕 'admin' | 'v2'
   const loginError = ref('')
   const loginLoading = ref(false)
   const oemSettings = ref({
@@ -22,7 +23,7 @@ export const useAuthStore = defineStore('auth', () => {
   // 计算属性
   const isAuthenticated = computed(() => !!authToken.value && isLoggedIn.value)
   const token = computed(() => authToken.value)
-  const user = computed(() => ({ username: username.value }))
+  const user = computed(() => ({ username: username.value, role: userRole.value }))
 
   // 方法
   async function login(credentials) {
@@ -35,10 +36,13 @@ export const useAuthStore = defineStore('auth', () => {
       if (result.success) {
         authToken.value = result.token
         username.value = result.username || credentials.username
+        userRole.value = result.role || 'admin'
         isLoggedIn.value = true
         localStorage.setItem('authToken', result.token)
+        localStorage.setItem('userRole', userRole.value)
 
-        await router.push('/dashboard')
+        // 🆕 v2 账号登录后只进 API Keys 页面
+        await router.push(userRole.value === 'v2' ? '/api-keys' : '/dashboard')
       } else {
         loginError.value = result.message || '登录失败'
       }
@@ -53,7 +57,9 @@ export const useAuthStore = defineStore('auth', () => {
     isLoggedIn.value = false
     authToken.value = ''
     username.value = ''
+    userRole.value = ''
     localStorage.removeItem('authToken')
+    localStorage.removeItem('userRole')
     router.push('/login')
   }
 
@@ -73,6 +79,8 @@ export const useAuthStore = defineStore('auth', () => {
         return
       }
       username.value = userResult.user.username
+      userRole.value = userResult.user.role || 'admin'
+      localStorage.setItem('userRole', userRole.value)
     } catch (error) {
       logout()
     }
@@ -109,6 +117,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLoggedIn,
     authToken,
     username,
+    userRole,
     loginError,
     loginLoading,
     oemSettings,

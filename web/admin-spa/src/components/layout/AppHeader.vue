@@ -129,7 +129,7 @@
               @click="openChangePasswordModal"
             >
               <i class="fas fa-key text-blue-500" />
-              <span>修改账户信息</span>
+              <span>{{ isV2Role ? '修改密码' : '修改账户信息' }}</span>
             </button>
 
             <hr class="my-2 border-gray-200 dark:border-gray-700" />
@@ -160,7 +160,9 @@
           >
             <i class="fas fa-key text-white" />
           </div>
-          <h3 class="text-xl font-bold text-gray-900 dark:text-gray-100">修改账户信息</h3>
+          <h3 class="text-xl font-bold text-gray-900 dark:text-gray-100">
+            {{ isV2Role ? '修改密码' : '修改账户信息' }}
+          </h3>
         </div>
         <button
           class="text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-300"
@@ -174,7 +176,7 @@
         class="modal-scroll-content custom-scrollbar flex-1 space-y-6"
         @submit.prevent="changePassword"
       >
-        <div>
+        <div v-if="!isV2Role">
           <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
             >当前用户名</label
           >
@@ -189,7 +191,7 @@
           </p>
         </div>
 
-        <div>
+        <div v-if="!isV2Role">
           <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
             >新用户名</label
           >
@@ -302,6 +304,9 @@ const authStore = useAuthStore()
 
 // 当前用户信息
 const currentUser = computed(() => authStore.user || { username: 'Admin' })
+
+// 🆕 v2 角色：修改密码弹窗不显示用户名字段
+const isV2Role = computed(() => authStore.userRole === 'v2')
 
 // OEM设置
 const oemSettings = computed(() => authStore.oemSettings || {})

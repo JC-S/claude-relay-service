@@ -246,10 +246,21 @@ router.put('/api/ip-whitelist', async (req, res) => {
     const validation = await apiKeyService.validateApiKeyForStats(apiKey)
     if (!validation.valid) {
       const clientIP = req.ip || req.connection?.remoteAddress || 'unknown'
-      logger.security(`Invalid API key in IP whitelist update: ${validation.error} from ${clientIP}`)
+      logger.security(
+        `Invalid API key in IP whitelist update: ${validation.error} from ${clientIP}`
+      )
       return res.status(401).json({
         error: 'Invalid API key',
         message: validation.error
+      })
+    }
+
+    // 🆕 v2 子 key 的 IP 白名单由父账号统一管理（真实调用时继承父配置），
+    // 自助修改不会生效；直接拒绝，避免「提示成功但实际无效」的误导。
+    if (validation.keyData.parentKeyId) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: '该配置由父账号统一管理，无法在此修改'
       })
     }
 
@@ -313,16 +324,26 @@ router.post('/api/user-stats', async (req, res) => {
         })
       }
 
-      // 直接通过 ID 获取 API Key 数据
-      keyData = await redis.getApiKey(apiId)
+      // 通过 ID 获取 API Key 数据（拒绝 v2 父账号；v2 子 key 继承父账号「配置」字段，不含账户绑定）
+      const lookup = await apiKeyService.getApiKeyForPublicStatsById(apiId)
 
-      if (!keyData || Object.keys(keyData).length === 0) {
+      if (!lookup.found) {
         logger.security(`API key not found for ID: ${apiId} from ${req.ip || 'unknown'}`)
         return res.status(404).json({
           error: 'API key not found',
           message: 'The specified API key does not exist'
         })
       }
+
+      // 🆕 v2 父账号不可通过公开统计接口查询（避免泄漏其上游账户绑定/账户身份信息）
+      if (lookup.isV2Parent) {
+        return res.status(403).json({
+          error: 'API key not available',
+          message: 'This API key cannot be queried'
+        })
+      }
+
+      ;({ keyData } = lookup)
 
       // 检查是否激活
       if (keyData.isActive !== 'true') {
@@ -1480,16 +1501,26 @@ router.post('/api/user-model-stats', async (req, res) => {
         })
       }
 
-      // 直接通过 ID 获取 API Key 数据
-      keyData = await redis.getApiKey(apiId)
+      // 通过 ID 获取 API Key 数据（拒绝 v2 父账号；v2 子 key 继承父账号「配置」字段，不含账户绑定）
+      const lookup = await apiKeyService.getApiKeyForPublicStatsById(apiId)
 
-      if (!keyData || Object.keys(keyData).length === 0) {
+      if (!lookup.found) {
         logger.security(`API key not found for ID: ${apiId} from ${req.ip || 'unknown'}`)
         return res.status(404).json({
           error: 'API key not found',
           message: 'The specified API key does not exist'
         })
       }
+
+      // 🆕 v2 父账号不可通过公开统计接口查询（避免泄漏其上游账户绑定/账户身份信息）
+      if (lookup.isV2Parent) {
+        return res.status(403).json({
+          error: 'API key not available',
+          message: 'This API key cannot be queried'
+        })
+      }
+
+      ;({ keyData } = lookup)
 
       // 检查是否激活
       if (keyData.isActive !== 'true') {

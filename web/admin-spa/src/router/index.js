@@ -10,7 +10,7 @@ const UserDashboardView = () => import('@/views/UserDashboardView.vue')
 const UserManagementView = () => import('@/views/UserManagementView.vue')
 const MainLayout = () => import('@/components/layout/MainLayout.vue')
 const DashboardView = () => import('@/views/DashboardView.vue')
-const ApiKeysView = () => import('@/views/ApiKeysView.vue')
+const ApiKeysRouteView = () => import('@/views/ApiKeysRouteView.vue')
 const ApiKeyUsageRecordsView = () => import('@/views/ApiKeyUsageRecordsView.vue')
 const AccountsView = () => import('@/views/AccountsView.vue')
 const AccountUsageRecordsView = () => import('@/views/AccountUsageRecordsView.vue')
@@ -84,7 +84,7 @@ const routes = [
       {
         path: '',
         name: 'ApiKeys',
-        component: ApiKeysView
+        component: ApiKeysRouteView
       }
     ]
   },
@@ -237,7 +237,16 @@ router.beforeEach(async (to, from, next) => {
   } else if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next('/login')
   } else if (to.path === '/login' && authStore.isAuthenticated) {
-    next('/dashboard')
+    // 🆕 v2 已登录跳 API Keys，管理员跳仪表板
+    next(authStore.userRole === 'v2' ? '/api-keys' : '/dashboard')
+  } else if (
+    authStore.isAuthenticated &&
+    authStore.userRole === 'v2' &&
+    to.meta.requiresAuth &&
+    to.path !== '/api-keys'
+  ) {
+    // 🆕 v2 账号只能访问 API Keys 页面，其余受保护页面一律回到 /api-keys
+    next('/api-keys')
   } else {
     next()
   }

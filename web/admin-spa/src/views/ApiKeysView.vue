@@ -2100,7 +2100,9 @@
       :accounts="accounts"
       :api-key="editingApiKey"
       @close="showEditApiKeyModal = false"
+      @manage-v2="handleEditModalManageV2"
       @success="handleEditSuccess"
+      @upgrade-v2="handleEditModalUpgradeV2"
     />
 
     <RenewApiKeyModal
@@ -2152,6 +2154,21 @@
       @updated="loadApiKeys"
     />
 
+    <!-- 🆕 v2 升级 / 管理弹窗 -->
+    <UpgradeToV2Modal
+      v-if="showUpgradeToV2Modal && upgradingApiKey"
+      :api-key="upgradingApiKey"
+      @close="showUpgradeToV2Modal = false"
+      @success="handleUpgradeV2Success"
+    />
+
+    <V2ManageModal
+      v-if="showV2ManageModal && managingV2ApiKey"
+      :api-key="managingV2ApiKey"
+      @close="showV2ManageModal = false"
+      @success="handleV2ManageSuccess"
+    />
+
     <ConfirmModal
       :cancel-text="confirmModalConfig.cancelText"
       :confirm-text="confirmModalConfig.confirmText"
@@ -2186,11 +2203,19 @@ import LimitProgressBar from '@/components/apikeys/LimitProgressBar.vue'
 import CustomDropdown from '@/components/common/CustomDropdown.vue'
 import ActionDropdown from '@/components/common/ActionDropdown.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
+import UpgradeToV2Modal from '@/components/apikeys/UpgradeToV2Modal.vue'
+import V2ManageModal from '@/components/apikeys/V2ManageModal.vue'
 
 // 响应式数据
 const router = useRouter()
 const authStore = useAuthStore()
 const apiKeys = ref([])
+
+// 🆕 v2 升级 / 管理弹窗
+const showUpgradeToV2Modal = ref(false)
+const upgradingApiKey = ref(null)
+const showV2ManageModal = ref(false)
+const managingV2ApiKey = ref(null)
 
 // 获取 LDAP 启用状态
 const isLdapEnabled = computed(() => authStore.oemSettings?.ldapEnabled || false)
@@ -3920,6 +3945,32 @@ const getApiKeyActions = (key) => {
   })
 
   return actions
+}
+
+// 🆕 v2 升级 / 管理
+const openUpgradeToV2Modal = (key) => {
+  upgradingApiKey.value = key
+  showUpgradeToV2Modal.value = true
+}
+const handleUpgradeV2Success = () => {
+  showUpgradeToV2Modal.value = false
+  loadApiKeys()
+}
+const openV2ManageModal = (key) => {
+  managingV2ApiKey.value = key
+  showV2ManageModal.value = true
+}
+const handleV2ManageSuccess = () => {
+  showV2ManageModal.value = false
+  loadApiKeys()
+}
+const handleEditModalUpgradeV2 = (key) => {
+  showEditApiKeyModal.value = false
+  openUpgradeToV2Modal(key)
+}
+const handleEditModalManageV2 = (key) => {
+  showEditApiKeyModal.value = false
+  openV2ManageModal(key)
 }
 
 // 切换API Key状态（激活/禁用）

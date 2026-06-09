@@ -1781,6 +1781,62 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
   }
 })
 
+// 🆕 将普通 API Key 升级为 v2 父账号（单向，升级后原 secret 立即不可直接调用）
+router.post('/api-keys/:keyId/upgrade-v2', authenticateAdmin, async (req, res) => {
+  try {
+    const { keyId } = req.params
+    const { email, password, totalBudget } = req.body
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Missing fields', message: '邮箱和密码为必填项' })
+    }
+    const result = await apiKeyService.upgradeToV2Parent(keyId, {
+      email,
+      password,
+      totalBudget: totalBudget || 0
+    })
+    logger.success(`⬆️ Admin upgraded key ${keyId} to v2 parent account`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    logger.error('❌ Failed to upgrade API key to v2:', error)
+    const status = error.code === 'EMAIL_CONFLICT' ? 409 : 400
+    return res.status(status).json({ error: 'Upgrade failed', message: error.message })
+  }
+})
+
+// 🆕 管理员管理 v2 父账号配置（总账额度 / 重置密码 / 修改邮箱）
+router.put('/api-keys/:keyId/v2-config', authenticateAdmin, async (req, res) => {
+  try {
+    const { keyId } = req.params
+    const { totalBudget, newPassword, newEmail } = req.body
+
+    const keyData = await redis.getApiKey(keyId)
+    if (!keyData || Object.keys(keyData).length === 0 || keyData.isV2Parent !== 'true') {
+      return res.status(400).json({ error: 'Invalid key', message: '该 API Key 不是 v2 父账号' })
+    }
+
+    const updated = {}
+    if (totalBudget !== undefined && totalBudget !== null && totalBudget !== '') {
+      const r = await apiKeyService.updateV2TotalBudget(keyId, totalBudget)
+      updated.v2TotalBudget = r.v2TotalBudget
+    }
+    if (newPassword) {
+      await apiKeyService.resetV2Password(keyId, newPassword)
+      updated.passwordReset = true
+    }
+    if (newEmail) {
+      const r = await apiKeyService.changeV2Email(keyId, newEmail)
+      updated.v2Email = r.v2Email
+    }
+
+    logger.success(`🛠️ Admin updated v2 config for ${keyId}`)
+    return res.json({ success: true, data: updated })
+  } catch (error) {
+    logger.error('❌ Failed to update v2 config:', error)
+    const status = error.code === 'EMAIL_CONFLICT' ? 409 : 400
+    return res.status(status).json({ error: 'Update failed', message: error.message })
+  }
+})
+
 // 批量创建API Keys
 router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
   try {

@@ -491,6 +491,19 @@ const authenticateApiKey = async (req, res, next) => {
       })
     }
 
+    // 🆕 v2 父账号不可用于 API 调用（双保险：其 hash 已删除）
+    if (validation.keyData.isV2Parent) {
+      logger.security(
+        `🚫 v2 parent account used for API call: ${validation.keyData.id} from ${req.ip || 'unknown'}`
+      )
+      return res.status(403).json({
+        error: 'Forbidden',
+        message:
+          'This API key has been upgraded to a v2 parent account and cannot be used for API requests. Please use a child API key.',
+        code: 'v2_parent_not_callable'
+      })
+    }
+
     if (validation.keyData.enableIpWhitelist) {
       const ipWhitelist = Array.isArray(validation.keyData.ipWhitelist)
         ? validation.keyData.ipWhitelist
@@ -1303,6 +1316,26 @@ const authenticateApiKey = async (req, res, next) => {
       )
     }
 
+    // 🆕 检查 v2 父账号总账（同父账号下所有子 key 共享，用尽则一起 402）
+    if (validation.keyData.parentKeyId) {
+      const v2Budget = validation.keyData.v2TotalBudget || 0
+      const v2Used = validation.keyData.v2ParentTotalCost || 0
+      if (v2Budget > 0 && v2Used >= v2Budget) {
+        logger.security(
+          `💰 v2 account total budget exhausted for child key: ${validation.keyData.id} (parent: ${validation.keyData.parentKeyId}), used: $${v2Used.toFixed(2)}/$${v2Budget}`
+        )
+        return res.status(402).json({
+          error: {
+            type: 'insufficient_quota',
+            message: `已达到账号总额度限制 ($${v2Budget})`,
+            code: 'account_total_budget_exhausted'
+          },
+          currentCost: v2Used,
+          costLimit: v2Budget
+        })
+      }
+    }
+
     // 检查 Claude 周费用限制
     const weeklyOpusCostLimit = validation.keyData.weeklyOpusCostLimit || 0
     if (weeklyOpusCostLimit > 0) {
@@ -1379,7 +1412,8 @@ const authenticateApiKey = async (req, res, next) => {
         validation.keyData.enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation: validation.keyData.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: validation.keyData.enableOpenAIResponsesPayloadRules,
-      openaiResponsesPayloadRules: validation.keyData.openaiResponsesPayloadRules
+      openaiResponsesPayloadRules: validation.keyData.openaiResponsesPayloadRules,
+      parentKeyId: validation.keyData.parentKeyId || null // 🆕 v2 子 key 归属（日志/诊断用）
     }
 
     const authDuration = Date.now() - startTime
@@ -1472,6 +1506,17 @@ const authenticateAdmin = async (req, res, next) => {
       })
     }
 
+    // 🆕 v2（或其它非 admin 角色）会话不得通过管理员中间件；无 role 的旧会话按 admin 兼容
+    if (adminSession.role && adminSession.role !== 'admin') {
+      logger.security(
+        `🚫 Non-admin role '${adminSession.role}' attempted admin access from ${req.ip || 'unknown'}`
+      )
+      return res.status(403).json({
+        error: 'Admin access required',
+        message: 'This resource requires administrator privileges'
+      })
+    }
+
     // 检查会话活跃性（可选：检查最后活动时间）
     const now = new Date()
     const lastActivity = new Date(adminSession.lastActivity || adminSession.loginTime)
@@ -1507,7 +1552,8 @@ const authenticateAdmin = async (req, res, next) => {
     req.admin = {
       username: adminSession.username,
       sessionId: token,
-      loginTime: adminSession.loginTime
+      loginTime: adminSession.loginTime,
+      role: adminSession.role || 'admin'
     }
 
     const authDuration = Date.now() - startTime
@@ -1527,6 +1573,96 @@ const authenticateAdmin = async (req, res, next) => {
     return res.status(500).json({
       error: 'Authentication error',
       message: 'Internal server error during admin authentication'
+    })
+  }
+}
+
+// 🆕 v2 账号验证中间件（只放行 v2 角色，仅用于 /admin/v2/* 路由）
+const authenticateV2Account = async (req, res, next) => {
+  const startTime = Date.now()
+
+  try {
+    const token =
+      req.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
+      req.cookies?.adminToken ||
+      req.headers['x-admin-token']
+
+    if (!token) {
+      return res.status(401).json({
+        error: 'Missing token',
+        message: 'Please provide an authentication token'
+      })
+    }
+
+    const session = await Promise.race([
+      redis.getSession(token),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Session lookup timeout')), 5000)
+      )
+    ])
+
+    if (!session || Object.keys(session).length === 0) {
+      return res.status(401).json({
+        error: 'Invalid token',
+        message: 'Invalid or expired session'
+      })
+    }
+
+    // 必须是 v2 角色且会话完整
+    if (session.role !== 'v2' || !session.v2KeyId || !session.username || !session.loginTime) {
+      logger.security(`🚫 Non-v2 session attempted v2 access from ${req.ip || 'unknown'}`)
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'This resource requires a v2 account'
+      })
+    }
+
+    // 会话不活跃检查（与管理员一致，24 小时）
+    const now = new Date()
+    const lastActivity = new Date(session.lastActivity || session.loginTime)
+    if (now - lastActivity > 24 * 60 * 60 * 1000) {
+      await redis.deleteSession(token)
+      return res.status(401).json({
+        error: 'Session expired',
+        message: 'Session has expired due to inactivity'
+      })
+    }
+
+    // 校验父账号仍是启用且未删除的 v2 父账号
+    const parent = await redis.getApiKey(session.v2KeyId)
+    if (
+      !parent ||
+      Object.keys(parent).length === 0 ||
+      parent.isV2Parent !== 'true' ||
+      parent.isActive !== 'true' ||
+      parent.isDeleted === 'true'
+    ) {
+      logger.security(`🚫 v2 session for disabled/invalid parent ${session.v2KeyId}`)
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'v2 account is disabled'
+      })
+    }
+
+    // 更新最后活动时间（异步，不阻塞请求）
+    redis
+      .setSession(token, { ...session, lastActivity: now.toISOString() }, 86400)
+      .catch((error) => logger.error('Failed to update v2 session activity:', error))
+
+    req.v2Account = {
+      parentKeyId: session.v2KeyId,
+      email: session.v2Email || session.username,
+      sessionId: token
+    }
+
+    const authDuration = Date.now() - startTime
+    logger.api(`🔓 v2 account authenticated: ${req.v2Account.email} in ${authDuration}ms`)
+    return next()
+  } catch (error) {
+    logger.error('❌ v2 authentication error:', error)
+    return res.status(500).json({
+      error: 'Authentication error',
+      message: 'Internal server error during v2 authentication'
     })
   }
 }
@@ -2156,6 +2292,7 @@ const requestSizeLimit = (req, res, next) => {
 module.exports = {
   authenticateApiKey,
   authenticateAdmin,
+  authenticateV2Account,
   authenticateUser,
   authenticateUserOrAdmin,
   requireRole,

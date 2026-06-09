@@ -69,40 +69,74 @@ router.post('/auth/login', async (req, res) => {
       }
     }
 
-    // 验证用户名和密码
+    // 验证用户名和密码（管理员）
     const isValidUsername = adminData.username === username
     const isValidPassword = await bcrypt.compare(password, adminData.passwordHash)
 
-    if (!isValidUsername || !isValidPassword) {
-      logger.security(`Failed login attempt for username: ${username}`)
-      return res.status(401).json({
-        error: 'Invalid credentials',
-        message: 'Invalid username or password'
+    if (isValidUsername && isValidPassword) {
+      // 生成会话token
+      const sessionId = crypto.randomBytes(32).toString('hex')
+
+      // 存储会话（标记 admin 角色）
+      const sessionData = {
+        username: adminData.username,
+        role: 'admin',
+        loginTime: new Date().toISOString(),
+        lastActivity: new Date().toISOString()
+      }
+
+      await redis.setSession(sessionId, sessionData, config.security.adminSessionTimeout)
+
+      // 不再更新 Redis 中的最后登录时间，因为 Redis 只是缓存
+      // init.json 是唯一真实数据源
+
+      logger.success(`Admin login successful: ${username}`)
+
+      return res.json({
+        success: true,
+        token: sessionId,
+        role: 'admin',
+        expiresIn: config.security.adminSessionTimeout,
+        username: adminData.username // 返回真实用户名
       })
     }
 
-    // 生成会话token
-    const sessionId = crypto.randomBytes(32).toString('hex')
-
-    // 存储会话
-    const sessionData = {
-      username: adminData.username,
-      loginTime: new Date().toISOString(),
-      lastActivity: new Date().toISOString()
+    // 🆕 管理员校验失败后，回退尝试 v2 账号登录（邮箱 + 密码，不走 LDAP）
+    try {
+      const apiKeyService = require('../services/apiKeyService')
+      const v2Parent = await apiKeyService.findV2ByEmail(username)
+      if (v2Parent && v2Parent.v2PasswordHash) {
+        const v2PasswordValid = await bcrypt.compare(password, v2Parent.v2PasswordHash)
+        if (v2PasswordValid) {
+          const sessionId = crypto.randomBytes(32).toString('hex')
+          const v2Email = v2Parent.v2Email || username.trim().toLowerCase()
+          const sessionData = {
+            username: v2Email,
+            role: 'v2',
+            v2KeyId: v2Parent.id,
+            v2Email,
+            loginTime: new Date().toISOString(),
+            lastActivity: new Date().toISOString()
+          }
+          await redis.setSession(sessionId, sessionData, config.security.adminSessionTimeout)
+          logger.success(`v2 account login successful: ${v2Email}`)
+          return res.json({
+            success: true,
+            token: sessionId,
+            role: 'v2',
+            expiresIn: config.security.adminSessionTimeout,
+            username: v2Email
+          })
+        }
+      }
+    } catch (v2Error) {
+      logger.error('❌ v2 login attempt error:', v2Error)
     }
 
-    await redis.setSession(sessionId, sessionData, config.security.adminSessionTimeout)
-
-    // 不再更新 Redis 中的最后登录时间，因为 Redis 只是缓存
-    // init.json 是唯一真实数据源
-
-    logger.success(`Admin login successful: ${username}`)
-
-    return res.json({
-      success: true,
-      token: sessionId,
-      expiresIn: config.security.adminSessionTimeout,
-      username: adminData.username // 返回真实用户名
+    logger.security(`Failed login attempt for username: ${username}`)
+    return res.status(401).json({
+      error: 'Invalid credentials',
+      message: 'Invalid username or password'
     })
   } catch (error) {
     logger.error('❌ Login error:', error)
@@ -182,6 +216,31 @@ router.post('/auth/change-password', async (req, res) => {
       return res.status(401).json({
         error: 'Invalid session',
         message: 'Session data corrupted or incomplete'
+      })
+    }
+
+    // 🆕 v2 会话：仅允许改密码（不允许自助改邮箱），成功后失效当前 session
+    if (sessionData.role === 'v2') {
+      try {
+        const apiKeyService = require('../services/apiKeyService')
+        await apiKeyService.changeV2Password(sessionData.v2KeyId, currentPassword, newPassword)
+      } catch (v2Error) {
+        if (v2Error.code === 'INVALID_PASSWORD') {
+          return res.status(401).json({
+            error: 'Invalid current password',
+            message: 'Current password is incorrect'
+          })
+        }
+        return res.status(400).json({
+          error: 'Change password failed',
+          message: v2Error.message || 'Failed to change password'
+        })
+      }
+      await redis.deleteSession(token)
+      logger.success(`v2 account password changed: ${sessionData.v2Email || sessionData.username}`)
+      return res.json({
+        success: true,
+        message: 'Password changed successfully. Please login again.'
       })
     }
 
@@ -302,6 +361,20 @@ router.get('/auth/user', async (req, res) => {
       })
     }
 
+    // 🆕 v2 会话：直接返回 v2 角色信息，不读 admin_credentials
+    // 注意：不返回 v2KeyId（即父账号 keyId），避免前端据此调用公开统计接口反查上游账户绑定
+    if (sessionData.role === 'v2') {
+      return res.json({
+        success: true,
+        user: {
+          username: sessionData.v2Email || sessionData.username,
+          role: 'v2',
+          loginTime: sessionData.loginTime,
+          lastActivity: sessionData.lastActivity
+        }
+      })
+    }
+
     // 获取管理员信息
     const adminData = await redis.getSession('admin_credentials')
     if (!adminData) {
@@ -315,6 +388,7 @@ router.get('/auth/user', async (req, res) => {
       success: true,
       user: {
         username: adminData.username,
+        role: 'admin',
         loginTime: sessionData.loginTime,
         lastActivity: sessionData.lastActivity
       }
