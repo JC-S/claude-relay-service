@@ -128,6 +128,8 @@ export const createV2ApiKeyApi = (data) => request({ url: '/admin/v2/keys', meth
 export const updateV2ApiKeyApi = (id, data) =>
   request({ url: `/admin/v2/keys/${id}`, method: 'PUT', data })
 export const deleteV2ApiKeyApi = (id) => request({ url: `/admin/v2/keys/${id}`, method: 'DELETE' })
+export const getV2ApiKeyUsageRecordsApi = (id, params) =>
+  request({ url: `/admin/v2/keys/${id}/usage-records`, method: 'GET', params })
 export const changeV2PasswordApi = (data) =>
   request({ url: '/admin/v2/account/password', method: 'POST', data })
 

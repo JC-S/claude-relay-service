@@ -7,6 +7,7 @@ const express = require('express')
 const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
 const { authenticateV2Account } = require('../../middleware/auth')
+const { applyDisplayModelToRecord } = require('../../utils/modelVariantHelper')
 const logger = require('../../utils/logger')
 
 const router = express.Router()
@@ -61,6 +62,67 @@ router.get('/keys', async (req, res) => {
   } catch (error) {
     logger.error('❌ Failed to list v2 child keys:', error)
     return res.status(500).json({ error: 'Failed to load keys', message: error.message })
+  }
+})
+
+// 📈 子 key 请求时间线（先校验归属；fail-closed 最小化：每条仅返回该 key 自身的
+// 时间/模型/token/计费字段，绝不透传账户类与上游成本基准字段——见下方 map 注释）
+router.get('/keys/:keyId/usage-records', async (req, res) => {
+  try {
+    const { keyId } = req.params
+    await apiKeyService.assertV2ChildOwnership(req.v2Account.parentKeyId, keyId)
+
+    // limit 默认 100，clamp 到 1~200（与单 key 请求明细最多保留 200 条一致）
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200)
+    const records = await redis.getUsageRecords(keyId, limit)
+
+    // 先经 applyDisplayModelToRecord 得到展示用模型名（GPT priority → "xxx (fast)"，与管理员一致），
+    // 再用 fail-closed 白名单只取「该 key 自身」的时间/模型/token/计费字段。
+    // 账户类与上游成本基准字段一律不返回：accountId/accountType/parentKeyId/upstreamNicIp/
+    // endpoint/method/requestId/statusCode/durationMs/realCost/realCostBreakdown/serviceTier 等。
+    //
+    // 计费口径：record.cost 是倍率后计费成本，而 record.costBreakdown 是原始成本分解（与已剥离的
+    // realCostBreakdown 同值）。直接透传分项既会让分项加不齐倍率总额，也会泄漏真实成本与倍率。
+    // 这里按 ratio = cost / realTotal 把分项同比缩放为倍率口径——calculateRatedCost 为纯乘法，
+    // 且 total === input+output+cacheCreate+cacheRead（cacheCreate 已含 ephemeral 5m/1h），
+    // 故缩放后分项精确加齐 cost；realTotal<=0（免费请求）时不返回分项，只给倍率总额。
+    const round6 = (n) => Number((Number(n) || 0).toFixed(6))
+    const timeline = (Array.isArray(records) ? records : []).map((record) => {
+      const displayRecord = applyDisplayModelToRecord(record)
+      const cb = record.costBreakdown || {}
+      const cost = Number(record.cost) || 0
+      const realTotal = Number(cb.total) || 0
+      let costBreakdown = null
+      if (realTotal > 0) {
+        const ratio = cost / realTotal
+        costBreakdown = {
+          input: round6((cb.input || 0) * ratio),
+          output: round6((cb.output || 0) * ratio),
+          cacheCreate: round6((cb.cacheCreate || 0) * ratio),
+          cacheRead: round6((cb.cacheRead || 0) * ratio),
+          total: cost
+        }
+      }
+      return {
+        timestamp: displayRecord.timestamp || null,
+        model: displayRecord.model || 'unknown',
+        inputTokens: Number(record.inputTokens) || 0,
+        outputTokens: Number(record.outputTokens) || 0,
+        cacheCreateTokens: Number(record.cacheCreateTokens) || 0,
+        cacheReadTokens: Number(record.cacheReadTokens) || 0,
+        totalTokens: Number(record.totalTokens) || 0,
+        cost,
+        costBreakdown
+      }
+    })
+
+    return res.json({ success: true, data: timeline })
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'Not found', message: 'API key not found' })
+    }
+    logger.error('❌ Failed to load v2 child key usage records:', error)
+    return res.status(500).json({ error: 'Failed to load records', message: error.message })
   }
 })
 
