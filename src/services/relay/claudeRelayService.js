@@ -94,6 +94,107 @@ class ClaudeRelayService {
     return `此专属账号的Opus模型已达到周使用限制，将于 ${formattedReset} 自动恢复，请尝试切换其他模型后再试。`
   }
 
+  _buildRollingWindowErrorContext(upstreamErrorContext, rollingWindow) {
+    if (!rollingWindow?.enabled) {
+      return upstreamErrorContext
+    }
+
+    return {
+      ...(upstreamErrorContext || {}),
+      rollingWindow: {
+        enabled: true,
+        count: rollingWindow.count,
+        threshold: rollingWindow.threshold,
+        windowSeconds: rollingWindow.windowSeconds,
+        firstEventAt: rollingWindow.firstEventAt,
+        latestEventAt: rollingWindow.latestEventAt,
+        action: rollingWindow.action
+      }
+    }
+  }
+
+  async _handleClaudeOfficial429AutoProtection({
+    accountId,
+    accountType,
+    account,
+    sessionHash,
+    rateLimitResetTimestamp = null,
+    responseHeaders = null,
+    upstreamErrorContext = null,
+    phase = 'unknown',
+    model = null
+  }) {
+    let rollingWindow = null
+    let errorHistoryContext = upstreamErrorContext
+    const shouldEvaluateRollingWindow = accountType === 'claude-official'
+
+    if (shouldEvaluateRollingWindow) {
+      rollingWindow = await claudeAccountService.recordClaudeOAuth429AndShouldPause(accountId, {
+        accountData: account,
+        upstreamRequestId: upstreamErrorContext?.requestId,
+        phase,
+        model
+      })
+      errorHistoryContext = this._buildRollingWindowErrorContext(
+        upstreamErrorContext,
+        rollingWindow
+      )
+
+      if (rollingWindow.enabled && !rollingWindow.shouldPause) {
+        await upstreamErrorHelper
+          .recordErrorHistory(accountId, accountType, 429, 'rate_limit', errorHistoryContext)
+          .catch(() => {})
+        logger.warn(
+          `🚫 Claude OAuth 429 rolling window for account ${accountId}: ${rollingWindow.count}/${rollingWindow.threshold} in ${rollingWindow.windowSeconds}s, action=${rollingWindow.action}`
+        )
+        return {
+          paused: false,
+          rollingWindow,
+          errorHistoryContext
+        }
+      }
+
+      if (rollingWindow.enabled) {
+        logger.warn(
+          `🚫 Claude OAuth 429 rolling window threshold reached for account ${accountId}: ${rollingWindow.count}/${rollingWindow.threshold} in ${rollingWindow.windowSeconds}s`
+        )
+      }
+    }
+
+    await unifiedClaudeScheduler.markAccountRateLimited(
+      accountId,
+      accountType,
+      sessionHash,
+      rateLimitResetTimestamp
+    )
+    const tempUnavailableResult = await upstreamErrorHelper
+      .markTempUnavailable(
+        accountId,
+        accountType,
+        429,
+        upstreamErrorHelper.parseRetryAfter(responseHeaders),
+        errorHistoryContext
+      )
+      .catch(() => null)
+
+    if (
+      rollingWindow?.enabled &&
+      (!tempUnavailableResult ||
+        tempUnavailableResult.skipped ||
+        tempUnavailableResult.success === false)
+    ) {
+      await upstreamErrorHelper
+        .recordErrorHistory(accountId, accountType, 429, 'rate_limit', errorHistoryContext)
+        .catch(() => {})
+    }
+
+    return {
+      paused: true,
+      rollingWindow,
+      errorHistoryContext
+    }
+  }
+
   // 🧾 提取错误消息文本
   _extractErrorMessage(body) {
     if (!body) {
@@ -1092,24 +1193,19 @@ class ClaudeRelayService {
             logger.warn(
               `🚫 Rate limit detected for account ${accountId}, status: ${response.statusCode}`
             )
-            // 标记账号为限流状态并删除粘性会话映射，传递准确的重置时间戳
-            await unifiedClaudeScheduler.markAccountRateLimited(
+            const rateLimitAction = await this._handleClaudeOfficial429AutoProtection({
               accountId,
               accountType,
               sessionHash,
-              rateLimitResetTimestamp
-            )
-            await upstreamErrorHelper
-              .markTempUnavailable(
-                accountId,
-                accountType,
-                429,
-                upstreamErrorHelper.parseRetryAfter(response.headers),
-                upstreamErrorContext
-              )
-              .catch(() => {})
+              account,
+              rateLimitResetTimestamp,
+              responseHeaders: response.headers,
+              upstreamErrorContext,
+              phase: 'non_stream',
+              model: requestBody?.model
+            })
 
-            if (dedicatedRateLimitMessage) {
+            if (dedicatedRateLimitMessage && rateLimitAction.paused) {
               return {
                 statusCode: 403,
                 headers: { 'Content-Type': 'application/json' },
@@ -2405,17 +2501,11 @@ class ClaudeRelayService {
               : null
             const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
 
-            if (isOpusModelRequest) {
-              if (!Number.isNaN(parsedResetTimestamp)) {
-                await claudeAccountService.markAccountOpusRateLimited(
-                  accountId,
-                  parsedResetTimestamp
-                )
-                logger.warn(
-                  `🚫 [Stream] Account ${accountId} hit Opus limit, resets at ${new Date(parsedResetTimestamp * 1000).toISOString()}`
-                )
-              }
-
+            if (isOpusModelRequest && !Number.isNaN(parsedResetTimestamp)) {
+              await claudeAccountService.markAccountOpusRateLimited(accountId, parsedResetTimestamp)
+              logger.warn(
+                `🚫 [Stream] Account ${accountId} hit Opus limit, resets at ${new Date(parsedResetTimestamp * 1000).toISOString()}`
+              )
               if (isDedicatedOfficialAccount) {
                 const limitMessage = this._buildOpusLimitMessage(parsedResetTimestamp)
                 if (!responseStream.headersSent) {
@@ -2446,24 +2536,20 @@ class ClaudeRelayService {
                   `🚫 [Stream] Agent View auxiliary request hit 429 for account ${accountId}; skipping account-level rate-limit marking`
                 )
               } else {
-                await unifiedClaudeScheduler.markAccountRateLimited(
+                const rateLimitAction = await this._handleClaudeOfficial429AutoProtection({
                   accountId,
                   accountType,
                   sessionHash,
-                  rateLimitResetTimestamp
-                )
-                await upstreamErrorHelper
-                  .markTempUnavailable(
-                    accountId,
-                    accountType,
-                    429,
-                    upstreamErrorHelper.parseRetryAfter(res.headers),
-                    upstreamErrorContext
-                  )
-                  .catch(() => {})
+                  account,
+                  rateLimitResetTimestamp,
+                  responseHeaders: res.headers,
+                  upstreamErrorContext,
+                  phase: 'stream',
+                  model: body?.model
+                })
                 logger.warn(`🚫 [Stream] Rate limit detected for account ${accountId}, status 429`)
 
-                if (isDedicatedOfficialAccount) {
+                if (isDedicatedOfficialAccount && rateLimitAction.paused) {
                   const limitMessage = this._buildStandardRateLimitMessage(
                     rateLimitResetTimestamp || account?.rateLimitEndAt
                   )
@@ -3203,20 +3289,16 @@ class ClaudeRelayService {
                   `🚫 [Stream] Agent View auxiliary request hit 429 for account ${accountId}; skipping account-level rate-limit marking`
                 )
               } else {
-                await unifiedClaudeScheduler.markAccountRateLimited(
+                await this._handleClaudeOfficial429AutoProtection({
                   accountId,
                   accountType,
                   sessionHash,
-                  rateLimitResetTimestamp
-                )
-                await upstreamErrorHelper
-                  .markTempUnavailable(
-                    accountId,
-                    accountType,
-                    429,
-                    upstreamErrorHelper.parseRetryAfter(res.headers)
-                  )
-                  .catch(() => {})
+                  account,
+                  rateLimitResetTimestamp,
+                  responseHeaders: res.headers,
+                  phase: 'stream_detected',
+                  model: body?.model
+                })
               }
             }
           } else if (res.statusCode === 200) {

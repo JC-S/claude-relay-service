@@ -24,6 +24,19 @@ const {
   normalizeTempUnavailablePolicyInput
 } = require('../../utils/tempUnavailablePolicy')
 
+const CLAUDE_OAUTH_429_WINDOW_SECONDS = 15 * 60
+const CLAUDE_OAUTH_429_WINDOW_TTL_SECONDS = 30 * 60
+const CLAUDE_OAUTH_429_THRESHOLD = 3
+const CLAUDE_OAUTH_429_WINDOW_KEY_PREFIX = 'claude_oauth_429_window'
+const CLAUDE_OAUTH_429_WINDOW_SCRIPT = `
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+local count = redis.call('ZCARD', KEYS[1])
+local first = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+return { count, first[2] or '', ARGV[2] }
+`
+
 /**
  * Check if account is Pro (not Max)
  * Compatible with both API real-time data (hasClaudePro) and local config (accountType)
@@ -1366,6 +1379,115 @@ class ClaudeAccountService {
     return Number.isFinite(num) ? num : null
   }
 
+  _getClaudeOAuth429WindowKey(accountId) {
+    return `${CLAUDE_OAUTH_429_WINDOW_KEY_PREFIX}:${accountId}`
+  }
+
+  isClaudeOAuthAccount(accountData) {
+    if (!accountData || typeof accountData !== 'object') {
+      return false
+    }
+
+    if (accountData.authType === 'oauth') {
+      return true
+    }
+
+    const scopes = Array.isArray(accountData.scopes)
+      ? accountData.scopes
+      : String(accountData.scopes || '')
+          .split(/\s+/)
+          .filter(Boolean)
+
+    return scopes.includes('user:profile') && scopes.includes('user:inference')
+  }
+
+  isAutoProtectionDisabled(accountData) {
+    return (
+      accountData?.disableAutoProtection === true || accountData?.disableAutoProtection === 'true'
+    )
+  }
+
+  async recordClaudeOAuth429AndShouldPause(accountId, context = {}) {
+    const accountData = context.accountData || (await redis.getClaudeAccount(accountId))
+    const baseResult = {
+      enabled: this.isClaudeOAuthAccount(accountData),
+      shouldPause: true,
+      count: 0,
+      threshold: CLAUDE_OAUTH_429_THRESHOLD,
+      windowSeconds: CLAUDE_OAUTH_429_WINDOW_SECONDS,
+      firstEventAt: null,
+      latestEventAt: new Date().toISOString(),
+      action: 'paused'
+    }
+
+    if (!baseResult.enabled) {
+      return { ...baseResult, action: 'not_applicable' }
+    }
+
+    const nowMs = Date.now()
+    const cutoffMs = nowMs - CLAUDE_OAUTH_429_WINDOW_SECONDS * 1000
+    const eventId = `${nowMs}:${context.requestId || context.upstreamRequestId || uuidv4()}`
+    const key = this._getClaudeOAuth429WindowKey(accountId)
+    const client = redis.getClientSafe ? redis.getClientSafe() : redis.client
+    const autoProtectionDisabled = this.isAutoProtectionDisabled(accountData)
+
+    let result
+    try {
+      result = await client.eval(
+        CLAUDE_OAUTH_429_WINDOW_SCRIPT,
+        1,
+        key,
+        String(cutoffMs),
+        String(nowMs),
+        eventId,
+        String(CLAUDE_OAUTH_429_WINDOW_TTL_SECONDS)
+      )
+    } catch (error) {
+      logger.warn(
+        `⚠️ Failed to update Claude OAuth 429 rolling window for account ${accountId}, falling back to immediate pause: ${error.message}`
+      )
+      return {
+        ...baseResult,
+        enabled: true,
+        shouldPause: !autoProtectionDisabled,
+        action: autoProtectionDisabled ? 'auto_protection_disabled' : 'counter_error'
+      }
+    }
+
+    const count = Number(Array.isArray(result) ? result[0] : 0) || 0
+    const firstScore = Array.isArray(result) ? Number(result[1]) : NaN
+    const latestScore = Array.isArray(result) ? Number(result[2]) : nowMs
+    const shouldPause = !autoProtectionDisabled && count >= CLAUDE_OAUTH_429_THRESHOLD
+
+    return {
+      ...baseResult,
+      shouldPause,
+      count,
+      firstEventAt: Number.isFinite(firstScore) ? new Date(firstScore).toISOString() : null,
+      latestEventAt: Number.isFinite(latestScore)
+        ? new Date(latestScore).toISOString()
+        : baseResult.latestEventAt,
+      action: autoProtectionDisabled
+        ? 'auto_protection_disabled'
+        : shouldPause
+          ? 'paused'
+          : 'not_paused'
+    }
+  }
+
+  async clearClaudeOAuth429RollingWindow(accountId) {
+    try {
+      const client = redis.getClientSafe ? redis.getClientSafe() : redis.client
+      await client.del(this._getClaudeOAuth429WindowKey(accountId))
+      return { success: true }
+    } catch (error) {
+      logger.warn(
+        `⚠️ Failed to clear Claude OAuth 429 rolling window for account ${accountId}: ${error.message}`
+      )
+      return { success: false }
+    }
+  }
+
   // 🧹 清理错误账户
   async cleanupErrorAccounts() {
     try {
@@ -1680,6 +1802,7 @@ class ClaudeAccountService {
 
       // 清除限流状态
       const redisKey = `claude:account:${accountId}`
+      await this.clearClaudeOAuth429RollingWindow(accountId)
       await redis.client.hdel(redisKey, 'rateLimitedAt', 'rateLimitStatus', 'rateLimitEndAt')
       delete accountData.rateLimitedAt
       delete accountData.rateLimitStatus
@@ -2663,6 +2786,7 @@ class ClaudeAccountService {
       // 清除限流状态（如果存在）
       const rateLimitKey = `ratelimit:${accountId}`
       await redis.client.del(rateLimitKey)
+      await this.clearClaudeOAuth429RollingWindow(accountId)
 
       // 清除5xx错误计数
       const serverErrorKey = `claude_account:${accountId}:5xx_errors`
