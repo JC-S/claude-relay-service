@@ -417,6 +417,62 @@ describe('PricingService - Long Context Pricing', () => {
       expect(opus48Cost.pricing).toEqual(opus47Cost.pricing)
     })
 
+    it('claude-fable-5 缺少定价时按 claude-opus-4-7 的 2x 定价展示和计费', () => {
+      const sourcePricing = pricingData['claude-opus-4-7']
+      pricingService.pricingData = {
+        'claude-opus-4-7': JSON.parse(JSON.stringify(sourcePricing))
+      }
+
+      const aliasPricing = pricingService.getModelPricing('claude-fable-5')
+
+      expect(aliasPricing.pricing_alias_of).toBe('claude-opus-4-7')
+      expect(aliasPricing.pricing_alias_price_multiplier).toBe(2)
+      expect(aliasPricing.input_cost_per_token).toBeCloseTo(
+        sourcePricing.input_cost_per_token * 2,
+        12
+      )
+      expect(aliasPricing.output_cost_per_token).toBeCloseTo(
+        sourcePricing.output_cost_per_token * 2,
+        12
+      )
+      expect(aliasPricing.cache_read_input_token_cost).toBeCloseTo(
+        sourcePricing.cache_read_input_token_cost * 2,
+        12
+      )
+      expect(aliasPricing.cache_creation_input_token_cost).toBeCloseTo(
+        sourcePricing.cache_creation_input_token_cost * 2,
+        12
+      )
+      expect(aliasPricing.search_context_cost_per_query.search_context_size_high).toBeCloseTo(
+        sourcePricing.search_context_cost_per_query.search_context_size_high * 2,
+        12
+      )
+      expect(aliasPricing.max_input_tokens).toBe(sourcePricing.max_input_tokens)
+      expect(aliasPricing.provider_specific_entry.fast).toBe(
+        sourcePricing.provider_specific_entry.fast
+      )
+      expect(pricingService.pricingData['claude-fable-5']).toBe(aliasPricing)
+
+      const usage = {
+        input_tokens: 1000,
+        output_tokens: 100,
+        cache_creation_input_tokens: 200,
+        cache_read_input_tokens: 300
+      }
+
+      const opus47Cost = pricingService.calculateCost(usage, 'claude-opus-4-7')
+      const fable5Cost = pricingService.calculateCost(usage, 'claude-fable-5')
+
+      expect(fable5Cost.totalCost).toBeCloseTo(opus47Cost.totalCost * 2, 12)
+      expect(fable5Cost.pricing.input).toBeCloseTo(opus47Cost.pricing.input * 2, 12)
+      expect(fable5Cost.pricing.output).toBeCloseTo(opus47Cost.pricing.output * 2, 12)
+      expect(fable5Cost.pricing.cacheCreate).toBeCloseTo(
+        opus47Cost.pricing.cacheCreate * 2,
+        12
+      )
+      expect(fable5Cost.pricing.cacheRead).toBeCloseTo(opus47Cost.pricing.cacheRead * 2, 12)
+    })
+
     it('远端已有 claude-opus-4-8 定价时不使用本地别名覆盖', () => {
       pricingService.pricingData = {
         'claude-opus-4-7': {
@@ -434,6 +490,26 @@ describe('PricingService - Long Context Pricing', () => {
       expect(pricing.pricing_alias_of).toBeUndefined()
       expect(pricing.input_cost_per_token).toBe(0.000007)
       expect(pricing.output_cost_per_token).toBe(0.000035)
+    })
+
+    it('远端已有 claude-fable-5 定价时不使用本地 2x 别名覆盖', () => {
+      pricingService.pricingData = {
+        'claude-opus-4-7': {
+          input_cost_per_token: 0.000005,
+          output_cost_per_token: 0.000025
+        },
+        'claude-fable-5': {
+          input_cost_per_token: 0.000011,
+          output_cost_per_token: 0.000055
+        }
+      }
+
+      const pricing = pricingService.getModelPricing('claude-fable-5')
+
+      expect(pricing.pricing_alias_of).toBeUndefined()
+      expect(pricing.pricing_alias_price_multiplier).toBeUndefined()
+      expect(pricing.input_cost_per_token).toBe(0.000011)
+      expect(pricing.output_cost_per_token).toBe(0.000055)
     })
   })
 })

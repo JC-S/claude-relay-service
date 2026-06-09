@@ -49,7 +49,11 @@ class PricingService {
     }
 
     this.localPricingAliases = {
-      'claude-opus-4-8': 'claude-opus-4-7'
+      'claude-opus-4-8': 'claude-opus-4-7',
+      'claude-fable-5': {
+        source: 'claude-opus-4-7',
+        priceMultiplier: 2
+      }
     }
   }
 
@@ -96,19 +100,67 @@ class PricingService {
       return pricingData
     }
 
-    for (const [targetModel, sourceModel] of Object.entries(this.localPricingAliases)) {
+    for (const [targetModel, aliasConfig] of Object.entries(this.localPricingAliases)) {
+      const sourceModel =
+        typeof aliasConfig === 'string'
+          ? aliasConfig
+          : aliasConfig?.source || aliasConfig?.sourceModel
+      const priceMultiplier =
+        typeof aliasConfig === 'object' && Number.isFinite(aliasConfig?.priceMultiplier)
+          ? aliasConfig.priceMultiplier
+          : 1
+
       if (pricingData[targetModel] || !pricingData[sourceModel]) {
         continue
       }
 
       pricingData[targetModel] = {
-        ...pricingData[sourceModel],
+        ...this.clonePricingWithMultiplier(pricingData[sourceModel], priceMultiplier),
         pricing_alias_of: sourceModel,
-        pricing_alias_reason: 'local_missing_model_fallback'
+        pricing_alias_reason: 'local_missing_model_fallback',
+        pricing_alias_price_multiplier: priceMultiplier
       }
     }
 
     return pricingData
+  }
+
+  isPricingField(fieldName) {
+    if (typeof fieldName !== 'string') {
+      return false
+    }
+    return /(^|_)(cost|price|pricing|usd)(_|$)|per_token/.test(fieldName)
+  }
+
+  clonePricingWithMultiplier(value, multiplier = 1, inPricingContext = false) {
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier === 1) {
+      return JSON.parse(JSON.stringify(value))
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) =>
+        this.clonePricingWithMultiplier(item, multiplier, inPricingContext)
+      )
+    }
+
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, childValue]) => [
+          key,
+          this.clonePricingWithMultiplier(
+            childValue,
+            multiplier,
+            inPricingContext || this.isPricingField(key)
+          )
+        ])
+      )
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value) && inPricingContext) {
+      return value * multiplier
+    }
+
+    return value
   }
 
   // 初始化价格服务
