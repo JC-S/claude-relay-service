@@ -158,21 +158,19 @@ router.post('/keys', async (req, res) => {
   }
 })
 
-// 📝 更新子 key（先校验归属；硬白名单，仅允许受限字段，防止借道改继承/提权）
+// 📝 更新子 key（归属校验 / 字段白名单 / 数值规范化全部收敛在 service 层 updateV2Child，
+// 路由只做参数提取，防止借道改继承/提权或存入非法额度）
 router.put('/keys/:keyId', async (req, res) => {
   try {
     const { keyId } = req.params
-    await apiKeyService.assertV2ChildOwnership(req.v2Account.parentKeyId, keyId)
-
-    const updates = {}
-    const allowed = ['name', 'description', 'dailyCostLimit', 'totalCostLimit', 'isActive']
-    for (const field of allowed) {
-      if (req.body[field] !== undefined) {
-        updates[field] = req.body[field]
-      }
-    }
-
-    await apiKeyService.updateApiKey(keyId, updates)
+    const { name, description, dailyCostLimit, totalCostLimit, isActive } = req.body
+    await apiKeyService.updateV2Child(req.v2Account.parentKeyId, keyId, {
+      name,
+      description,
+      dailyCostLimit,
+      totalCostLimit,
+      isActive
+    })
     logger.success(`📝 v2 account updated child key: ${keyId}`)
     return res.json({ success: true, message: 'API key updated successfully' })
   } catch (error) {

@@ -203,6 +203,12 @@ const V2_INHERIT_CONFIG_FIELDS = [
   'openaiResponsesPayloadRules'
 ]
 
+// 🆕 单个 v2 父账号的子 key 数量上限（按未软删除数量计，env 可覆盖；非法值回退 100）
+const V2_MAX_CHILD_KEYS = (() => {
+  const parsed = parseInt(process.env.V2_MAX_CHILD_KEYS || '100', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 100
+})()
+
 class ApiKeyService {
   constructor() {
     this.prefix = config.security.apiKeyPrefix
@@ -1283,18 +1289,20 @@ class ApiKeyService {
    * 🚀 快速获取所有 API Keys（使用 Pipeline 批量操作，性能优化版）
    * 适用于 dashboard、usage-costs 等需要大量 API Key 数据的场景
    * @param {boolean} includeDeleted - 是否包含已删除的 API Keys
+   * @param {Array<string>|null} keyIds - 可选：已知 key id 列表。提供时跳过全库 SCAN，
+   *   仅批量加载这些 id（用于 v2 children 等已知 id 的局部场景）；空数组直接返回 []
    * @returns {Promise<Array>} API Keys 列表
    */
-  async getAllApiKeysFast(includeDeleted = false) {
+  async getAllApiKeysFast(includeDeleted = false, keyIds = null) {
     try {
-      // 1. 使用 SCAN 获取所有 API Key IDs
-      const keyIds = await redis.scanApiKeyIds()
-      if (keyIds.length === 0) {
+      // 1. 未提供 keyIds 时，使用 SCAN 获取所有 API Key IDs
+      const targetIds = Array.isArray(keyIds) ? keyIds : await redis.scanApiKeyIds()
+      if (targetIds.length === 0) {
         return []
       }
 
       // 2. 批量获取基础数据
-      let apiKeys = await redis.batchGetApiKeys(keyIds)
+      let apiKeys = await redis.batchGetApiKeys(targetIds)
 
       // 3. 过滤已删除的
       if (!includeDeleted) {
@@ -1937,6 +1945,16 @@ class ApiKeyService {
     try {
       const allKeys = await this.getAllApiKeysFast(true)
       const deletedKeys = allKeys.filter((key) => key.isDeleted === true)
+
+      // 子 key 先删、普通 key 居中、v2 父账号最后——父账号的永久删除受
+      // 「仍有子 key 不可删」保护（permanentDeleteApiKey），顺序不对要跑两次才删干净
+      const rankOf = (key) => {
+        if (key.parentKeyId) {
+          return 0
+        }
+        return key.isV2Parent ? 2 : 1
+      }
+      deletedKeys.sort((a, b) => rankOf(a) - rankOf(b))
 
       let successCount = 0
       let failedCount = 0
@@ -3047,6 +3065,11 @@ class ApiKeyService {
       let cleanedCount = 0
 
       for (const key of apiKeys) {
+        // v2 父账号无过期语义（升级时已清 expiresAt；这里防御存量带过期时间的父账号），
+        // 不能被定时任务自动禁用，否则整个 v2 账号（登录+全部子 key）会静默瘫痪
+        if (key.isV2Parent === true) {
+          continue
+        }
         // 检查是否已过期且仍处于激活状态（Fast版本返回布尔值）
         if (key.expiresAt && new Date(key.expiresAt) < now && key.isActive === true) {
           // 将过期的 API Key 标记为禁用状态，而不是直接删除
@@ -3292,7 +3315,10 @@ class ApiKeyService {
         v2TotalBudget: String(budget),
         v2UpgradedAt: new Date().toISOString(),
         // 父账号在管理列表里仍显示为启用，但 API 调用不可用（hash 已删除）
-        isActive: 'true'
+        isActive: 'true',
+        // 清除原过期时间：父账号不再有过期语义（hash 已删不可直接调用），
+        // 否则 cleanupExpiredKeys 定时任务会在原过期日把整个 v2 账号自动禁用
+        expiresAt: ''
       }
       await redis.setApiKey(keyId, updatedData)
 
@@ -3356,6 +3382,14 @@ class ApiKeyService {
     ) {
       return null
     }
+    // 邮箱索引一致性 fail-closed：changeV2Email 部分失败可能残留旧邮箱索引，
+    // 此时 key 内 v2Email 已不是查询邮箱——拒绝按旧邮箱登录并告警（数据修复走人工/脚本）
+    if ((keyData.v2Email || '').toLowerCase() !== normalizedEmail) {
+      logger.warn(
+        `⚠️ v2 email index mismatch: index ${normalizedEmail} -> ${parentKeyId}, but key v2Email is ${keyData.v2Email || '(empty)'}`
+      )
+      return null
+    }
     return { id: parentKeyId, ...keyData }
   }
 
@@ -3384,7 +3418,11 @@ class ApiKeyService {
       throw new Error('Password must be at least 8 characters long')
     }
     const v2PasswordHash = await bcrypt.hash(password, 10)
-    await redis.client.hset(`apikey:${parentKeyId}`, 'v2PasswordHash', v2PasswordHash)
+    // v2PasswordChangedAt 用于 authenticateV2Account 失效所有更早登录的会话
+    await redis.client.hset(`apikey:${parentKeyId}`, {
+      v2PasswordHash,
+      v2PasswordChangedAt: new Date().toISOString()
+    })
     logger.success(`🔑 Admin reset v2 password for ${parentKeyId}`)
     return { success: true }
   }
@@ -3405,7 +3443,11 @@ class ApiKeyService {
       throw new Error('Password must be at least 8 characters long')
     }
     const v2PasswordHash = await bcrypt.hash(newPassword, 10)
-    await redis.client.hset(`apikey:${parentKeyId}`, 'v2PasswordHash', v2PasswordHash)
+    // v2PasswordChangedAt 用于 authenticateV2Account 失效所有更早登录的会话
+    await redis.client.hset(`apikey:${parentKeyId}`, {
+      v2PasswordHash,
+      v2PasswordChangedAt: new Date().toISOString()
+    })
     logger.success(`🔑 v2 account changed own password: ${parentKeyId}`)
     return { success: true }
   }
@@ -3500,6 +3542,13 @@ class ApiKeyService {
       }
     }
 
+    // 子 key 数量上限：按「未软删除」数量计——软删除的子 key 仍留在 children 集合中
+    // （供 includeDeleted 列表展示），不应继续占用配额；并发竞态下轻微超限可接受
+    const activeChildren = await this._getV2ChildKeys(parentKeyId, false)
+    if (activeChildren.length >= V2_MAX_CHILD_KEYS) {
+      throw new Error(`子 key 数量已达上限 (${V2_MAX_CHILD_KEYS})`)
+    }
+
     // 只传受限字段 + 归属信息；不复制父账号绑定/权限/限制/倍率，保证实时继承
     const newKey = await this.generateApiKey({
       name: name.trim(),
@@ -3511,7 +3560,17 @@ class ApiKeyService {
       createdBy: 'v2'
     })
 
-    await redis.addV2Child(parentKeyId, newKey.id)
+    try {
+      await redis.addV2Child(parentKeyId, newKey.id)
+    } catch (error) {
+      // 集合登记失败会产生「可调用但列表不可见」的孤儿 key：软删除回滚（同时移除 hash）后再抛错
+      try {
+        await this.deleteApiKey(newKey.id, 'system', 'system')
+      } catch (rollbackErr) {
+        logger.error(`❌ Failed to rollback orphan v2 child key ${newKey.id}:`, rollbackErr)
+      }
+      throw error
+    }
     logger.success(`🔑 v2 parent ${parentKeyId} created child key ${newKey.id}`)
     return newKey
   }
@@ -3542,11 +3601,22 @@ class ApiKeyService {
     }
   }
 
-  // 📋 获取 v2 父账号的子 key 列表（已最小化）
+  // 📦 经 v2:children 集合批量加载某父账号的子 key（不随全库 key 数线性扫描）
+  async _getV2ChildKeys(parentKeyId, includeDeleted = false) {
+    const childIds = await redis.getV2ChildIds(parentKeyId)
+    if (!Array.isArray(childIds) || childIds.length === 0) {
+      return []
+    }
+    const keys = await this.getAllApiKeysFast(includeDeleted, childIds)
+    // 集合脏数据 fail-closed 防御：只保留 parentKeyId 确实指向本父账号的 key
+    return keys.filter((k) => k.parentKeyId === parentKeyId)
+  }
+
+  // 📋 获取 v2 父账号的子 key 列表（已最小化；createdAt 倒序保证 UI 稳定）
   async getV2Children(parentKeyId, includeDeleted = false) {
-    const allKeys = await this.getAllApiKeysFast(includeDeleted)
-    return allKeys
-      .filter((k) => k.parentKeyId === parentKeyId)
+    const children = await this._getV2ChildKeys(parentKeyId, includeDeleted)
+    return children
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
       .map((k) => this._toV2ChildView(k))
       .filter(Boolean)
   }
@@ -3565,6 +3635,58 @@ class ApiKeyService {
       throw err
     }
     return child
+  }
+
+  // 📝 v2 更新子 key（归属校验 + 硬白名单 + 数值/状态规范化全部收敛在 service 层，
+  // 路由只做参数提取；防止非法值经 updateApiKey 通用 toString 分支存成 NaN 后被当作不限额）
+  async updateV2Child(parentKeyId, childKeyId, updates = {}) {
+    await this.assertV2ChildOwnership(parentKeyId, childKeyId)
+
+    const normalized = {}
+
+    if (updates.name !== undefined) {
+      if (typeof updates.name !== 'string' || !updates.name.trim()) {
+        throw new Error('API key name is required')
+      }
+      normalized.name = updates.name.trim()
+    }
+
+    if (updates.description !== undefined) {
+      normalized.description =
+        updates.description === null ? '' : String(updates.description).trim()
+    }
+
+    for (const field of ['dailyCostLimit', 'totalCostLimit']) {
+      if (updates[field] !== undefined) {
+        const val = updates[field]
+        if (val === null || val === '') {
+          // 与 createV2Child 的 `|| 0` 口径一致：空值视为 0（不限额）
+          normalized[field] = 0
+        } else {
+          const num = Number(val)
+          if (!Number.isFinite(num) || num < 0) {
+            throw new Error(`${field} must be a non-negative number`)
+          }
+          normalized[field] = num
+        }
+      }
+    }
+
+    if (updates.isActive !== undefined) {
+      if (typeof updates.isActive === 'boolean') {
+        normalized.isActive = updates.isActive
+      } else if (updates.isActive === 'true' || updates.isActive === 'false') {
+        normalized.isActive = updates.isActive === 'true'
+      } else {
+        throw new Error('isActive must be a boolean')
+      }
+    }
+
+    if (Object.keys(normalized).length === 0) {
+      return { success: true }
+    }
+
+    return await this.updateApiKey(childKeyId, normalized)
   }
 }
 

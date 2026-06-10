@@ -69,8 +69,8 @@
             style="z-index: 999999"
             @click.stop
           >
-            <!-- 版本信息 -->
-            <div class="border-b border-gray-100 px-4 py-3 dark:border-gray-700">
+            <!-- 版本信息（v2 角色不展示：检查更新是管理员接口，v2 调用只会 403） -->
+            <div v-if="!isV2Role" class="border-b border-gray-100 px-4 py-3 dark:border-gray-700">
               <div class="flex items-center justify-between text-sm">
                 <span class="text-gray-500 dark:text-gray-400">当前版本</span>
                 <span class="font-mono text-gray-700 dark:text-gray-300"
@@ -372,6 +372,10 @@ const handleCancelModal = () => {
 
 // 检查更新（同时获取版本信息）
 const checkForUpdates = async () => {
+  // v2 角色 fail-closed：该接口仅管理员可用，避免无意义的 403 请求
+  if (isV2Role.value) {
+    return
+  }
   if (versionInfo.value.checkingUpdate) {
     return
   }
@@ -512,18 +516,28 @@ const handleClickOutside = (event) => {
   }
 }
 
-onMounted(() => {
-  checkForUpdates()
+// 自动检查更新定时器 id（onUnmounted 清理，避免组件卸载后泄漏）
+let updateCheckTimer = null
 
-  // 设置自动检查更新（每小时检查一次）
-  setInterval(() => {
+onMounted(() => {
+  // v2 角色不做更新检查（管理员接口），也不注册每小时的后台定时检查
+  if (!isV2Role.value) {
     checkForUpdates()
-  }, 3600000) // 1小时
+
+    // 设置自动检查更新（每小时检查一次）
+    updateCheckTimer = setInterval(() => {
+      checkForUpdates()
+    }, 3600000) // 1小时
+  }
 
   document.addEventListener('click', handleClickOutside)
 })
 
 onUnmounted(() => {
+  if (updateCheckTimer) {
+    clearInterval(updateCheckTimer)
+    updateCheckTimer = null
+  }
   document.removeEventListener('click', handleClickOutside)
 })
 </script>

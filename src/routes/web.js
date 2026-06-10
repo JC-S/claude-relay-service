@@ -6,6 +6,11 @@ const fs = require('fs')
 const redis = require('../models/redis')
 const logger = require('../utils/logger')
 const config = require('../../config/config')
+const loginRateLimiter = require('../services/loginRateLimiter')
+const { getRequestIp } = require('../utils/ipWhitelistHelper')
+
+// 模块级 dummy hash：v2 邮箱未命中时也执行一次 bcrypt.compare 拉平耗时（防邮箱枚举）
+const DUMMY_BCRYPT_HASH = bcrypt.hashSync('v2-login-timing-equalizer', 10)
 
 const router = express.Router()
 
@@ -26,6 +31,30 @@ router.post('/auth/login', async (req, res) => {
       return res.status(400).json({
         error: 'Missing credentials',
         message: 'Username and password are required'
+      })
+    }
+
+    // 登录失败限流（failure-only；维度与阈值见 loginRateLimiter）。
+    // 反代/隧道场景必须用 getRequestIp 取真实客户端 IP，req.ip 会失真
+    const clientIp = getRequestIp(req)
+    const blockState = await loginRateLimiter.checkBlocked(clientIp, username)
+    if (blockState.blocked) {
+      logger.security(
+        `🚫 Login blocked by rate limiter (${blockState.reason}) for username: ${username}, ip: ${clientIp}`
+      )
+      res.set('Retry-After', String(blockState.retryAfterSeconds))
+      return res.status(429).json({
+        error: 'Too many failed login attempts',
+        message: 'Too many failed login attempts, please try again later'
+      })
+    }
+
+    // 所有最终 401 出口统一走这里：先记失败计数，再返回统一文案（不泄漏具体原因）
+    const failLogin = async () => {
+      await loginRateLimiter.recordFailure(clientIp, username)
+      return res.status(401).json({
+        error: 'Invalid credentials',
+        message: 'Invalid username or password'
       })
     }
 
@@ -56,16 +85,10 @@ router.post('/auth/login', async (req, res) => {
           logger.info('✅ Admin credentials reloaded from init.json')
         } catch (error) {
           logger.error('❌ Failed to reload admin credentials:', error)
-          return res.status(401).json({
-            error: 'Invalid credentials',
-            message: 'Invalid username or password'
-          })
+          return await failLogin()
         }
       } else {
-        return res.status(401).json({
-          error: 'Invalid credentials',
-          message: 'Invalid username or password'
-        })
+        return await failLogin()
       }
     }
 
@@ -90,6 +113,7 @@ router.post('/auth/login', async (req, res) => {
       // 不再更新 Redis 中的最后登录时间，因为 Redis 只是缓存
       // init.json 是唯一真实数据源
 
+      await loginRateLimiter.clearFailureForPrincipal(clientIp, username)
       logger.success(`Admin login successful: ${username}`)
 
       return res.json({
@@ -105,39 +129,39 @@ router.post('/auth/login', async (req, res) => {
     try {
       const apiKeyService = require('../services/apiKeyService')
       const v2Parent = await apiKeyService.findV2ByEmail(username)
-      if (v2Parent && v2Parent.v2PasswordHash) {
-        const v2PasswordValid = await bcrypt.compare(password, v2Parent.v2PasswordHash)
-        if (v2PasswordValid) {
-          const sessionId = crypto.randomBytes(32).toString('hex')
-          const v2Email = v2Parent.v2Email || username.trim().toLowerCase()
-          const sessionData = {
-            username: v2Email,
-            role: 'v2',
-            v2KeyId: v2Parent.id,
-            v2Email,
-            loginTime: new Date().toISOString(),
-            lastActivity: new Date().toISOString()
-          }
-          await redis.setSession(sessionId, sessionData, config.security.adminSessionTimeout)
-          logger.success(`v2 account login successful: ${v2Email}`)
-          return res.json({
-            success: true,
-            token: sessionId,
-            role: 'v2',
-            expiresIn: config.security.adminSessionTimeout,
-            username: v2Email
-          })
+      // 无论邮箱是否命中都执行一次 compare（未命中用 dummy hash），拉平耗时防邮箱枚举
+      const v2PasswordValid = await bcrypt.compare(
+        password,
+        v2Parent && v2Parent.v2PasswordHash ? v2Parent.v2PasswordHash : DUMMY_BCRYPT_HASH
+      )
+      if (v2Parent && v2Parent.v2PasswordHash && v2PasswordValid) {
+        const sessionId = crypto.randomBytes(32).toString('hex')
+        const v2Email = v2Parent.v2Email || username.trim().toLowerCase()
+        const sessionData = {
+          username: v2Email,
+          role: 'v2',
+          v2KeyId: v2Parent.id,
+          v2Email,
+          loginTime: new Date().toISOString(),
+          lastActivity: new Date().toISOString()
         }
+        await redis.setSession(sessionId, sessionData, config.security.adminSessionTimeout)
+        await loginRateLimiter.clearFailureForPrincipal(clientIp, username)
+        logger.success(`v2 account login successful: ${v2Email}`)
+        return res.json({
+          success: true,
+          token: sessionId,
+          role: 'v2',
+          expiresIn: config.security.adminSessionTimeout,
+          username: v2Email
+        })
       }
     } catch (v2Error) {
       logger.error('❌ v2 login attempt error:', v2Error)
     }
 
     logger.security(`Failed login attempt for username: ${username}`)
-    return res.status(401).json({
-      error: 'Invalid credentials',
-      message: 'Invalid username or password'
-    })
+    return await failLogin()
   } catch (error) {
     logger.error('❌ Login error:', error)
     return res.status(500).json({

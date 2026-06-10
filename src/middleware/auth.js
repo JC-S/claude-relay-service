@@ -1644,6 +1644,20 @@ const authenticateV2Account = async (req, res, next) => {
       })
     }
 
+    // 密码修改/重置后强制所有更早登录的会话失效——否则滑动续期下被盗会话永不掉线
+    // （无 v2PasswordChangedAt 的存量账号向后兼容放行）
+    if (
+      parent.v2PasswordChangedAt &&
+      new Date(session.loginTime) < new Date(parent.v2PasswordChangedAt)
+    ) {
+      await redis.deleteSession(token)
+      logger.security(`🚫 v2 session invalidated by password change: ${session.v2KeyId}`)
+      return res.status(401).json({
+        error: 'Session expired',
+        message: 'Password was changed, please login again'
+      })
+    }
+
     // 更新最后活动时间（异步，不阻塞请求）
     redis
       .setSession(token, { ...session, lastActivity: now.toISOString() }, 86400)
