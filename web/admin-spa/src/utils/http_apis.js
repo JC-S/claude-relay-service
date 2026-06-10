@@ -29,6 +29,8 @@ export const loginApi = (data) => request({ url: '/web/auth/login', method: 'POS
 export const getAuthUserApi = () => request({ url: '/web/auth/user', method: 'GET' })
 export const changePasswordApi = (data) =>
   request({ url: '/web/auth/change-password', method: 'POST', data })
+// 按 Bearer token 删除服务端会话（退出 v2 模拟态时删除模拟会话用）
+export const logoutApi = () => request({ url: '/web/auth/logout', method: 'POST' })
 
 // OEM 设置
 export const getOemSettingsApi = () => request({ url: '/admin/oem-settings', method: 'GET' })
@@ -122,6 +124,8 @@ export const upgradeApiKeyToV2Api = (id, data) =>
   request({ url: `/admin/api-keys/${id}/upgrade-v2`, method: 'POST', data })
 export const updateV2ConfigApi = (id, data) =>
   request({ url: `/admin/api-keys/${id}/v2-config`, method: 'PUT', data })
+export const impersonateV2Api = (id) =>
+  request({ url: `/admin/api-keys/${id}/v2-impersonate`, method: 'POST' })
 export const getV2AccountApi = () => request({ url: '/admin/v2/account', method: 'GET' })
 export const getV2ApiKeysApi = (params) => request({ url: '/admin/v2/keys', method: 'GET', params })
 export const createV2ApiKeyApi = (data) => request({ url: '/admin/v2/keys', method: 'POST', data })

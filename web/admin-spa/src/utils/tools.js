@@ -11,6 +11,17 @@ export const getAppUrl = (path = '') => {
 
 export const getLoginUrl = () => getAppUrl('/login')
 
+// 模拟登录（管理员切换到 v2 账号视图）的 sessionStorage 键。
+// 常量放这里而非 auth store：request.js 不能 import store（stores/auth → http_apis → request 循环依赖）
+export const V2_IMPERSONATION_TOKEN_KEY = 'v2ImpersonationToken'
+export const V2_IMPERSONATION_USERNAME_KEY = 'v2ImpersonationUsername'
+
+// history 模式路由 URL（既有 getAppUrl 是 hash 风格，与 createWebHistory 不匹配；本期不动旧函数）
+export const getHistoryRouteUrl = (path = '') => {
+  if (path && !path.startsWith('/')) path = '/' + path
+  return APP_CONFIG.basePath.replace(/\/$/, '') + path
+}
+
 // Toast 通知管理
 let toastContainer = null
 let toastId = 0

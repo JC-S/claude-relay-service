@@ -1,6 +1,12 @@
 import axios from 'axios'
 
-import { APP_CONFIG, getLoginUrl } from '@/utils/tools'
+import {
+  APP_CONFIG,
+  getHistoryRouteUrl,
+  getLoginUrl,
+  V2_IMPERSONATION_TOKEN_KEY,
+  V2_IMPERSONATION_USERNAME_KEY
+} from '@/utils/tools'
 
 const axiosInstance = axios.create({
   baseURL: APP_CONFIG.apiPrefix,
@@ -9,7 +15,10 @@ const axiosInstance = axios.create({
 })
 
 axiosInstance.interceptors.request.use((config) => {
-  const token = localStorage.getItem('authToken')
+  // 模拟态 v2 token（sessionStorage，仅本标签页）优先于管理员 token（localStorage）；
+  // 正常流程下模拟键不存在，行为不变
+  const token =
+    sessionStorage.getItem(V2_IMPERSONATION_TOKEN_KEY) || localStorage.getItem('authToken')
   if (token) config.headers['Authorization'] = `Bearer ${token}`
   return config
 })
@@ -18,6 +27,15 @@ axiosInstance.interceptors.response.use(
   (response) => response.data,
   (error) => {
     if (error.response?.status === 401) {
+      if (sessionStorage.getItem(V2_IMPERSONATION_TOKEN_KEY)) {
+        // 模拟 v2 会话失效：丢弃模拟态、整页重载回管理员视图；
+        // 不动 localStorage.authToken / userRole（那是管理员的会话）
+        sessionStorage.removeItem(V2_IMPERSONATION_TOKEN_KEY)
+        sessionStorage.removeItem(V2_IMPERSONATION_USERNAME_KEY)
+        window.location.replace(getHistoryRouteUrl('/api-keys'))
+        // 永不 resolve：阻断 request() 把 reject 吞成 {success:false} 后调用方继续跑 logout()
+        return new Promise(() => {})
+      }
       const path = window.location.pathname + window.location.hash
       // api-stats 和 user-login 是公开页面，401 是业务错误不是认证错误
       const isPublicPage = path.includes('/api-stats') || path.includes('/user-login')

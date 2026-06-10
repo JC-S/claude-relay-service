@@ -66,6 +66,23 @@
           </button>
         </div>
       </form>
+
+      <!-- 模拟登录：form 外独立区块（type=button，永不触发表单保存） -->
+      <div class="mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
+        <button
+          class="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-500 px-4 py-2.5 font-semibold text-white transition-colors hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-indigo-600 dark:hover:bg-indigo-500"
+          :disabled="impersonating"
+          type="button"
+          @click="impersonate"
+        >
+          <div v-if="impersonating" class="loading-spinner" />
+          <i v-else class="fas fa-exchange-alt" />
+          切换到该账号视图
+        </button>
+        <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+          以该 v2 账号身份进入自助管理页面，可随时从页面顶部返回管理员。
+        </p>
+      </div>
     </div>
   </div>
 </template>
@@ -73,7 +90,8 @@
 <script setup>
 import { reactive, ref } from 'vue'
 import { showToast } from '@/utils/tools'
-import { updateV2ConfigApi } from '@/utils/http_apis'
+import { impersonateV2Api, updateV2ConfigApi } from '@/utils/http_apis'
+import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps({
   apiKey: {
@@ -84,7 +102,9 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'success'])
 
+const authStore = useAuthStore()
 const loading = ref(false)
+const impersonating = ref(false)
 const form = reactive({
   newEmail: props.apiKey?.v2Email || '',
   totalBudget: props.apiKey?.v2TotalBudget || 0,
@@ -117,6 +137,25 @@ const submit = async () => {
     showToast(error.message || '保存失败', 'error')
   } finally {
     loading.value = false
+  }
+}
+
+const impersonate = async () => {
+  if (impersonating.value) return
+  impersonating.value = true
+  try {
+    const res = await impersonateV2Api(props.apiKey.id)
+    if (res.success && res.token) {
+      showToast(`已切换到 v2 账号：${res.username || ''}`, 'success')
+      // 角色切到 v2 后 ApiKeysRouteView 响应式换视图、本弹窗随之卸载，无需手动 close
+      await authStore.enterV2Impersonation({ token: res.token, username: res.username })
+    } else {
+      showToast(res.message || '切换失败', 'error')
+    }
+  } catch (error) {
+    showToast(error.message || '切换失败', 'error')
+  } finally {
+    impersonating.value = false
   }
 }
 </script>

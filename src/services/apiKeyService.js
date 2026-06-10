@@ -3626,6 +3626,51 @@ class ApiKeyService {
     }
   }
 
+  // 🕵️ 管理员模拟登录：为目标 v2 父账号铸造一个与 web.js v2 登录同构的真实会话，
+  // 额外带 impersonatedBy 审计字段（authenticateV2Account 滑动续期用 {...session} 展开，该字段全程保留）
+  async createV2ImpersonationSession(parentKeyId, adminUsername) {
+    const parent = await redis.getApiKey(parentKeyId)
+    if (
+      !parent ||
+      Object.keys(parent).length === 0 ||
+      parent.isV2Parent !== 'true' ||
+      parent.isDeleted === 'true' ||
+      parent.isActive !== 'true' ||
+      !parent.v2Email ||
+      !parent.v2Email.trim()
+    ) {
+      // 无邮箱会铸出 username 为空的会话，过不了 authenticateV2Account——一并 fail-fast
+      throw new Error('Not an active v2 parent account')
+    }
+
+    const sessionId = crypto.randomBytes(32).toString('hex')
+    const now = new Date().toISOString()
+    const v2Email = parent.v2Email.trim().toLowerCase()
+    const sessionData = {
+      username: v2Email,
+      role: 'v2',
+      v2KeyId: parentKeyId,
+      v2Email,
+      loginTime: now,
+      lastActivity: now,
+      impersonatedBy: adminUsername || 'unknown-admin'
+    }
+
+    // 与 web.js v2 登录完全同参（adminSessionTimeout 毫秒当秒的既有口径刻意镜像，
+    // 实际安全边界是 authenticateV2Account 的 24h 不活跃检查）
+    await redis.setSession(sessionId, sessionData, config.security.adminSessionTimeout)
+
+    logger.security(
+      `🕵️ Admin ${adminUsername || 'unknown-admin'} impersonated v2 account ${parentKeyId} (${v2Email})`
+    )
+
+    return {
+      token: sessionId,
+      username: v2Email,
+      expiresIn: config.security.adminSessionTimeout
+    }
+  }
+
   // 🔑 v2 创建子 key（仅受限字段；其余配置运行时实时继承父账号）
   async createV2Child(parentKeyId, { name, description, dailyCostLimit, totalCostLimit } = {}) {
     const parent = await redis.getApiKey(parentKeyId)

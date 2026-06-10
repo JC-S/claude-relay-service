@@ -38,6 +38,19 @@
       </div>
       <!-- 主题切换和用户菜单 -->
       <div class="flex items-center gap-2 sm:gap-4">
+        <!-- 返回管理员（v2 模拟态中显示）：amber 既是返回入口也是「模拟中」的视觉标识 -->
+        <button
+          v-if="authStore.isImpersonating"
+          class="flex items-center gap-2 rounded-full bg-amber-500 px-3 py-2 text-xs font-semibold text-white shadow-lg transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-amber-600 dark:hover:bg-amber-500 sm:px-4 sm:text-sm"
+          :disabled="exitingImpersonation"
+          type="button"
+          @click="exitImpersonation"
+        >
+          <div v-if="exitingImpersonation" class="loading-spinner" />
+          <i v-else class="fas fa-user-shield" />
+          <span>返回管理员</span>
+        </button>
+
         <!-- 主题切换按钮 -->
         <div class="flex items-center">
           <ThemeToggle mode="dropdown" />
@@ -506,6 +519,19 @@ const logout = async () => {
     showToast('已安全退出', 'success')
   }
   userMenuOpen.value = false
+}
+
+// 🕵️ 退出 v2 模拟态，恢复管理员视图（不走普通 logout——那仍是真正退出登录）
+const exitingImpersonation = ref(false)
+const exitImpersonation = async () => {
+  if (exitingImpersonation.value) return
+  exitingImpersonation.value = true
+  try {
+    await authStore.exitV2Impersonation()
+    showToast('已返回管理员视图', 'success')
+  } finally {
+    exitingImpersonation.value = false
+  }
 }
 
 // 点击外部关闭菜单

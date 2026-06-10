@@ -1837,6 +1837,26 @@ router.put('/api-keys/:keyId/v2-config', authenticateAdmin, async (req, res) => 
   }
 })
 
+// 🕵️ 管理员模拟登录目标 v2 父账号：铸造真实 v2 会话（响应与登录同构），前端据此切换到 v2 自助视图
+router.post('/api-keys/:keyId/v2-impersonate', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await apiKeyService.createV2ImpersonationSession(
+      req.params.keyId,
+      req.admin.username
+    )
+    return res.json({
+      success: true,
+      token: result.token,
+      role: 'v2',
+      expiresIn: result.expiresIn,
+      username: result.username
+    })
+  } catch (error) {
+    logger.error('❌ Failed to impersonate v2 account:', error)
+    return res.status(400).json({ error: 'Impersonation failed', message: error.message })
+  }
+})
+
 // 批量创建API Keys
 router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
   try {

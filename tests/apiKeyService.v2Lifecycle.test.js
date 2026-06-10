@@ -10,6 +10,8 @@
 // 以及 v2 IP 白名单（账号级默认 + 子 key 覆盖，对应 plan_tmp/v2-account-ip-whitelist-plan_revised.md）：
 // getV2IpWhitelist/updateV2IpWhitelist 定点 hset、updateV2Child 三态状态机与旧值防误激活、
 // validateApiKey/_overlayV2ParentConfigForStats 的 override 跳过继承口径。
+// 以及管理员模拟登录（plan_tmp/v2-account-admin-impersonation-plan_final.md）：
+// createV2ImpersonationSession 铸造与 web 登录同构的会话 + impersonatedBy 审计 + 非 active 父拒绝。
 //
 // harness 镜像 apiKeyService.v2Billing.test.js（模块级 mock 同集）；service 方法间的
 // 协作用 jest.spyOn 隔离，afterEach restoreAllMocks 防 spy 泄漏到其它用例。
@@ -21,7 +23,8 @@ jest.mock(
   () => ({
     security: {
       apiKeyPrefix: 'cr_',
-      encryptionKey: 'test-encryption-key-0000000000000'
+      encryptionKey: 'test-encryption-key-0000000000000',
+      adminSessionTimeout: 86400000
     }
   }),
   { virtual: true }
@@ -32,6 +35,7 @@ jest.mock('../src/models/redis', () => ({
   setApiKey: jest.fn(),
   deleteApiKeyHash: jest.fn(),
   getSession: jest.fn(),
+  setSession: jest.fn(),
   setV2EmailIndex: jest.fn(),
   getV2KeyIdByEmail: jest.fn(),
   deleteV2EmailIndex: jest.fn(),
@@ -906,5 +910,68 @@ describe('apiKeyService v2 IP whitelist', () => {
       enableIpWhitelist: false,
       ipWhitelist: []
     })
+  })
+})
+
+describe('apiKeyService v2 impersonation session', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    redis.setSession.mockResolvedValue()
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  // 25. 成功：铸造与 web.js v2 登录同构的会话 + impersonatedBy 审计字段
+  test('mints a login-shaped v2 session with the impersonatedBy audit field', async () => {
+    mockActiveParent({ v2Email: ' Tenant@Example.com ' })
+
+    const result = await apiKeyService.createV2ImpersonationSession(PARENT_ID, 'admin-user')
+
+    expect(redis.setSession).toHaveBeenCalledTimes(1)
+    const [sessionId, sessionData, ttl] = redis.setSession.mock.calls[0]
+    expect(sessionId).toMatch(/^[0-9a-f]{64}$/)
+    expect(sessionData).toEqual({
+      username: 'tenant@example.com',
+      role: 'v2',
+      v2KeyId: PARENT_ID,
+      v2Email: 'tenant@example.com',
+      loginTime: expect.stringMatching(ISO_RE),
+      lastActivity: expect.stringMatching(ISO_RE),
+      impersonatedBy: 'admin-user'
+    })
+    // 毫秒值当秒传——刻意镜像 web.js 登录现状（实际安全边界是中间件 24h 不活跃检查）
+    expect(ttl).toBe(86400000)
+    expect(result).toEqual({
+      token: sessionId,
+      username: 'tenant@example.com',
+      expiresIn: 86400000
+    })
+    expect(logger.security).toHaveBeenCalledWith(
+      expect.stringContaining(`impersonated v2 account ${PARENT_ID}`)
+    )
+  })
+
+  // 26. 拒绝：六种无效父数据全部 throw，且绝不写会话
+  test('rejects every non-active-v2-parent shape without minting a session', async () => {
+    const base = { id: PARENT_ID, isV2Parent: 'true', isActive: 'true', isDeleted: 'false' }
+    const invalidParents = [
+      null,
+      {},
+      { ...base, isV2Parent: 'false', v2Email: 'a@b.c' },
+      { ...base, isDeleted: 'true', v2Email: 'a@b.c' },
+      { ...base, isActive: 'false', v2Email: 'a@b.c' },
+      { ...base, v2Email: '' } // active 但无邮箱：会铸出空 username、过不了 authenticateV2Account
+    ]
+
+    for (const parent of invalidParents) {
+      redis.getApiKey.mockResolvedValueOnce(parent)
+      await expect(
+        apiKeyService.createV2ImpersonationSession(PARENT_ID, 'admin-user')
+      ).rejects.toThrow('Not an active v2 parent account')
+    }
+
+    expect(redis.setSession).not.toHaveBeenCalled()
   })
 })
