@@ -37,9 +37,17 @@
     <!-- 操作栏 -->
     <div class="mb-4 flex items-center justify-between">
       <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100">我的 API Keys</h2>
-      <button class="btn btn-primary px-4 py-2 text-sm font-semibold" @click="openCreateModal">
-        <i class="fas fa-plus mr-2" />新建 API Key
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          class="rounded-xl bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          @click="openAccountIpWhitelistModal"
+        >
+          <i class="fas fa-shield-alt mr-2" />IP 白名单
+        </button>
+        <button class="btn btn-primary px-4 py-2 text-sm font-semibold" @click="openCreateModal">
+          <i class="fas fa-plus mr-2" />新建 API Key
+        </button>
+      </div>
     </div>
 
     <!-- 列表 -->
@@ -217,6 +225,35 @@
             <input id="v2-key-active" v-model="form.isActive" type="checkbox" />
             <label class="text-sm text-gray-700 dark:text-gray-300" for="v2-key-active">启用</label>
           </div>
+          <div v-if="editingId">
+            <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+              >IP 白名单</label
+            >
+            <div class="space-y-2">
+              <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input v-model="form.ipWhitelistMode" type="radio" value="inherit" />
+                跟随账号默认
+              </label>
+              <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input v-model="form.ipWhitelistMode" type="radio" value="custom" />
+                自定义白名单
+              </label>
+              <textarea
+                v-if="form.ipWhitelistMode === 'custom'"
+                v-model="form.ipWhitelistInput"
+                class="form-input w-full font-mono text-xs"
+                placeholder="每行一个 IP 或 CIDR，例如：&#10;203.0.113.10&#10;198.51.100.0/24"
+                rows="4"
+              />
+              <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input v-model="form.ipWhitelistMode" type="radio" value="disabled" />
+                不启用白名单
+              </label>
+            </div>
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+              「不启用白名单」表示该 Key 不受账号级白名单限制；仅限制 API 调用，不影响后台登录。
+            </p>
+          </div>
           <div class="flex gap-3 pt-2">
             <button
               class="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
@@ -354,6 +391,12 @@
               <dt class="text-xs text-gray-500 dark:text-gray-400">最后使用</dt>
               <dd class="text-gray-700 dark:text-gray-200">
                 {{ detailKey.lastUsedAt ? formatDate(detailKey.lastUsedAt) : '从未使用' }}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500 dark:text-gray-400">IP 白名单</dt>
+              <dd class="text-gray-700 dark:text-gray-200">
+                {{ ipWhitelistSummary(detailKey) }}
               </dd>
             </div>
           </dl>
@@ -611,6 +654,85 @@
       </div>
     </div>
 
+    <!-- 账号级 IP 白名单弹窗（对本账号下所有未自定义白名单的子 key 生效） -->
+    <Teleport to="body">
+      <div
+        v-if="showAccountIpWhitelistModal"
+        class="modal fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4"
+      >
+        <div class="modal-content mx-auto w-full max-w-md p-4 sm:p-6">
+          <div class="mb-4 flex items-center justify-between">
+            <h3 class="text-xl font-bold text-gray-900 dark:text-gray-100">账号级 IP 白名单</h3>
+            <button
+              class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              @click="closeAccountIpWhitelistModal"
+            >
+              <i class="fas fa-times text-xl" />
+            </button>
+          </div>
+          <p class="mb-4 text-sm text-gray-500 dark:text-gray-400">
+            对本账号下所有未自定义白名单的 API Key 生效；仅限制 API 调用，不影响后台登录。
+          </p>
+          <div
+            v-if="accountIpWhitelistLoading"
+            class="py-8 text-center text-gray-500 dark:text-gray-400"
+          >
+            <div class="loading-spinner mx-auto mb-2" />
+            加载中...
+          </div>
+          <form v-else class="space-y-4" @submit.prevent="saveAccountIpWhitelist">
+            <div class="flex items-center gap-2">
+              <input
+                id="v2-account-ip-enable"
+                v-model="accountIpWhitelistForm.enableIpWhitelist"
+                type="checkbox"
+              />
+              <label
+                class="text-sm font-semibold text-gray-700 dark:text-gray-300"
+                for="v2-account-ip-enable"
+              >
+                启用 IP 白名单
+              </label>
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                允许的 IP / CIDR
+              </label>
+              <textarea
+                v-model="accountIpWhitelistForm.input"
+                class="form-input w-full font-mono text-xs"
+                placeholder="每行一个 IP 或 CIDR，例如：&#10;203.0.113.10&#10;198.51.100.0/24"
+                rows="6"
+              />
+              <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                支持换行、逗号、空格、分号分隔；支持 IPv4 / IPv6 与 CIDR。
+              </p>
+            </div>
+            <p v-if="accountIpWhitelistError" class="text-sm text-red-500">
+              {{ accountIpWhitelistError }}
+            </p>
+            <div class="flex gap-3 pt-2">
+              <button
+                class="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                type="button"
+                @click="closeAccountIpWhitelistModal"
+              >
+                取消
+              </button>
+              <button
+                class="btn btn-primary flex-1 px-4 py-2.5 font-semibold"
+                :disabled="accountIpWhitelistSaving"
+                type="submit"
+              >
+                <div v-if="accountIpWhitelistSaving" class="loading-spinner mr-2" />
+                保存
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Teleport>
+
     <ConfirmModal
       :cancel-text="confirmConfig.cancelText"
       :confirm-text="confirmConfig.confirmText"
@@ -626,14 +748,16 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { showToast, copyText, formatDate, formatNumber } from '@/utils/tools'
+import { showToast, copyText, formatDate, formatNumber, parseIpWhitelistInput } from '@/utils/tools'
 import {
   getV2AccountApi,
   getV2ApiKeysApi,
   createV2ApiKeyApi,
   updateV2ApiKeyApi,
   deleteV2ApiKeyApi,
-  getV2ApiKeyUsageRecordsApi
+  getV2ApiKeyUsageRecordsApi,
+  getV2IpWhitelistApi,
+  updateV2IpWhitelistApi
 } from '@/utils/http_apis'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 
@@ -649,11 +773,24 @@ const form = reactive({
   description: '',
   dailyCostLimit: 0,
   totalCostLimit: 0,
-  isActive: true
+  isActive: true,
+  // IP 白名单三态：inherit=跟随账号默认 / custom=自定义 / disabled=覆盖为不启用
+  ipWhitelistMode: 'inherit',
+  ipWhitelistInput: ''
 })
 
 const showSecretModal = ref(false)
 const newSecret = ref('')
+
+// 账号级 IP 白名单弹窗
+const showAccountIpWhitelistModal = ref(false)
+const accountIpWhitelistLoading = ref(false)
+const accountIpWhitelistSaving = ref(false)
+const accountIpWhitelistError = ref('')
+const accountIpWhitelistForm = reactive({
+  enableIpWhitelist: false,
+  input: ''
+})
 
 // 详情弹窗 + 请求时间线
 const showDetailModal = ref(false)
@@ -739,6 +876,8 @@ const openCreateModal = () => {
   form.dailyCostLimit = 0
   form.totalCostLimit = 0
   form.isActive = true
+  form.ipWhitelistMode = 'inherit'
+  form.ipWhitelistInput = ''
   showFormModal.value = true
 }
 
@@ -749,7 +888,28 @@ const openEditModal = (key) => {
   form.dailyCostLimit = key.dailyCostLimit || 0
   form.totalCostLimit = key.totalCostLimit || 0
   form.isActive = key.isActive !== false
+  if (!key.ipWhitelistOverride) {
+    form.ipWhitelistMode = 'inherit'
+    form.ipWhitelistInput = ''
+  } else if (key.enableIpWhitelist) {
+    form.ipWhitelistMode = 'custom'
+    form.ipWhitelistInput = Array.isArray(key.ipWhitelist) ? key.ipWhitelist.join('\n') : ''
+  } else {
+    form.ipWhitelistMode = 'disabled'
+    form.ipWhitelistInput = ''
+  }
   showFormModal.value = true
+}
+
+// 详情弹窗摘要：展示子 key 自身 override 状态（账号级名单不经列表接口下发）
+const ipWhitelistSummary = (key) => {
+  if (!key?.ipWhitelistOverride) {
+    return '跟随账号默认'
+  }
+  if (key.enableIpWhitelist) {
+    return `自定义（${Array.isArray(key.ipWhitelist) ? key.ipWhitelist.length : 0} 个 IP）`
+  }
+  return '自定义（已停用）'
 }
 
 const submitForm = async () => {
@@ -760,13 +920,31 @@ const submitForm = async () => {
   formLoading.value = true
   try {
     if (editingId.value) {
-      const res = await updateV2ApiKeyApi(editingId.value, {
+      const payload = {
         name: form.name.trim(),
         description: form.description?.trim() || '',
         dailyCostLimit: form.dailyCostLimit || 0,
         totalCostLimit: form.totalCostLimit || 0,
         isActive: form.isActive
-      })
+      }
+      // 三态恰好对应三个合法终态；inherit 只发 override=false，不携带表单残留 enable/list
+      if (form.ipWhitelistMode === 'inherit') {
+        payload.ipWhitelistOverride = false
+      } else if (form.ipWhitelistMode === 'disabled') {
+        payload.ipWhitelistOverride = true
+        payload.enableIpWhitelist = false
+        payload.ipWhitelist = []
+      } else {
+        const entries = parseIpWhitelistInput(form.ipWhitelistInput)
+        if (entries.length === 0) {
+          showToast('启用 IP 白名单时至少需要填写一个 IP 或 CIDR', 'error')
+          return
+        }
+        payload.ipWhitelistOverride = true
+        payload.enableIpWhitelist = true
+        payload.ipWhitelist = entries
+      }
+      const res = await updateV2ApiKeyApi(editingId.value, payload)
       if (res.success) {
         showToast('保存成功', 'success')
         showFormModal.value = false
@@ -832,6 +1010,58 @@ const removeKey = async (key) => {
     }
   } catch (error) {
     showToast('删除失败', 'error')
+  }
+}
+
+// 账号级 IP 白名单：打开弹窗时才 GET（不在首屏加载时额外请求）
+const openAccountIpWhitelistModal = async () => {
+  showAccountIpWhitelistModal.value = true
+  accountIpWhitelistError.value = ''
+  accountIpWhitelistLoading.value = true
+  try {
+    const res = await getV2IpWhitelistApi()
+    if (res.success && res.data) {
+      accountIpWhitelistForm.enableIpWhitelist = !!res.data.enableIpWhitelist
+      accountIpWhitelistForm.input = Array.isArray(res.data.ipWhitelist)
+        ? res.data.ipWhitelist.join('\n')
+        : ''
+    }
+  } catch (error) {
+    showToast(error.message || '加载 IP 白名单失败', 'error')
+    showAccountIpWhitelistModal.value = false
+  } finally {
+    accountIpWhitelistLoading.value = false
+  }
+}
+
+const closeAccountIpWhitelistModal = () => {
+  showAccountIpWhitelistModal.value = false
+  accountIpWhitelistError.value = ''
+}
+
+const saveAccountIpWhitelist = async () => {
+  const entries = parseIpWhitelistInput(accountIpWhitelistForm.input)
+  if (accountIpWhitelistForm.enableIpWhitelist && entries.length === 0) {
+    accountIpWhitelistError.value = '启用 IP 白名单时至少需要填写一个 IP 或 CIDR'
+    return
+  }
+  accountIpWhitelistError.value = ''
+  accountIpWhitelistSaving.value = true
+  try {
+    const res = await updateV2IpWhitelistApi({
+      enableIpWhitelist: accountIpWhitelistForm.enableIpWhitelist,
+      ipWhitelist: entries
+    })
+    if (res.success) {
+      showToast('IP 白名单已更新', 'success')
+      showAccountIpWhitelistModal.value = false
+    } else {
+      accountIpWhitelistError.value = res.message || '保存失败'
+    }
+  } catch (error) {
+    accountIpWhitelistError.value = error.message || '保存失败'
+  } finally {
+    accountIpWhitelistSaving.value = false
   }
 }
 

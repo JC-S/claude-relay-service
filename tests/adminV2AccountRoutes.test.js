@@ -1,10 +1,12 @@
-// v2 子 key 更新路由测试：PUT /admin/v2/keys/:keyId
-// 覆盖：路由只透传白名单 5 字段给 service 层 updateV2Child（额外字段绝不透传）、
-// 非法值经 service 校验返回 400（message 透传）、非归属 NOT_FOUND 返回 404、成功 200。
+// v2 路由测试：PUT /admin/v2/keys/:keyId + GET/PUT /admin/v2/account/ip-whitelist
+// 覆盖：PUT /keys 只透传白名单 8 字段给 service 层 updateV2Child（额外字段、含存储名
+// v2IpWhitelistOverride，绝不透传）、非法值经 service 校验返回 400（message 透传）、
+// 非归属 NOT_FOUND 返回 404、成功 200；账号级白名单 GET 委托/500、PUT 只透传两字段/400。
 //
 // 路由 harness 同 adminV2AccountUsageRecordsRoute.test.js：
 // - mockRouter 必须含 use（router.use(authenticateV2Account)）。
-// - 路由注册为 router.put(path, handler)，无内联中间件 → handler 在 call[1]。
+// - 路由注册为 router.method(path, handler)，无内联中间件 → handler 在 call[1]。
+// - handler 一律按 path 查找、不按注册顺序取，新增路由不影响既有用例。
 
 const mockRouter = {
   get: jest.fn(),
@@ -33,7 +35,9 @@ jest.mock('../src/services/apiKeyService', () => ({
   getV2Children: jest.fn(),
   getV2AccountSummary: jest.fn(),
   changeV2Password: jest.fn(),
-  deleteApiKey: jest.fn()
+  deleteApiKey: jest.fn(),
+  getV2IpWhitelist: jest.fn(),
+  updateV2IpWhitelist: jest.fn()
 }))
 
 jest.mock('../src/models/redis', () => ({
@@ -54,7 +58,14 @@ const apiKeyService = require('../src/services/apiKeyService')
 require('../src/routes/admin/v2Account')
 
 const PUT_PATH = '/keys/:keyId'
+const IP_WHITELIST_PATH = '/account/ip-whitelist'
 const handler = mockRouter.put.mock.calls.find((call) => call[0] === PUT_PATH)[1]
+const getIpWhitelistHandler = mockRouter.get.mock.calls.find(
+  (call) => call[0] === IP_WHITELIST_PATH
+)[1]
+const putIpWhitelistHandler = mockRouter.put.mock.calls.find(
+  (call) => call[0] === IP_WHITELIST_PATH
+)[1]
 
 function createRes() {
   const res = {
@@ -86,20 +97,33 @@ describe('PUT /admin/v2/keys/:keyId', () => {
     apiKeyService.updateV2Child.mockResolvedValue({ success: true })
   })
 
-  // 1. 成功路径：调用 service 层 updateV2Child 并返回 200
+  // 1. 成功路径：调用 service 层 updateV2Child 并返回 200（白名单三字段以入参名透传）
   test('delegates to updateV2Child and returns success', async () => {
     const res = createRes()
-    await handler(createReq({ name: 'renamed', dailyCostLimit: 5 }), res)
+    await handler(
+      createReq({
+        name: 'renamed',
+        dailyCostLimit: 5,
+        ipWhitelistOverride: true,
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4']
+      }),
+      res
+    )
 
     expect(apiKeyService.updateV2Child).toHaveBeenCalledWith('parent-1', 'child-1', {
       name: 'renamed',
-      dailyCostLimit: 5
+      dailyCostLimit: 5,
+      ipWhitelistOverride: true,
+      enableIpWhitelist: true,
+      ipWhitelist: ['1.2.3.4']
     })
     expect(res.status).not.toHaveBeenCalled()
     expect(res.body).toEqual({ success: true, message: 'API key updated successfully' })
   })
 
-  // 2. 白名单之外的字段绝不透传（防借道改继承/提权）
+  // 2. 白名单之外的字段绝不透传（防借道改继承/提权）；透传集恰好 8 字段，
+  //    存储字段名 v2IpWhitelistOverride 不可经路由直接写入（入参名是 ipWhitelistOverride）
   test('never forwards non-whitelisted fields to the service layer', async () => {
     const res = createRes()
     await handler(
@@ -109,7 +133,8 @@ describe('PUT /admin/v2/keys/:keyId', () => {
         claudeAccountId: 'steal-binding',
         parentKeyId: 'other-parent',
         isV2Parent: true,
-        expiresAt: '2099-01-01'
+        expiresAt: '2099-01-01',
+        v2IpWhitelistOverride: true
       }),
       res
     )
@@ -118,6 +143,9 @@ describe('PUT /admin/v2/keys/:keyId', () => {
     expect(Object.keys(forwarded).sort()).toEqual([
       'dailyCostLimit',
       'description',
+      'enableIpWhitelist',
+      'ipWhitelist',
+      'ipWhitelistOverride',
       'isActive',
       'name',
       'totalCostLimit'
@@ -127,7 +155,8 @@ describe('PUT /admin/v2/keys/:keyId', () => {
       'claudeAccountId',
       'parentKeyId',
       'isV2Parent',
-      'expiresAt'
+      'expiresAt',
+      'v2IpWhitelistOverride'
     ]) {
       expect(forwarded).not.toHaveProperty(field)
     }
@@ -155,5 +184,105 @@ describe('PUT /admin/v2/keys/:keyId', () => {
 
     expect(res.status).toHaveBeenCalledWith(404)
     expect(res.body.error).toBe('Not found')
+  })
+})
+
+describe('GET /admin/v2/account/ip-whitelist', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  // 1. 委托 service 并原样返回（响应 data 只含白名单两字段，无上游账户信息）
+  test('delegates to getV2IpWhitelist and returns only whitelist fields', async () => {
+    apiKeyService.getV2IpWhitelist.mockResolvedValue({
+      enableIpWhitelist: true,
+      ipWhitelist: ['1.2.3.4']
+    })
+    const res = createRes()
+    await getIpWhitelistHandler(createReq(), res)
+
+    expect(apiKeyService.getV2IpWhitelist).toHaveBeenCalledWith('parent-1')
+    expect(res.status).not.toHaveBeenCalled()
+    expect(res.body).toEqual({
+      success: true,
+      data: { enableIpWhitelist: true, ipWhitelist: ['1.2.3.4'] }
+    })
+    expect(Object.keys(res.body.data).sort()).toEqual(['enableIpWhitelist', 'ipWhitelist'])
+  })
+
+  // 2. service 异常 → 500
+  test('returns 500 when the service fails', async () => {
+    apiKeyService.getV2IpWhitelist.mockRejectedValue(new Error('boom'))
+    const res = createRes()
+    await getIpWhitelistHandler(createReq(), res)
+
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.body.error).toBe('Failed to load IP whitelist')
+  })
+})
+
+describe('PUT /admin/v2/account/ip-whitelist', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    apiKeyService.updateV2IpWhitelist.mockResolvedValue({
+      enableIpWhitelist: true,
+      ipWhitelist: ['1.2.3.4']
+    })
+  })
+
+  // 3. 只透传 enableIpWhitelist/ipWhitelist 两字段，额外字段绝不透传
+  test('forwards exactly the two whitelist fields', async () => {
+    const res = createRes()
+    await putIpWhitelistHandler(
+      createReq({
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4'],
+        isV2Parent: true,
+        v2TotalBudget: 999,
+        permissions: ['claude']
+      }),
+      res
+    )
+
+    expect(apiKeyService.updateV2IpWhitelist).toHaveBeenCalledWith('parent-1', {
+      enableIpWhitelist: true,
+      ipWhitelist: ['1.2.3.4']
+    })
+    const forwarded = apiKeyService.updateV2IpWhitelist.mock.calls[0][1]
+    expect(Object.keys(forwarded).sort()).toEqual(['enableIpWhitelist', 'ipWhitelist'])
+    expect(res.body).toEqual({
+      success: true,
+      data: { enableIpWhitelist: true, ipWhitelist: ['1.2.3.4'] },
+      message: 'IP whitelist updated successfully'
+    })
+  })
+
+  // 4. service 校验错误 → 400 且 message 透传给前端
+  test('returns 400 with the validation message', async () => {
+    apiKeyService.updateV2IpWhitelist.mockRejectedValue(
+      new Error('启用 IP 白名单时至少需要一个 IP 或 CIDR')
+    )
+    const res = createRes()
+    await putIpWhitelistHandler(createReq({ enableIpWhitelist: true, ipWhitelist: [] }), res)
+
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(res.body.message).toBe('启用 IP 白名单时至少需要一个 IP 或 CIDR')
+  })
+
+  // 5. body 缺失（undefined）不崩溃，仍委托 service 做参数校验
+  test('handles a missing body gracefully', async () => {
+    apiKeyService.updateV2IpWhitelist.mockRejectedValue(
+      new Error('enableIpWhitelist must be a boolean')
+    )
+    const req = createReq()
+    req.body = undefined
+    const res = createRes()
+    await putIpWhitelistHandler(req, res)
+
+    expect(apiKeyService.updateV2IpWhitelist).toHaveBeenCalledWith('parent-1', {
+      enableIpWhitelist: undefined,
+      ipWhitelist: undefined
+    })
+    expect(res.status).toHaveBeenCalledWith(400)
   })
 })

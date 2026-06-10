@@ -132,6 +132,10 @@ export const getV2ApiKeyUsageRecordsApi = (id, params) =>
   request({ url: `/admin/v2/keys/${id}/usage-records`, method: 'GET', params })
 export const changeV2PasswordApi = (data) =>
   request({ url: '/admin/v2/account/password', method: 'POST', data })
+export const getV2IpWhitelistApi = () =>
+  request({ url: '/admin/v2/account/ip-whitelist', method: 'GET' })
+export const updateV2IpWhitelistApi = (data) =>
+  request({ url: '/admin/v2/account/ip-whitelist', method: 'PUT', data })
 
 // Claude 账户
 export const getClaudeAccountsApi = () => request({ url: '/admin/claude-accounts', method: 'GET' })

@@ -53,6 +53,32 @@ router.post('/account/password', async (req, res) => {
   }
 })
 
+// 🌐 获取账号级 IP 白名单（父 key 白名单即账号级默认；仅白名单配置，无上游账户信息）
+router.get('/account/ip-whitelist', async (req, res) => {
+  try {
+    const data = await apiKeyService.getV2IpWhitelist(req.v2Account.parentKeyId)
+    return res.json({ success: true, data })
+  } catch (error) {
+    logger.error('❌ Failed to get v2 IP whitelist:', error)
+    return res.status(500).json({ error: 'Failed to load IP whitelist', message: error.message })
+  }
+})
+
+// 🌐 更新账号级 IP 白名单（校验全部收敛在 service 层，路由只做参数提取）
+router.put('/account/ip-whitelist', async (req, res) => {
+  try {
+    const { enableIpWhitelist, ipWhitelist } = req.body || {}
+    const data = await apiKeyService.updateV2IpWhitelist(req.v2Account.parentKeyId, {
+      enableIpWhitelist,
+      ipWhitelist
+    })
+    return res.json({ success: true, data, message: 'IP whitelist updated successfully' })
+  } catch (error) {
+    logger.error('❌ Failed to update v2 IP whitelist:', error)
+    return res.status(400).json({ error: 'Update failed', message: error.message })
+  }
+})
+
 // 📋 获取自己创建的子 key 列表（已最小化）
 router.get('/keys', async (req, res) => {
   try {
@@ -163,13 +189,25 @@ router.post('/keys', async (req, res) => {
 router.put('/keys/:keyId', async (req, res) => {
   try {
     const { keyId } = req.params
-    const { name, description, dailyCostLimit, totalCostLimit, isActive } = req.body
+    const {
+      name,
+      description,
+      dailyCostLimit,
+      totalCostLimit,
+      isActive,
+      ipWhitelistOverride,
+      enableIpWhitelist,
+      ipWhitelist
+    } = req.body
     await apiKeyService.updateV2Child(req.v2Account.parentKeyId, keyId, {
       name,
       description,
       dailyCostLimit,
       totalCostLimit,
-      isActive
+      isActive,
+      ipWhitelistOverride,
+      enableIpWhitelist,
+      ipWhitelist
     })
     logger.success(`📝 v2 account updated child key: ${keyId}`)
     return res.json({ success: true, message: 'API key updated successfully' })

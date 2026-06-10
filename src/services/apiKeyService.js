@@ -9,7 +9,7 @@ const requestDetailService = require('./requestDetailService')
 const { isClaudeFamilyModel } = require('../utils/modelHelper')
 const { finalizeRequestDetailMeta } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('./requestBodyRuleService')
-const { normalizeIpWhitelist } = require('../utils/ipWhitelistHelper')
+const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
 
 const ACCOUNT_TYPE_CONFIG = {
   claude: { prefix: 'claude:account:' },
@@ -208,6 +208,36 @@ const V2_MAX_CHILD_KEYS = (() => {
   const parsed = parseInt(process.env.V2_MAX_CHILD_KEYS || '100', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 100
 })()
+
+// 🆕 v2 自助 IP 白名单条目上限（仅约束 v2 两条自助路径，防 auth 线性扫描/hash 膨胀）
+const V2_MAX_IP_WHITELIST_ENTRIES = 100
+
+// 🆕 子 key 是否声明「自定义 IP 白名单」（覆盖账号级默认）。
+// 注意：v2IpWhitelistOverride 绝不可加入 V2_INHERIT_CONFIG_FIELDS（它本身不是被继承的配置）
+function isV2IpWhitelistOverrideEnabled(keyData) {
+  return keyData?.v2IpWhitelistOverride === true || keyData?.v2IpWhitelistOverride === 'true'
+}
+
+// 🆕 v2 overlay 需跳过继承的字段：仅在子 key 开启自定义白名单时跳过 IP 白名单两个配置字段，
+// 账户绑定等其余字段照常继承。override≠true 时返回空集——即使子 key 残留旧原始白名单
+// （管理员后台编辑路径可能写过），也一律以父账号值覆盖，防止旧值参与判定
+function getV2InheritSkipFields(keyData) {
+  if (!isV2IpWhitelistOverrideEnabled(keyData)) {
+    return new Set()
+  }
+  return new Set(['enableIpWhitelist', 'ipWhitelist'])
+}
+
+// 🆕 v2 自助接口布尔入参口径（与 updateV2Child 的 isActive 一致）：bool 或 'true'/'false' 字符串
+function parseV2Boolean(value, fieldName) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (value === 'true' || value === 'false') {
+    return value === 'true'
+  }
+  throw new Error(`${fieldName} must be a boolean`)
+}
 
 class ApiKeyService {
   constructor() {
@@ -542,7 +572,12 @@ class ApiKeyService {
           return { valid: false, error: 'Parent v2 account is disabled' }
         }
         // 覆盖可继承字段（账户绑定 + 配置）；保留子的 id/name/description/expiresAt/dailyCostLimit/totalCostLimit
+        // 子 key 开启自定义 IP 白名单时跳过白名单两字段，使用子 key 自己的值
+        const skipFields = getV2InheritSkipFields(keyData)
         for (const f of [...V2_INHERIT_ACCOUNT_FIELDS, ...V2_INHERIT_CONFIG_FIELDS]) {
+          if (skipFields.has(f)) {
+            continue
+          }
           if (parentData[f] !== undefined) {
             keyData[f] = parentData[f]
           }
@@ -907,7 +942,12 @@ class ApiKeyService {
       parentData.isActive === 'true' &&
       parentData.isDeleted !== 'true'
     ) {
+      // 与 validateApiKey 同口径：开启自定义 IP 白名单的子 key 展示自己的白名单
+      const skipFields = getV2InheritSkipFields(keyData)
       for (const f of V2_INHERIT_CONFIG_FIELDS) {
+        if (skipFields.has(f)) {
+          continue
+        }
         if (parentData[f] !== undefined) {
           keyData[f] = parentData[f]
         }
@@ -1637,12 +1677,17 @@ class ApiKeyService {
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
         'openaiResponsesPayloadRules',
-        'v2TotalBudget' // 🆕 v2 父账号总账额度（仅管理员可改，故意不含 isV2Parent/parentKeyId）
+        'v2TotalBudget', // 🆕 v2 父账号总账额度（仅管理员可改，故意不含 isV2Parent/parentKeyId）
+        'v2IpWhitelistOverride' // 🆕 v2 子 key 自定义白名单标记（唯一写入方为 updateV2Child）
       ]
       const updatedData = { ...keyData }
 
       for (const [field, value] of Object.entries(updates)) {
         if (allowedUpdates.includes(field)) {
+          // v2 子 key 专属字段：非子 key 即使被内部调用误传也不写入，避免普通 key 出现无意义字段
+          if (field === 'v2IpWhitelistOverride' && !keyData.parentKeyId) {
+            continue
+          }
           if (
             field === 'restrictedModels' ||
             field === 'allowedClients' ||
@@ -1670,7 +1715,8 @@ class ApiKeyService {
             field === 'enableGeneralPromptCacheAssist' ||
             field === 'enableClaudeThinkingSignatureLossyFallback' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
-            field === 'enableOpenAIResponsesPayloadRules'
+            field === 'enableOpenAIResponsesPayloadRules' ||
+            field === 'v2IpWhitelistOverride'
           ) {
             // 布尔值转字符串
             updatedData[field] = String(value)
@@ -3516,6 +3562,70 @@ class ApiKeyService {
     }
   }
 
+  // 🌐 v2 账号级 IP 白名单（父 key 白名单字段即账号级默认；只返回白名单配置，不含上游账户信息）
+  async getV2IpWhitelist(parentKeyId) {
+    const parent = await redis.getApiKey(parentKeyId)
+    if (
+      !parent ||
+      Object.keys(parent).length === 0 ||
+      parent.isV2Parent !== 'true' ||
+      parent.isDeleted === 'true' ||
+      parent.isActive !== 'true'
+    ) {
+      throw new Error('Not an active v2 parent account')
+    }
+
+    return {
+      enableIpWhitelist: parent.enableIpWhitelist === true || parent.enableIpWhitelist === 'true',
+      ipWhitelist: normalizeIpWhitelist(parent.ipWhitelist)
+    }
+  }
+
+  // 🌐 v2 自助更新账号级 IP 白名单。定点 hset（同族 resetV2Password/updateV2TotalBudget），
+  // 不走 updateApiKey 全量回写：避免与改密码/改总额并发互踩，也天然不碰 hash 映射
+  async updateV2IpWhitelist(parentKeyId, { enableIpWhitelist, ipWhitelist } = {}) {
+    const parent = await redis.getApiKey(parentKeyId)
+    if (
+      !parent ||
+      Object.keys(parent).length === 0 ||
+      parent.isV2Parent !== 'true' ||
+      parent.isDeleted === 'true' ||
+      parent.isActive !== 'true'
+    ) {
+      throw new Error('Not an active v2 parent account')
+    }
+
+    const enable = parseV2Boolean(enableIpWhitelist, 'enableIpWhitelist')
+    if (!Array.isArray(ipWhitelist)) {
+      throw new Error('ipWhitelist must be an array')
+    }
+
+    const validation = validateIpWhitelist(ipWhitelist)
+    if (!validation.valid) {
+      throw new Error(validation.error)
+    }
+    if (validation.entries.length > V2_MAX_IP_WHITELIST_ENTRIES) {
+      throw new Error(`IP whitelist cannot exceed ${V2_MAX_IP_WHITELIST_ENTRIES} entries`)
+    }
+    if (enable && validation.entries.length === 0) {
+      throw new Error('启用 IP 白名单时至少需要一个 IP 或 CIDR')
+    }
+
+    await redis.client.hset(`apikey:${parentKeyId}`, {
+      enableIpWhitelist: String(enable),
+      ipWhitelist: JSON.stringify(validation.entries),
+      updatedAt: new Date().toISOString()
+    })
+
+    logger.success(
+      `🌐 v2 account ${parentKeyId} updated IP whitelist (enabled=${enable}, entries=${validation.entries.length})`
+    )
+    return {
+      enableIpWhitelist: enable,
+      ipWhitelist: validation.entries
+    }
+  }
+
   // 🔑 v2 创建子 key（仅受限字段；其余配置运行时实时继承父账号）
   async createV2Child(parentKeyId, { name, description, dailyCostLimit, totalCostLimit } = {}) {
     const parent = await redis.getApiKey(parentKeyId)
@@ -3597,6 +3707,12 @@ class ApiKeyService {
       currentConcurrency: key.currentConcurrency || 0,
       currentWindowRequests: key.currentWindowRequests || 0,
       currentWindowCost: key.currentWindowCost || 0,
+      // IP 白名单展示「子 key 自身 override 状态」而非父账号 overlay 后的生效值：
+      // 列表接口不承载账号级配置（编辑账号级白名单走专用 GET 接口）
+      ipWhitelistOverride:
+        key.v2IpWhitelistOverride === true || key.v2IpWhitelistOverride === 'true',
+      enableIpWhitelist: key.enableIpWhitelist === true || key.enableIpWhitelist === 'true',
+      ipWhitelist: normalizeIpWhitelist(key.ipWhitelist),
       isDeleted: key.isDeleted === true || key.isDeleted === 'true'
     }
   }
@@ -3640,7 +3756,7 @@ class ApiKeyService {
   // 📝 v2 更新子 key（归属校验 + 硬白名单 + 数值/状态规范化全部收敛在 service 层，
   // 路由只做参数提取；防止非法值经 updateApiKey 通用 toString 分支存成 NaN 后被当作不限额）
   async updateV2Child(parentKeyId, childKeyId, updates = {}) {
-    await this.assertV2ChildOwnership(parentKeyId, childKeyId)
+    const child = await this.assertV2ChildOwnership(parentKeyId, childKeyId)
 
     const normalized = {}
 
@@ -3679,6 +3795,66 @@ class ApiKeyService {
         normalized.isActive = updates.isActive === 'true'
       } else {
         throw new Error('isActive must be a boolean')
+      }
+    }
+
+    // IP 白名单三字段：入参名 ipWhitelistOverride，仅此处转换为存储字段 v2IpWhitelistOverride。
+    // 当前 override≠true 时把子 key 原始 enable/list 视为 false/[]——管理员后台编辑路径可能
+    // 写过原始字段，不可信任；从「跟随默认」切出必须显式提交 enableIpWhitelist，
+    // 防止 Redis 里沉睡的旧名单被一个裸 { ipWhitelistOverride: true } 静默激活
+    const hasOverride = updates.ipWhitelistOverride !== undefined
+    const hasEnable = updates.enableIpWhitelist !== undefined
+    const hasList = updates.ipWhitelist !== undefined
+    if (hasOverride || hasEnable || hasList) {
+      let validatedEntries = null
+      if (hasList) {
+        if (!Array.isArray(updates.ipWhitelist)) {
+          throw new Error('ipWhitelist must be an array')
+        }
+        const validation = validateIpWhitelist(updates.ipWhitelist)
+        if (!validation.valid) {
+          throw new Error(validation.error)
+        }
+        if (validation.entries.length > V2_MAX_IP_WHITELIST_ENTRIES) {
+          throw new Error(`IP whitelist cannot exceed ${V2_MAX_IP_WHITELIST_ENTRIES} entries`)
+        }
+        validatedEntries = validation.entries
+      }
+
+      const currentOverride = isV2IpWhitelistOverrideEnabled(child)
+      const nextOverride = hasOverride
+        ? parseV2Boolean(updates.ipWhitelistOverride, 'ipWhitelistOverride')
+        : currentOverride
+      const nextEnable = hasEnable
+        ? parseV2Boolean(updates.enableIpWhitelist, 'enableIpWhitelist')
+        : currentOverride
+          ? child.enableIpWhitelist === 'true' || child.enableIpWhitelist === true
+          : false
+      const nextEntries = hasList
+        ? validatedEntries
+        : currentOverride
+          ? normalizeIpWhitelist(child.ipWhitelist)
+          : []
+
+      if (!nextOverride) {
+        if ((hasEnable && nextEnable) || (hasList && nextEntries.length > 0)) {
+          throw new Error('请先开启自定义白名单')
+        }
+        // 跟随账号默认：统一清空三件套，子 key 不留可被误激活的旧值
+        normalized.v2IpWhitelistOverride = false
+        normalized.enableIpWhitelist = false
+        normalized.ipWhitelist = []
+      } else {
+        if (!currentOverride && !hasEnable) {
+          throw new Error('请指定自定义白名单状态')
+        }
+        if (nextEnable && nextEntries.length === 0) {
+          throw new Error('启用 IP 白名单时至少需要一个 IP 或 CIDR')
+        }
+        normalized.v2IpWhitelistOverride = true
+        normalized.enableIpWhitelist = nextEnable
+        // 覆盖为不启用时统一存空 list，避免后续再启用时误用旧列表
+        normalized.ipWhitelist = nextEnable ? nextEntries : []
       }
     }
 

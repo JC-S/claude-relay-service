@@ -7,9 +7,14 @@
 // F5 updateV2Child 白名单 + 数值/状态规范化；
 // F6 findV2ByEmail 邮箱索引一致性 fail-closed；
 // F7 clearAllDeletedApiKeys 子先父后。
+// 以及 v2 IP 白名单（账号级默认 + 子 key 覆盖，对应 plan_tmp/v2-account-ip-whitelist-plan_revised.md）：
+// getV2IpWhitelist/updateV2IpWhitelist 定点 hset、updateV2Child 三态状态机与旧值防误激活、
+// validateApiKey/_overlayV2ParentConfigForStats 的 override 跳过继承口径。
 //
 // harness 镜像 apiKeyService.v2Billing.test.js（模块级 mock 同集）；service 方法间的
 // 协作用 jest.spyOn 隔离，afterEach restoreAllMocks 防 spy 泄漏到其它用例。
+// 注意：redis 模块整体被 mock，_parseApiKeyData 的 boolFields 变更不在此测（视图层
+// _toV2ChildView/isV2IpWhitelistOverrideEnabled 均自行防御性解析 bool/'true' 两种形态）。
 
 jest.mock(
   '../config/config',
@@ -35,6 +40,8 @@ jest.mock('../src/models/redis', () => ({
   scanApiKeyIds: jest.fn(),
   batchGetApiKeys: jest.fn(),
   batchGetApiKeyStats: jest.fn(),
+  findApiKeyByHash: jest.fn(), // validateApiKey 端到端用
+  getV2ParentTotalCost: jest.fn(), // validateApiKey 子 key 总账信息用
   client: { hset: jest.fn() }
 }))
 
@@ -55,7 +62,9 @@ jest.mock('../src/utils/logger', () => ({
   error: jest.fn(),
   database: jest.fn(),
   debug: jest.fn(),
-  info: jest.fn()
+  info: jest.fn(),
+  api: jest.fn(), // validateApiKey 成功路径
+  security: jest.fn()
 }))
 
 jest.mock('../src/services/serviceRatesService', () => ({
@@ -414,5 +423,488 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     expect(order).toEqual(['deleted-child', 'deleted-normal', 'deleted-parent'])
     expect(result.successCount).toBe(3)
     expect(result.failedCount).toBe(0)
+  })
+})
+
+// ── v2 IP 白名单（账号级默认 + 子 key 覆盖）────────────────────────────────────
+
+describe('apiKeyService v2 IP whitelist', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    redis.setApiKey.mockResolvedValue()
+    redis.deleteApiKeyHash.mockResolvedValue()
+    redis.client.hset.mockResolvedValue()
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  describe('getV2IpWhitelist', () => {
+    // 1. 原始 hash 字符串形态 → bool + 规范化数组；字段缺省安全退化为 false + []
+    test('returns normalized bool and list from the parent raw hash', async () => {
+      mockActiveParent({ enableIpWhitelist: 'true', ipWhitelist: '["1.2.3.4","10.0.0.0/8"]' })
+      await expect(apiKeyService.getV2IpWhitelist(PARENT_ID)).resolves.toEqual({
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4', '10.0.0.0/8']
+      })
+
+      mockActiveParent()
+      await expect(apiKeyService.getV2IpWhitelist(PARENT_ID)).resolves.toEqual({
+        enableIpWhitelist: false,
+        ipWhitelist: []
+      })
+    })
+
+    // 2. 非 v2 / 停用 / 已删除父账号一律拒绝
+    test('rejects non-v2, disabled and deleted parents', async () => {
+      redis.getApiKey.mockResolvedValue({ id: PARENT_ID, isActive: 'true' })
+      await expect(apiKeyService.getV2IpWhitelist(PARENT_ID)).rejects.toThrow(
+        'Not an active v2 parent account'
+      )
+      mockActiveParent({ isActive: 'false' })
+      await expect(apiKeyService.getV2IpWhitelist(PARENT_ID)).rejects.toThrow(
+        'Not an active v2 parent account'
+      )
+      mockActiveParent({ isDeleted: 'true' })
+      await expect(apiKeyService.getV2IpWhitelist(PARENT_ID)).rejects.toThrow(
+        'Not an active v2 parent account'
+      )
+    })
+  })
+
+  describe('updateV2IpWhitelist', () => {
+    // 3. 合法更新：定点 hset 写父 hash（同族 resetV2Password），绝不全量回写、绝不触碰 hash 映射
+    test('persists via targeted hset without touching setApiKey or the hash map', async () => {
+      mockActiveParent()
+
+      const result = await apiKeyService.updateV2IpWhitelist(PARENT_ID, {
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4', '10.0.0.0/8']
+      })
+
+      expect(result).toEqual({ enableIpWhitelist: true, ipWhitelist: ['1.2.3.4', '10.0.0.0/8'] })
+      expect(redis.client.hset).toHaveBeenCalledWith(`apikey:${PARENT_ID}`, {
+        enableIpWhitelist: 'true',
+        ipWhitelist: '["1.2.3.4","10.0.0.0/8"]',
+        updatedAt: expect.stringMatching(ISO_RE)
+      })
+      expect(redis.setApiKey).not.toHaveBeenCalled()
+      expect(redis.deleteApiKeyHash).not.toHaveBeenCalled()
+    })
+
+    // 4-7. 入参口径：非数组拒绝、非法条目拒绝、启用空列表拒绝、布尔收 'true'/'false' 拒 'yes'
+    test('validates array shape, entries, enable+empty and boolean forms', async () => {
+      mockActiveParent()
+      await expect(
+        apiKeyService.updateV2IpWhitelist(PARENT_ID, { enableIpWhitelist: false, ipWhitelist: 'x' })
+      ).rejects.toThrow('ipWhitelist must be an array')
+      await expect(
+        apiKeyService.updateV2IpWhitelist(PARENT_ID, {
+          enableIpWhitelist: true,
+          ipWhitelist: ['not-an-ip']
+        })
+      ).rejects.toThrow('Invalid IP whitelist entry: not-an-ip')
+      await expect(
+        apiKeyService.updateV2IpWhitelist(PARENT_ID, { enableIpWhitelist: true, ipWhitelist: [] })
+      ).rejects.toThrow('启用 IP 白名单时至少需要一个 IP 或 CIDR')
+      await expect(
+        apiKeyService.updateV2IpWhitelist(PARENT_ID, { enableIpWhitelist: 'yes', ipWhitelist: [] })
+      ).rejects.toThrow('enableIpWhitelist must be a boolean')
+      expect(redis.client.hset).not.toHaveBeenCalled()
+
+      await expect(
+        apiKeyService.updateV2IpWhitelist(PARENT_ID, {
+          enableIpWhitelist: 'false',
+          ipWhitelist: []
+        })
+      ).resolves.toEqual({ enableIpWhitelist: false, ipWhitelist: [] })
+    })
+
+    // 8. 规范化：去重 + IPv4-mapped 还原为 IPv4
+    test('deduplicates and normalizes IPv4-mapped addresses', async () => {
+      mockActiveParent()
+
+      const result = await apiKeyService.updateV2IpWhitelist(PARENT_ID, {
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4', ' 1.2.3.4 ', '::ffff:5.6.7.8']
+      })
+
+      expect(result.ipWhitelist).toEqual(['1.2.3.4', '5.6.7.8'])
+    })
+
+    // 9. 超过 100 条上限拒绝；父校验与 GET 同口径
+    test('rejects more than 100 entries and disabled parents', async () => {
+      mockActiveParent()
+      const tooMany = Array.from(
+        { length: 101 },
+        (_, i) => `10.0.${Math.floor(i / 256)}.${i % 256}`
+      )
+      await expect(
+        apiKeyService.updateV2IpWhitelist(PARENT_ID, {
+          enableIpWhitelist: true,
+          ipWhitelist: tooMany
+        })
+      ).rejects.toThrow('IP whitelist cannot exceed 100 entries')
+
+      mockActiveParent({ isActive: 'false' })
+      await expect(
+        apiKeyService.updateV2IpWhitelist(PARENT_ID, { enableIpWhitelist: false, ipWhitelist: [] })
+      ).rejects.toThrow('Not an active v2 parent account')
+    })
+  })
+
+  describe('updateV2Child IP whitelist', () => {
+    let updateSpy
+
+    // assertV2ChildOwnership 返回 redis 原始字符串形态（与真实实现一致）
+    const mockChild = (overrides = {}) => {
+      apiKeyService.assertV2ChildOwnership.mockResolvedValue({
+        id: 'child-1',
+        parentKeyId: PARENT_ID,
+        ...overrides
+      })
+    }
+
+    beforeEach(() => {
+      jest.spyOn(apiKeyService, 'assertV2ChildOwnership')
+      mockChild()
+      updateSpy = jest.spyOn(apiKeyService, 'updateApiKey').mockResolvedValue({ success: true })
+    })
+
+    // 10. 切回跟随默认：清空三件套（请求未提供 enable/list 也清）
+    test('switching back to inherit clears the whole trio', async () => {
+      mockChild({
+        v2IpWhitelistOverride: 'true',
+        enableIpWhitelist: 'true',
+        ipWhitelist: '["1.2.3.4"]'
+      })
+
+      await apiKeyService.updateV2Child(PARENT_ID, 'child-1', { ipWhitelistOverride: false })
+
+      expect(updateSpy).toHaveBeenCalledWith('child-1', {
+        v2IpWhitelistOverride: false,
+        enableIpWhitelist: false,
+        ipWhitelist: []
+      })
+    })
+
+    // 11. 关键防误激活：当前 override=false 且 Redis 残留旧原始白名单（管理员后台写入）时，
+    //     仅提交 { ipWhitelistOverride: true } 拒绝——沉睡旧名单不能被静默激活
+    test('rejects bare override=true so stale raw whitelists can never silently activate', async () => {
+      mockChild({ enableIpWhitelist: 'true', ipWhitelist: '["9.9.9.9"]' })
+
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', { ipWhitelistOverride: true })
+      ).rejects.toThrow('请指定自定义白名单状态')
+      expect(updateSpy).not.toHaveBeenCalled()
+    })
+
+    // 12. 当前 override=false：单独提交 enable=true / 非空 list / 矛盾组合一律拒绝
+    test('rejects enable/list submissions while override stays false', async () => {
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', { enableIpWhitelist: true })
+      ).rejects.toThrow('请先开启自定义白名单')
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', { ipWhitelist: ['1.2.3.4'] })
+      ).rejects.toThrow('请先开启自定义白名单')
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', {
+          ipWhitelistOverride: false,
+          enableIpWhitelist: true,
+          ipWhitelist: ['1.2.3.4']
+        })
+      ).rejects.toThrow('请先开启自定义白名单')
+      expect(updateSpy).not.toHaveBeenCalled()
+    })
+
+    // 13. 切到 custom：必须非空 list；合法时写入完整三件套
+    test('switching to custom requires an explicit non-empty whitelist', async () => {
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', {
+          ipWhitelistOverride: true,
+          enableIpWhitelist: true,
+          ipWhitelist: []
+        })
+      ).rejects.toThrow('启用 IP 白名单时至少需要一个 IP 或 CIDR')
+
+      await apiKeyService.updateV2Child(PARENT_ID, 'child-1', {
+        ipWhitelistOverride: true,
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4']
+      })
+      expect(updateSpy).toHaveBeenCalledWith('child-1', {
+        v2IpWhitelistOverride: true,
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4']
+      })
+    })
+
+    // 14. 切到 disabled：写 override=true + enable=false + 空 list
+    test('switching to disabled writes override with an empty list', async () => {
+      await apiKeyService.updateV2Child(PARENT_ID, 'child-1', {
+        ipWhitelistOverride: true,
+        enableIpWhitelist: false
+      })
+
+      expect(updateSpy).toHaveBeenCalledWith('child-1', {
+        v2IpWhitelistOverride: true,
+        enableIpWhitelist: false,
+        ipWhitelist: []
+      })
+    })
+
+    // 15. 已是 custom 时只关 enable → list 一并清空（disabled 状态不留旧名单）
+    test('disabling while overridden clears the stored list', async () => {
+      mockChild({
+        v2IpWhitelistOverride: 'true',
+        enableIpWhitelist: 'true',
+        ipWhitelist: '["1.2.3.4"]'
+      })
+
+      await apiKeyService.updateV2Child(PARENT_ID, 'child-1', { enableIpWhitelist: false })
+
+      expect(updateSpy).toHaveBeenCalledWith('child-1', {
+        v2IpWhitelistOverride: true,
+        enableIpWhitelist: false,
+        ipWhitelist: []
+      })
+    })
+
+    // 15b. 已是 custom 时省略 list 重申 enable=true：沿用当前名单不丢失
+    test('keeps the current list when re-enabling without a new list', async () => {
+      mockChild({
+        v2IpWhitelistOverride: 'true',
+        enableIpWhitelist: 'true',
+        ipWhitelist: '["1.2.3.4"]'
+      })
+
+      await apiKeyService.updateV2Child(PARENT_ID, 'child-1', {
+        ipWhitelistOverride: true,
+        enableIpWhitelist: true
+      })
+
+      expect(updateSpy).toHaveBeenCalledWith('child-1', {
+        v2IpWhitelistOverride: true,
+        enableIpWhitelist: true,
+        ipWhitelist: ['1.2.3.4']
+      })
+    })
+
+    // 16. 只改名称等无关字段：白名单三件套绝不写入（不误清）
+    test('does not touch the trio when whitelist fields are absent', async () => {
+      mockChild({
+        v2IpWhitelistOverride: 'true',
+        enableIpWhitelist: 'true',
+        ipWhitelist: '["1.2.3.4"]'
+      })
+
+      await apiKeyService.updateV2Child(PARENT_ID, 'child-1', { name: 'renamed' })
+
+      expect(updateSpy).toHaveBeenCalledWith('child-1', { name: 'renamed' })
+    })
+
+    // 入参口径：override 拒 'yes'，list 拒非数组/非法条目/超上限
+    test('validates whitelist argument shapes', async () => {
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', { ipWhitelistOverride: 'yes' })
+      ).rejects.toThrow('ipWhitelistOverride must be a boolean')
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', { ipWhitelist: 'x' })
+      ).rejects.toThrow('ipWhitelist must be an array')
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', {
+          ipWhitelistOverride: true,
+          enableIpWhitelist: true,
+          ipWhitelist: ['bad-entry']
+        })
+      ).rejects.toThrow('Invalid IP whitelist entry: bad-entry')
+      const tooMany = Array.from(
+        { length: 101 },
+        (_, i) => `10.1.${Math.floor(i / 256)}.${i % 256}`
+      )
+      await expect(
+        apiKeyService.updateV2Child(PARENT_ID, 'child-1', {
+          ipWhitelistOverride: true,
+          enableIpWhitelist: true,
+          ipWhitelist: tooMany
+        })
+      ).rejects.toThrow('IP whitelist cannot exceed 100 entries')
+      expect(updateSpy).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('validateApiKey end-to-end inheritance', () => {
+    const CHILD_SECRET = 'cr_test-child-secret'
+
+    // findApiKeyByHash 返回子 key 原始数据；getApiKey 按入参分发（父）；限额全 0 跳过费用查询
+    function mockChildAndParent(childOverrides = {}, parentOverrides = {}) {
+      redis.findApiKeyByHash.mockResolvedValue({
+        id: 'child-1',
+        name: 'child',
+        isActive: 'true',
+        parentKeyId: PARENT_ID,
+        ...childOverrides
+      })
+      redis.getApiKey.mockImplementation(async (id) =>
+        id === PARENT_ID
+          ? {
+              id: PARENT_ID,
+              isV2Parent: 'true',
+              isActive: 'true',
+              isDeleted: 'false',
+              enableIpWhitelist: 'false',
+              ipWhitelist: '[]',
+              ...parentOverrides
+            }
+          : null
+      )
+      redis.getV2ParentTotalCost.mockResolvedValue(0)
+    }
+
+    // 17. 未 override：父账号白名单生效
+    test('inherits the parent whitelist when not overridden', async () => {
+      mockChildAndParent({}, { enableIpWhitelist: 'true', ipWhitelist: '["8.8.8.8"]' })
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(result.keyData.enableIpWhitelist).toBe(true)
+      expect(result.keyData.ipWhitelist).toEqual(['8.8.8.8'])
+    })
+
+    // 18. 未 override 但子 key 残留旧原始白名单：父值仍覆盖（旧值不参与真实调用判定）
+    test('parent values still win over stale child raw fields without override', async () => {
+      mockChildAndParent(
+        { enableIpWhitelist: 'true', ipWhitelist: '["9.9.9.9"]' },
+        { enableIpWhitelist: 'false', ipWhitelist: '[]' }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(result.keyData.enableIpWhitelist).toBe(false)
+      expect(result.keyData.ipWhitelist).toEqual([])
+    })
+
+    // 19. override + disabled：父账号启用白名单也不限制该子 key
+    test('override=disabled beats an enabled parent whitelist', async () => {
+      mockChildAndParent(
+        { v2IpWhitelistOverride: 'true', enableIpWhitelist: 'false', ipWhitelist: '[]' },
+        { enableIpWhitelist: 'true', ipWhitelist: '["8.8.8.8"]' }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(result.keyData.enableIpWhitelist).toBe(false)
+      expect(result.keyData.ipWhitelist).toEqual([])
+    })
+
+    // 20. override + custom：只按子 key 名单判定，父名单不混入
+    test('override=custom uses only the child list', async () => {
+      mockChildAndParent(
+        { v2IpWhitelistOverride: 'true', enableIpWhitelist: 'true', ipWhitelist: '["9.9.9.9"]' },
+        { enableIpWhitelist: 'true', ipWhitelist: '["8.8.8.8"]' }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.keyData.enableIpWhitelist).toBe(true)
+      expect(result.keyData.ipWhitelist).toEqual(['9.9.9.9'])
+    })
+
+    // 21. override 时账户绑定与其余配置仍从父继承（证明 skip 范围未过宽）
+    test('override still inherits account bindings and other config from the parent', async () => {
+      mockChildAndParent(
+        { v2IpWhitelistOverride: 'true', enableIpWhitelist: 'true', ipWhitelist: '["9.9.9.9"]' },
+        {
+          claudeAccountId: 'acct-parent',
+          permissions: '["claude"]',
+          enableIpWhitelist: 'true',
+          ipWhitelist: '["8.8.8.8"]'
+        }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.keyData.claudeAccountId).toBe('acct-parent')
+      expect(result.keyData.permissions).toEqual(['claude'])
+      expect(result.keyData.ipWhitelist).toEqual(['9.9.9.9'])
+    })
+  })
+
+  describe('_overlayV2ParentConfigForStats', () => {
+    const STATS_PARENT = {
+      id: PARENT_ID,
+      isV2Parent: 'true',
+      isActive: 'true',
+      isDeleted: 'false',
+      enableIpWhitelist: 'true',
+      ipWhitelist: '["8.8.8.8"]',
+      permissions: '["claude"]'
+    }
+
+    // 22. 未 override：父白名单覆盖子残留原始值（stats 与真实调用同口径）
+    test('overlays the parent whitelist when not overridden', async () => {
+      redis.getApiKey.mockResolvedValue(STATS_PARENT)
+      const keyData = {
+        id: 'child-1',
+        parentKeyId: PARENT_ID,
+        enableIpWhitelist: 'true',
+        ipWhitelist: '["9.9.9.9"]'
+      }
+
+      await apiKeyService._overlayV2ParentConfigForStats(keyData)
+
+      expect(keyData.enableIpWhitelist).toBe('true')
+      expect(keyData.ipWhitelist).toBe('["8.8.8.8"]')
+      expect(keyData.permissions).toBe('["claude"]')
+    })
+
+    // 23. override=true：保留子白名单，其余配置字段仍继承父
+    test('keeps the child whitelist but inherits other config when overridden', async () => {
+      redis.getApiKey.mockResolvedValue(STATS_PARENT)
+      const keyData = {
+        id: 'child-1',
+        parentKeyId: PARENT_ID,
+        v2IpWhitelistOverride: 'true',
+        enableIpWhitelist: 'false',
+        ipWhitelist: '[]'
+      }
+
+      await apiKeyService._overlayV2ParentConfigForStats(keyData)
+
+      expect(keyData.enableIpWhitelist).toBe('false')
+      expect(keyData.ipWhitelist).toBe('[]')
+      expect(keyData.permissions).toBe('["claude"]')
+    })
+  })
+
+  // 24. _toV2ChildView：返回子 key 自身 override 状态（原始字符串/已解析两种形态都防御）
+  test('_toV2ChildView exposes the child own override state', async () => {
+    const rawView = apiKeyService._toV2ChildView({
+      id: 'c1',
+      v2IpWhitelistOverride: 'true',
+      enableIpWhitelist: 'true',
+      ipWhitelist: '["1.2.3.4"]'
+    })
+    expect(rawView).toMatchObject({
+      ipWhitelistOverride: true,
+      enableIpWhitelist: true,
+      ipWhitelist: ['1.2.3.4']
+    })
+
+    const parsedView = apiKeyService._toV2ChildView({
+      id: 'c2',
+      v2IpWhitelistOverride: false,
+      enableIpWhitelist: false,
+      ipWhitelist: []
+    })
+    expect(parsedView).toMatchObject({
+      ipWhitelistOverride: false,
+      enableIpWhitelist: false,
+      ipWhitelist: []
+    })
   })
 })

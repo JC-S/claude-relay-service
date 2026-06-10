@@ -788,7 +788,8 @@ class RedisClient {
       'enableOpenAIResponsesCodexAdaptation',
       'enableOpenAIResponsesPayloadRules',
       'isDeleted',
-      'isV2Parent' // 🆕 v2 父账号标识
+      'isV2Parent', // 🆕 v2 父账号标识
+      'v2IpWhitelistOverride' // 🆕 v2 子 key 自定义白名单标记（缺省不补默认值，视图层按 false 处理）
     ]
     for (const field of boolFields) {
       if (parsed[field] !== undefined) {
