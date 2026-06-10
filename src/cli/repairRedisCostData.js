@@ -299,8 +299,9 @@ async function main() {
       }
 
       for (const [key, costs] of dailyCosts) {
-        const value =
-          key.includes(':real:') ? toFixedAmount(costs.realCostMicro) : toFixedAmount(costs.ratedCostMicro)
+        const value = key.includes(':real:')
+          ? toFixedAmount(costs.realCostMicro)
+          : toFixedAmount(costs.ratedCostMicro)
         writePipeline.set(key, value)
         writePipeline.expire(key, 86400 * 30)
       }
@@ -316,8 +317,9 @@ async function main() {
       }
 
       for (const [key, costs] of totalCosts) {
-        const value =
-          key.includes(':real:') ? toFixedAmount(costs.realCostMicro) : toFixedAmount(costs.ratedCostMicro)
+        const value = key.includes(':real:')
+          ? toFixedAmount(costs.realCostMicro)
+          : toFixedAmount(costs.ratedCostMicro)
         writePipeline.set(key, value)
       }
 
@@ -329,12 +331,16 @@ async function main() {
       scannedKeyModelHashes: allKeys.length,
       updatedKeyModelCostCount,
       correctedGlobalModelHashes: globalModelCosts.size,
-      correctedDailyCostKeys: [...dailyCosts.keys()].filter((key) => !key.includes(':real:')).length,
-      correctedRealDailyCostKeys: [...dailyCosts.keys()].filter((key) => key.includes(':real:')).length,
+      correctedDailyCostKeys: [...dailyCosts.keys()].filter((key) => !key.includes(':real:'))
+        .length,
+      correctedRealDailyCostKeys: [...dailyCosts.keys()].filter((key) => key.includes(':real:'))
+        .length,
       correctedMonthlyCostKeys: monthlyCosts.size,
       correctedHourlyCostKeys: hourlyCosts.size,
-      correctedTotalCostKeys: [...totalCosts.keys()].filter((key) => !key.includes(':real:')).length,
-      correctedRealTotalCostKeys: [...totalCosts.keys()].filter((key) => key.includes(':real:')).length,
+      correctedTotalCostKeys: [...totalCosts.keys()].filter((key) => !key.includes(':real:'))
+        .length,
+      correctedRealTotalCostKeys: [...totalCosts.keys()].filter((key) => key.includes(':real:'))
+        .length,
       mismatchedStoredCostCount,
       sampleMismatches
     }

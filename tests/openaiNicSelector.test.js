@@ -58,6 +58,21 @@ function loadSelector({ addresses = [], redisClient = createRedisMock(), configM
   jest.unmock('../src/models/redis')
   jest.unmock('../src/utils/logger')
 
+  // 防跨文件 env 污染（偶发 flake 根因）：同 worker 先跑的其它测试文件加载真实 config 时，
+  // dotenv 会把 .env 的 OPENAI_UPSTREAM_LOCAL_ADDRESSES（生产双 NIC）写进 process.env；
+  // 此后若 doMock 因 worker 残留异步任务偶发失效、require 落到真实 config，selector 会读到
+  // 双 NIC 而非本测试的 addresses（曾以 ~20% 概率挂掉首个用例）。把 env 对齐到本次期望值，
+  // 让 mock 与真实 config 两条路径殊途同归（dotenv 不覆盖已存在的 env）。
+  // 传 configMock 的用例自行管理 env（如「falls back to env addresses」），这里不动。
+  if (!configMock) {
+    if (addresses.length > 0) {
+      process.env.OPENAI_UPSTREAM_LOCAL_ADDRESSES = addresses.join(',')
+    } else {
+      delete process.env.OPENAI_UPSTREAM_LOCAL_ADDRESSES
+    }
+    delete process.env.NIC_INTERLEAVE_IPS
+  }
+
   let selector
   jest.isolateModules(() => {
     jest.doMock(

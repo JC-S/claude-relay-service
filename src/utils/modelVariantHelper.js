@@ -15,9 +15,7 @@ function normalizeBaseModelName(model) {
     return 'unknown'
   }
 
-  return trimmed.endsWith(FAST_MODEL_SUFFIX)
-    ? trimmed.slice(0, -FAST_MODEL_SUFFIX.length)
-    : trimmed
+  return trimmed.endsWith(FAST_MODEL_SUFFIX) ? trimmed.slice(0, -FAST_MODEL_SUFFIX.length) : trimmed
 }
 
 function isPriorityServiceTier(serviceTier) {
@@ -114,7 +112,11 @@ function splitModelStatsByFastMode(model, stats = {}, createEmptyStats) {
     fastStats.allTokens = fastAllTokens
   }
 
-  if ('realCostMicro' in standardStats || 'realCostMicro' in fastStats || 'realCostMicro' in stats) {
+  if (
+    'realCostMicro' in standardStats ||
+    'realCostMicro' in fastStats ||
+    'realCostMicro' in stats
+  ) {
     standardStats.realCostMicro = 0
     fastStats.realCostMicro = 0
   }
@@ -128,7 +130,11 @@ function splitModelStatsByFastMode(model, stats = {}, createEmptyStats) {
     fastStats.ratedCostMicro = 0
   }
 
-  if ('hasStoredCost' in standardStats || 'hasStoredCost' in fastStats || 'hasStoredCost' in stats) {
+  if (
+    'hasStoredCost' in standardStats ||
+    'hasStoredCost' in fastStats ||
+    'hasStoredCost' in stats
+  ) {
     standardStats.hasStoredCost = false
     fastStats.hasStoredCost = false
   }
