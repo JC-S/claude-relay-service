@@ -126,6 +126,35 @@ class ClaudeRelayService {
   }) {
     let rollingWindow = null
     let errorHistoryContext = upstreamErrorContext
+
+    if (!rateLimitResetTimestamp) {
+      errorHistoryContext = {
+        ...(upstreamErrorContext || {}),
+        rateLimit: {
+          ...(upstreamErrorContext?.rateLimit || {}),
+          authoritativeResetHeader: false,
+          action: 'skipped_missing_reset_header',
+          phase,
+          model
+        }
+      }
+
+      await upstreamErrorHelper
+        .recordErrorHistory(accountId, accountType, 429, 'rate_limit', errorHistoryContext)
+        .catch(() => {})
+      logger.warn(
+        `⚠️ 429 without authoritative reset header for account ${accountId}, phase=${phase}; skipping rate limit marking`
+      )
+
+      return {
+        paused: false,
+        skipped: true,
+        reason: 'missing_authoritative_reset_header',
+        rollingWindow,
+        errorHistoryContext
+      }
+    }
+
     const shouldEvaluateRollingWindow = accountType === 'claude-official'
 
     if (shouldEvaluateRollingWindow) {
@@ -1190,9 +1219,11 @@ class ClaudeRelayService {
                 rateLimitResetTimestamp || account?.rateLimitEndAt
               )
             }
-            logger.warn(
-              `🚫 Rate limit detected for account ${accountId}, status: ${response.statusCode}`
-            )
+            if (rateLimitResetTimestamp) {
+              logger.warn(
+                `🚫 Rate limit detected for account ${accountId}, status: ${response.statusCode}`
+              )
+            }
             const rateLimitAction = await this._handleClaudeOfficial429AutoProtection({
               accountId,
               accountType,
@@ -2547,7 +2578,11 @@ class ClaudeRelayService {
                   phase: 'stream',
                   model: body?.model
                 })
-                logger.warn(`🚫 [Stream] Rate limit detected for account ${accountId}, status 429`)
+                if (rateLimitResetTimestamp) {
+                  logger.warn(
+                    `🚫 [Stream] Rate limit detected for account ${accountId}, status 429`
+                  )
+                }
 
                 if (isDedicatedOfficialAccount && rateLimitAction.paused) {
                   const limitMessage = this._buildStandardRateLimitMessage(
