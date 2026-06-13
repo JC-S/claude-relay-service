@@ -8,7 +8,12 @@ const unifiedClaudeScheduler = require('../services/scheduler/unifiedClaudeSched
 const apiKeyService = require('../services/apiKeyService')
 const { authenticateApiKey } = require('../middleware/auth')
 const logger = require('../utils/logger')
-const { getEffectiveModel, parseVendorPrefixedModel } = require('../utils/modelHelper')
+const {
+  EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE,
+  getEffectiveModel,
+  isExportControlledClaudeModel,
+  parseVendorPrefixedModel
+} = require('../utils/modelHelper')
 const sessionHelper = require('../utils/sessionHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const claudeRelayConfigService = require('../services/claudeRelayConfigService')
@@ -178,6 +183,19 @@ async function handleMessagesRequest(req, res) {
       return res.status(400).json({
         error: 'Invalid request',
         message: 'Messages array cannot be empty'
+      })
+    }
+
+    if (
+      isExportControlledClaudeModel(req.body.model) &&
+      (await claudeRelayConfigService.isExportControlledClaudeModelBlockEnabled())
+    ) {
+      logger.warn(`🚫 Export-controlled Claude model blocked: ${req.body.model}`)
+      return res.status(404).json({
+        error: {
+          type: 'not_found_error',
+          message: EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE
+        }
       })
     }
 
@@ -1690,6 +1708,19 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
 
   if (requiredService === 'gemini') {
     return await handleAnthropicCountTokensToGemini(req, res, { vendor: forcedVendor })
+  }
+
+  if (
+    isExportControlledClaudeModel(req.body?.model) &&
+    (await claudeRelayConfigService.isExportControlledClaudeModelBlockEnabled())
+  ) {
+    logger.warn(`🚫 Export-controlled Claude model blocked in count_tokens: ${req.body.model}`)
+    return res.status(404).json({
+      error: {
+        type: 'not_found_error',
+        message: EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE
+      }
+    })
   }
 
   // 🔗 会话绑定验证（与 messages 端点保持一致）

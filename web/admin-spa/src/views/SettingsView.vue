@@ -792,6 +792,53 @@
               </div>
             </div>
 
+            <!-- 出口管制模型拦截 -->
+            <div
+              class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
+            >
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="flex items-center">
+                    <div
+                      class="mr-3 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg"
+                    >
+                      <i class="fas fa-ban"></i>
+                    </div>
+                    <div>
+                      <h2 class="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                        拦截出口管制模型
+                      </h2>
+                      <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                        开启后，claude-fable-5 和 claude-fable-5[1m] 请求会直接返回
+                        404，不发送到上游。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <label class="relative inline-flex cursor-pointer items-center">
+                  <input
+                    v-model="claudeConfig.exportControlledClaudeModelBlockEnabled"
+                    class="peer sr-only"
+                    type="checkbox"
+                    @change="saveClaudeConfig"
+                  />
+                  <div
+                    class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-rose-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-rose-300 dark:border-gray-600 dark:bg-gray-700 dark:peer-focus:ring-rose-800"
+                  ></div>
+                </label>
+              </div>
+              <div class="mt-4 rounded-lg bg-rose-50 p-4 dark:bg-rose-900/20">
+                <div class="flex">
+                  <i class="fas fa-info-circle mt-0.5 text-rose-500"></i>
+                  <div class="ml-3">
+                    <p class="text-sm text-rose-700 dark:text-rose-300">
+                      关闭后请求会按原有调度逻辑转发，上游是否可用由上游决定。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- 全局会话绑定 -->
             <div
               class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
@@ -2096,6 +2143,7 @@ const claudeConfig = ref({
   requestDetailCaptureEnabled: false,
   requestDetailRetentionHours: 6,
   requestDetailBodyPreviewEnabled: false,
+  exportControlledClaudeModelBlockEnabled: true,
   updatedAt: null,
   updatedBy: null
 })
@@ -2498,6 +2546,8 @@ const loadClaudeConfig = async () => {
         requestDetailRetentionHours:
           response.config?.requestDetailRetentionHours ?? REQUEST_DETAIL_RETENTION_DEFAULT_HOURS,
         requestDetailBodyPreviewEnabled: response.config?.requestDetailBodyPreviewEnabled ?? false,
+        exportControlledClaudeModelBlockEnabled:
+          response.config?.exportControlledClaudeModelBlockEnabled ?? true,
         updatedAt: response.config?.updatedAt || null,
         updatedBy: response.config?.updatedBy || null
       }
@@ -2541,7 +2591,9 @@ const saveClaudeConfig = async (options = {}) => {
       concurrentRequestQueueTimeoutMs: claudeConfig.value.concurrentRequestQueueTimeoutMs,
       requestDetailCaptureEnabled: claudeConfig.value.requestDetailCaptureEnabled,
       requestDetailRetentionHours: claudeConfig.value.requestDetailRetentionHours,
-      requestDetailBodyPreviewEnabled
+      requestDetailBodyPreviewEnabled,
+      exportControlledClaudeModelBlockEnabled:
+        claudeConfig.value.exportControlledClaudeModelBlockEnabled
     }
 
     if (options.purgeRequestDetailBodySnapshots === true) {
@@ -2560,6 +2612,9 @@ const saveClaudeConfig = async (options = {}) => {
         requestDetailBodyPreviewEnabled:
           response.config?.requestDetailBodyPreviewEnabled ??
           claudeConfig.value.requestDetailBodyPreviewEnabled,
+        exportControlledClaudeModelBlockEnabled:
+          response.config?.exportControlledClaudeModelBlockEnabled ??
+          claudeConfig.value.exportControlledClaudeModelBlockEnabled,
         updatedAt: response.config?.updatedAt || new Date().toISOString(),
         updatedBy: response.config?.updatedBy || null
       }

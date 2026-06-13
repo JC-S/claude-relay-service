@@ -8,6 +8,9 @@
 // 仅保留原仓库既有的模型前缀：CCR 路由
 // Gemini/Antigravity 采用“路径分流”，避免在 model 字段里混入 vendor 前缀造成混乱
 const SUPPORTED_VENDOR_PREFIXES = ['ccr']
+const EXPORT_CONTROLLED_CLAUDE_MODELS = new Set(['claude-fable-5', 'claude-fable-5[1m]'])
+const EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE =
+  'claude-fable-5 is currently banned by export controls. Please wait for further policy updates.'
 
 /**
  * Parse vendor-prefixed model string
@@ -67,6 +70,15 @@ function hasVendorPrefix(modelStr) {
 function getEffectiveModel(modelStr) {
   const { baseModel } = parseVendorPrefixedModel(modelStr)
   return baseModel
+}
+
+function isExportControlledClaudeModel(modelStr) {
+  const effectiveModel = getEffectiveModel(modelStr)
+  if (!effectiveModel || typeof effectiveModel !== 'string') {
+    return false
+  }
+
+  return EXPORT_CONTROLLED_CLAUDE_MODELS.has(effectiveModel.trim().toLowerCase())
 }
 
 /**
@@ -237,5 +249,7 @@ module.exports = {
   getEffectiveModel,
   getVendorType,
   isOpus45OrNewer,
-  isClaudeFamilyModel
+  isClaudeFamilyModel,
+  isExportControlledClaudeModel,
+  EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE
 }

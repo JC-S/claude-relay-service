@@ -52,6 +52,7 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       requestDetailCaptureEnabled,
       requestDetailRetentionHours,
       requestDetailBodyPreviewEnabled,
+      exportControlledClaudeModelBlockEnabled,
       purgeRequestDetailBodySnapshots
     } = req.body
 
@@ -195,6 +196,15 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
 
     if (
+      exportControlledClaudeModelBlockEnabled !== undefined &&
+      typeof exportControlledClaudeModelBlockEnabled !== 'boolean'
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'exportControlledClaudeModelBlockEnabled must be a boolean' })
+    }
+
+    if (
       purgeRequestDetailBodySnapshots !== undefined &&
       typeof purgeRequestDetailBodySnapshots !== 'boolean'
     ) {
@@ -243,6 +253,9 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
     if (requestDetailBodyPreviewEnabled !== undefined) {
       updateData.requestDetailBodyPreviewEnabled = requestDetailBodyPreviewEnabled
+    }
+    if (exportControlledClaudeModelBlockEnabled !== undefined) {
+      updateData.exportControlledClaudeModelBlockEnabled = exportControlledClaudeModelBlockEnabled
     }
 
     const updatedConfig = await claudeRelayConfigService.updateConfig(

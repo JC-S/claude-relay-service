@@ -13,11 +13,16 @@ const openaiToClaude = require('../services/openaiToClaude')
 const apiKeyService = require('../services/apiKeyService')
 const unifiedClaudeScheduler = require('../services/scheduler/unifiedClaudeScheduler')
 const claudeCodeHeadersService = require('../services/claudeCodeHeadersService')
+const claudeRelayConfigService = require('../services/claudeRelayConfigService')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const sessionHelper = require('../utils/sessionHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const pricingService = require('../services/pricingService')
-const { getEffectiveModel } = require('../utils/modelHelper')
+const {
+  EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE,
+  getEffectiveModel,
+  isExportControlledClaudeModel
+} = require('../utils/modelHelper')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
 
 // 🔧 辅助函数：检查 API Key 权限
@@ -209,6 +214,22 @@ async function handleChatCompletion(req, res, apiKeyData) {
 
     // 转换 OpenAI 请求为 Claude 格式
     const claudeRequest = openaiToClaude.convertRequest(req.body)
+
+    if (
+      isExportControlledClaudeModel(claudeRequest.model) &&
+      (await claudeRelayConfigService.isExportControlledClaudeModelBlockEnabled())
+    ) {
+      logger.warn(
+        `🚫 Export-controlled Claude model blocked via OpenAI-compatible route: ${claudeRequest.model}`
+      )
+      return res.status(404).json({
+        error: {
+          message: EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE,
+          type: 'invalid_request_error',
+          code: 'model_not_found'
+        }
+      })
+    }
 
     // 模型限制（黑名单）：命中受限模型则拒绝
     if (apiKeyData.enableModelRestriction && apiKeyData.restrictedModels?.length > 0) {
