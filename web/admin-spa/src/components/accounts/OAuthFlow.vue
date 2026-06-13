@@ -900,7 +900,28 @@ const stopCountdown = () => {
   }
 }
 
-// 监听授权码输入，自动提取URL中的code参数
+const extractAuthorizationCodeFromInput = (value) => {
+  const trimmedValue = value.trim()
+
+  if (trimmedValue.startsWith('http://') || trimmedValue.startsWith('https://')) {
+    const url = new URL(trimmedValue)
+    return url.searchParams.get('code') || ''
+  }
+
+  if (
+    trimmedValue.startsWith('code=') ||
+    trimmedValue.startsWith('?code=') ||
+    trimmedValue.includes('&code=')
+  ) {
+    const queryString = trimmedValue.startsWith('?') ? trimmedValue.slice(1) : trimmedValue
+    const params = new URLSearchParams(queryString)
+    return params.get('code') || ''
+  }
+
+  return ''
+}
+
+// 监听授权码输入，自动提取URL或查询串中的code参数
 watch(authCode, (newValue) => {
   if (props.platform === 'droid') return
   if (!newValue || typeof newValue !== 'string') return
@@ -910,55 +931,25 @@ watch(authCode, (newValue) => {
   // 如果内容为空，不处理
   if (!trimmedValue) return
 
-  // 检查是否是 URL 格式（包含 http:// 或 https://）
-  const isUrl = trimmedValue.startsWith('http://') || trimmedValue.startsWith('https://')
+  const mayContainCode =
+    trimmedValue.startsWith('http://') ||
+    trimmedValue.startsWith('https://') ||
+    trimmedValue.startsWith('code=') ||
+    trimmedValue.startsWith('?code=') ||
+    trimmedValue.includes('&code=')
 
-  // 如果是 URL 格式
-  if (isUrl) {
-    // 检查是否是正确的 localhost 回调 URL
-    if (
-      trimmedValue.startsWith('http://localhost:45462') ||
-      trimmedValue.startsWith('http://localhost:1455')
-    ) {
-      try {
-        const url = new URL(trimmedValue)
-        const code = url.searchParams.get('code')
-
-        if (code) {
-          // 成功提取授权码
-          authCode.value = code
-          showToast('成功提取授权码！', 'success')
-          console.log('Successfully extracted authorization code from URL')
-        } else {
-          // URL 中没有 code 参数
-          showToast('URL 中未找到授权码参数，请检查链接是否正确', 'error')
-        }
-      } catch (error) {
-        // URL 解析失败
-        console.error('Failed to parse URL:', error)
-        showToast('链接格式错误，请检查是否为完整的 URL', 'error')
+  if (mayContainCode) {
+    try {
+      const code = extractAuthorizationCodeFromInput(trimmedValue)
+      if (code) {
+        authCode.value = code
+        showToast('成功提取授权码！', 'success')
+        return
       }
-    } else if (
-      props.platform === 'gemini' ||
-      props.platform === 'gemini-antigravity' ||
-      props.platform === 'openai'
-    ) {
-      // Gemini 和 OpenAI 平台可能使用不同的回调URL
-      // 尝试从任何URL中提取code参数
-      try {
-        const url = new URL(trimmedValue)
-        const code = url.searchParams.get('code')
 
-        if (code) {
-          authCode.value = code
-          showToast('成功提取授权码！', 'success')
-        }
-      } catch (error) {
-        // 不是有效的URL，保持原值
-      }
-    } else {
-      // 错误的 URL（不是正确的 localhost 回调地址）
-      showToast('请粘贴以 http://localhost:1455 或 http://localhost:45462 开头的链接', 'error')
+      showToast('输入内容中未找到授权码参数 code，请检查是否复制完整', 'error')
+    } catch (error) {
+      showToast('链接格式错误，请检查是否为完整的 URL', 'error')
     }
   }
   // 如果不是 URL，保持原值（兼容直接输入授权码）
@@ -1163,6 +1154,10 @@ const exchangeCode = async () => {
       stopCountdown()
     }
 
+    if (!tokenInfo) {
+      throw new Error(accountsStore.error || '授权失败，未返回有效 Token')
+    }
+
     emit('success', tokenInfo)
   } catch (error) {
     showToast(error.message || '授权失败，请检查授权码是否正确', 'error')
@@ -1213,6 +1208,9 @@ const handleCookieAuth = async () => {
         sessionKey: sessionKeys[i],
         proxy: proxyConfig
       })
+      if (!result) {
+        throw new Error(accountsStore.error || 'Cookie授权失败')
+      }
       results.push(result)
     } catch (error) {
       errors.push({

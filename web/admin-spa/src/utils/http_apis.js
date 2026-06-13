@@ -161,6 +161,8 @@ export const claudeOAuthWithCookieApi = (data) =>
   request({ url: '/admin/claude-accounts/oauth-with-cookie', method: 'POST', data })
 export const claudeSetupTokenWithCookieApi = (data) =>
   request({ url: '/admin/claude-accounts/setup-token-with-cookie', method: 'POST', data })
+export const reauthClaudeAccountApi = (id, data) =>
+  request({ url: `/admin/claude-accounts/${id}/reauth`, method: 'POST', data })
 
 // Claude Console 账户
 export const getClaudeConsoleAccountsApi = () =>

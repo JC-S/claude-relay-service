@@ -11,11 +11,41 @@ const logger = require('./logger')
 // OAuth 配置常量 - 从claude-code-login.js提取
 const OAUTH_CONFIG = {
   AUTHORIZE_URL: 'https://claude.ai/oauth/authorize',
-  TOKEN_URL: 'https://console.anthropic.com/v1/oauth/token',
+  TOKEN_URL: 'https://api.anthropic.com/v1/oauth/token',
   CLIENT_ID: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
   REDIRECT_URI: 'https://platform.claude.com/oauth/code/callback',
   SCOPES: 'org:create_api_key user:profile user:inference user:sessions:claude_code',
   SCOPES_SETUP: 'user:inference' // Setup Token 只需要推理权限
+}
+
+const buildOAuthErrorMessage = (status, errorData) => {
+  let errorMessage = `HTTP ${status}`
+
+  if (!errorData) {
+    return errorMessage
+  }
+
+  if (typeof errorData === 'string') {
+    return `${errorMessage}: ${errorData}`
+  }
+
+  const nestedError = errorData.error
+  if (typeof nestedError === 'string') {
+    errorMessage += `: ${nestedError}`
+  } else if (nestedError && typeof nestedError === 'object') {
+    errorMessage += `: ${nestedError.message || JSON.stringify(nestedError)}`
+    if (nestedError.type) {
+      errorMessage += ` (${nestedError.type})`
+    }
+  } else {
+    errorMessage += `: ${JSON.stringify(errorData)}`
+  }
+
+  if (errorData.error_description) {
+    errorMessage += ` - ${errorData.error_description}`
+  }
+
+  return errorMessage
 }
 
 // Cookie自动授权配置常量
@@ -274,21 +304,7 @@ async function exchangeCodeForTokens(authorizationCode, codeVerifier, state, pro
         codePrefix: `${cleanedCode.substring(0, 10)}...`
       })
 
-      // 尝试从错误响应中提取有用信息
-      let errorMessage = `HTTP ${status}`
-
-      if (errorData) {
-        if (typeof errorData === 'string') {
-          errorMessage += `: ${errorData}`
-        } else if (errorData.error) {
-          errorMessage += `: ${errorData.error}`
-          if (errorData.error_description) {
-            errorMessage += ` - ${errorData.error_description}`
-          }
-        } else {
-          errorMessage += `: ${JSON.stringify(errorData)}`
-        }
-      }
+      const errorMessage = buildOAuthErrorMessage(status, errorData)
 
       throw new Error(`Token exchange failed: ${errorMessage}`)
     } else if (error.request) {
@@ -321,6 +337,11 @@ function parseCallbackUrl(input) {
   }
 
   const trimmedInput = input.trim()
+  const parseCodeQueryString = (value) => {
+    const queryString = value.startsWith('?') ? value.slice(1) : value
+    const params = new URLSearchParams(queryString)
+    return params.get('code')
+  }
 
   // 情况1: 尝试作为完整URL解析
   if (trimmedInput.startsWith('http://') || trimmedInput.startsWith('https://')) {
@@ -341,7 +362,20 @@ function parseCallbackUrl(input) {
     }
   }
 
-  // 情况2: 直接的授权码（可能包含URL fragments）
+  // 情况2: 直接粘贴查询串（code=...&state=...）或以 ? 开头的查询串
+  if (
+    trimmedInput.startsWith('code=') ||
+    trimmedInput.startsWith('?code=') ||
+    trimmedInput.includes('&code=')
+  ) {
+    const authorizationCode = parseCodeQueryString(trimmedInput)
+    if (!authorizationCode) {
+      throw new Error('输入内容中未找到授权码 (code 参数)')
+    }
+    return authorizationCode
+  }
+
+  // 情况3: 直接的授权码（可能包含URL fragments）
   // 参考claude-code-login.js的处理方式：移除URL fragments和参数
   const cleanedCode = trimmedInput.split('#')[0]?.split('&')[0] ?? trimmedInput
 
@@ -350,8 +384,8 @@ function parseCallbackUrl(input) {
     throw new Error('授权码格式无效，请确保复制了完整的 Authorization Code')
   }
 
-  // 基本格式验证：授权码应该只包含字母、数字、下划线、连字符
-  const validCodePattern = /^[A-Za-z0-9_-]+$/
+  // 基本格式验证：授权码通常是 URL-safe token；兼容部分 OAuth 返回中的点号和 base64 字符
+  const validCodePattern = /^[A-Za-z0-9._~+/=-]+$/
   if (!validCodePattern.test(cleanedCode)) {
     throw new Error('授权码包含无效字符，请检查是否复制了正确的 Authorization Code')
   }
@@ -491,19 +525,7 @@ async function exchangeSetupTokenCode(authorizationCode, codeVerifier, state, pr
         codePrefix: `${cleanedCode.substring(0, 10)}...`
       })
 
-      let errorMessage = `HTTP ${status}`
-      if (errorData) {
-        if (typeof errorData === 'string') {
-          errorMessage += `: ${errorData}`
-        } else if (errorData.error) {
-          errorMessage += `: ${errorData.error}`
-          if (errorData.error_description) {
-            errorMessage += ` - ${errorData.error_description}`
-          }
-        } else {
-          errorMessage += `: ${JSON.stringify(errorData)}`
-        }
-      }
+      const errorMessage = buildOAuthErrorMessage(status, errorData)
 
       throw new Error(`Setup Token exchange failed: ${errorMessage}`)
     } else if (error.request) {
@@ -801,15 +823,7 @@ async function authorizeWithCookie(sessionKey, organizationUuid, scope, proxyCon
       }
 
       const errorData = error.response.data
-      let errorMessage = `HTTP ${status}`
-
-      if (errorData) {
-        if (typeof errorData === 'string') {
-          errorMessage += `: ${errorData}`
-        } else if (errorData.error) {
-          errorMessage += `: ${errorData.error}`
-        }
-      }
+      const errorMessage = buildOAuthErrorMessage(status, errorData)
 
       throw new Error(`授权请求失败：${errorMessage}`)
     } else if (error.request) {

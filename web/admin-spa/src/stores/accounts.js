@@ -131,6 +131,10 @@ export const useAccountsStore = defineStore('accounts', () => {
   const updateDroidAccount = (id, data) =>
     mutateAccount(httpApis.updateDroidAccountApi, fetchDroidAccounts, id, data)
 
+  // 重新授权 Claude OAuth 账户（OAuth 换新 token 后就地更新并重置状态，成功后自动刷新列表）
+  const reauthClaudeAccount = (id, data) =>
+    mutateAccount(httpApis.reauthClaudeAccountApi, fetchClaudeAccounts, id, data)
+
   // 重新授权 OpenAI 账户（OAuth 换新 token 后就地更新并重置状态，成功后自动刷新列表）
   const reauthOpenAIAccount = (id, data) =>
     mutateAccount(httpApis.reauthOpenAIAccountApi, fetchOpenAIAccounts, id, data)
@@ -318,6 +322,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     updateBedrockAccount,
     updateGeminiAccount,
     updateOpenAIAccount,
+    reauthClaudeAccount,
     reauthOpenAIAccount,
     updateAzureOpenAIAccount,
     updateOpenAIResponsesAccount,

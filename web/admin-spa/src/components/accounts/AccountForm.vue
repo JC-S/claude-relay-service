@@ -2675,7 +2675,7 @@
           </div>
         </div>
 
-        <!-- 重新授权聚焦视图（仅 OpenAI 官方 OAuth 账户生效） -->
+        <!-- 重新授权聚焦视图（仅官方 OAuth 账户生效） -->
         <div v-if="isEdit && reauthMode" class="space-y-6">
           <div
             class="rounded-xl border border-orange-200 bg-orange-50 p-4 dark:border-orange-700 dark:bg-orange-900/20"
@@ -2688,7 +2688,7 @@
               </div>
               <div>
                 <h4 class="text-sm font-semibold text-orange-900 dark:text-orange-100">
-                  重新授权 OpenAI 账户
+                  重新授权 {{ reauthPlatformLabel }} 账户
                 </h4>
                 <p class="mt-1 text-xs text-orange-700 dark:text-orange-200">
                   重新授权会更新当前账户的 OAuth Token
@@ -2700,7 +2700,7 @@
 
           <OAuthFlow
             ref="reauthFlowRef"
-            :platform="form.platform"
+            :platform="reauthFlowPlatform"
             :proxy="form.proxy"
             @back="exitReauthMode"
             @success="handleReauthSuccess"
@@ -4130,15 +4130,15 @@
             </div>
           </div>
 
-          <!-- OpenAI 官方账户重新授权入口 -->
+          <!-- 官方 OAuth 账户重新授权入口 -->
           <div
-            v-if="canReauthOpenAI"
+            v-if="canReauthOAuthAccount"
             class="rounded-xl border border-orange-200 bg-orange-50/70 p-4 dark:border-orange-700 dark:bg-orange-900/20"
           >
             <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h4 class="text-sm font-semibold text-orange-900 dark:text-orange-100">
-                  OpenAI 账户重新授权
+                  {{ reauthPlatformLabel }} 账户重新授权
                 </h4>
                 <p class="mt-1 text-xs text-orange-700 dark:text-orange-200">
                   当 Refresh Token 失效或账户 401 时，重新登录授权并恢复当前账户。
@@ -5117,6 +5117,9 @@ const handleCookieAuth = async () => {
       } else {
         result = await accountsStore.oauthWithCookie(payload)
       }
+      if (!result) {
+        throw new Error(accountsStore.error || 'Cookie授权失败')
+      }
       results.push(result)
     } catch (error) {
       errors.push({
@@ -5222,10 +5225,21 @@ const buildClaudeAccountData = (tokenInfo, accountName, clientId) => {
   return data
 }
 
-// ========== OpenAI 账户重新授权（仅 platform === 'openai' 官方 OAuth 账户）==========
+// ========== 官方 OAuth 账户重新授权（Claude/OpenAI）==========
 const reauthMode = ref(false)
 const reauthFlowRef = ref(null)
+const isClaudeOfficialPlatform = computed(() =>
+  ['claude', 'claude-oauth'].includes(form.value.platform)
+)
 const canReauthOpenAI = computed(() => isEdit.value && form.value.platform === 'openai')
+const canReauthClaudeOAuth = computed(
+  () => isEdit.value && isClaudeOfficialPlatform.value && props.account?.authType === 'oauth'
+)
+const canReauthOAuthAccount = computed(() => canReauthOpenAI.value || canReauthClaudeOAuth.value)
+const reauthPlatformLabel = computed(() => (canReauthClaudeOAuth.value ? 'Claude' : 'OpenAI'))
+const reauthFlowPlatform = computed(() =>
+  canReauthClaudeOAuth.value ? 'claude' : form.value.platform
+)
 
 const enterReauthMode = () => {
   reauthMode.value = true
@@ -5239,30 +5253,59 @@ const exitReauthMode = () => {
 const handleReauthSuccess = async (tokenInfo) => {
   loading.value = true
   try {
-    const tokens = tokenInfo?.tokens || tokenInfo || {}
-    if (!tokens.accessToken || !tokens.refreshToken) {
-      showToast('授权未返回有效 Token，请重试', 'error')
+    if (canReauthClaudeOAuth.value) {
+      if (Array.isArray(tokenInfo) && tokenInfo.length !== 1) {
+        showToast('重新授权只支持单个 Claude OAuth 授权结果', 'error')
+        return
+      }
+
+      const normalizedTokenInfo = Array.isArray(tokenInfo) ? tokenInfo[0] : tokenInfo
+      const claudeAiOauth = normalizedTokenInfo?.claudeAiOauth || normalizedTokenInfo || {}
+      if (!claudeAiOauth.accessToken || !claudeAiOauth.refreshToken) {
+        showToast('授权未返回有效 Token，请重试', 'error')
+        return
+      }
+
+      const res = await accountsStore.reauthClaudeAccount(props.account.id, { claudeAiOauth })
+      if (!res?.success) {
+        showToast(res?.message || '重新授权失败', 'error')
+        return
+      }
+
+      reauthMode.value = false
+      emit('success', { message: res.message || '重新授权成功' })
       return
     }
 
-    const payload = {
-      openaiOauth: {
-        idToken: tokens.idToken || '',
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        expires_in: tokens.expires_in
-      },
-      accountInfo: tokenInfo?.accountInfo || {}
-    }
+    if (canReauthOpenAI.value) {
+      const tokens = tokenInfo?.tokens || tokenInfo || {}
+      if (!tokens.accessToken || !tokens.refreshToken) {
+        showToast('授权未返回有效 Token，请重试', 'error')
+        return
+      }
 
-    const res = await accountsStore.reauthOpenAIAccount(props.account.id, payload)
-    if (!res?.success) {
-      showToast(res?.message || '重新授权失败', 'error')
+      const payload = {
+        openaiOauth: {
+          idToken: tokens.idToken || '',
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          expires_in: tokens.expires_in
+        },
+        accountInfo: tokenInfo?.accountInfo || {}
+      }
+
+      const res = await accountsStore.reauthOpenAIAccount(props.account.id, payload)
+      if (!res?.success) {
+        showToast(res?.message || '重新授权失败', 'error')
+        return
+      }
+
+      reauthMode.value = false
+      emit('success', { message: res.message || '重新授权成功' })
       return
     }
 
-    reauthMode.value = false
-    emit('success', { message: res.message || '重新授权成功' })
+    showToast('当前账户不支持重新授权', 'error')
   } catch (error) {
     showToast(error?.message || '重新授权失败', 'error')
   } finally {

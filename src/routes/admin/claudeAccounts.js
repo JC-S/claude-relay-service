@@ -26,6 +26,24 @@ const { formatAccountExpiry, mapExpiryField } = require('./utils')
 
 const TEMP_UNAVAILABLE_TTL_FIELDS = ['tempUnavailable503TtlSeconds', 'tempUnavailable5xxTtlSeconds']
 
+const normalizeClaudeScopes = (scopes) => {
+  if (Array.isArray(scopes)) {
+    return scopes.filter(Boolean)
+  }
+  if (typeof scopes === 'string') {
+    return scopes
+      .split(' ')
+      .map((scope) => scope.trim())
+      .filter(Boolean)
+  }
+  return []
+}
+
+const hasClaudeOAuthScopes = (scopes) => {
+  const normalizedScopes = normalizeClaudeScopes(scopes)
+  return normalizedScopes.includes('user:profile') && normalizedScopes.includes('user:inference')
+}
+
 const normalizeTempUnavailablePolicyPayload = (payload, options = {}) => {
   const { partial = false } = options
   const normalized = {}
@@ -800,6 +818,74 @@ router.put('/claude-accounts/:accountId', authenticateAdmin, async (req, res) =>
     return res
       .status(500)
       .json({ error: 'Failed to update Claude account', message: error.message })
+  }
+})
+
+// 重新授权 Claude OAuth 账户（OAuth 拿到新 token 后就地更新并重置异常状态）
+router.post('/claude-accounts/:accountId/reauth', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const claudeAiOauth = req.body?.claudeAiOauth
+
+    if (!claudeAiOauth || typeof claudeAiOauth !== 'object' || Array.isArray(claudeAiOauth)) {
+      return res.status(400).json({ success: false, message: '缺少 Claude OAuth Token 信息' })
+    }
+
+    const currentAccount = await claudeAccountService.getAccount(accountId)
+    if (!currentAccount) {
+      return res.status(404).json({ success: false, message: '账户不存在' })
+    }
+
+    if (!hasClaudeOAuthScopes(currentAccount.scopes)) {
+      return res.status(400).json({
+        success: false,
+        message: '仅 Claude 官方 OAuth 账户支持重新授权'
+      })
+    }
+
+    const { accessToken, refreshToken } = claudeAiOauth
+    if (!accessToken || !refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Access Token 和 Refresh Token 不能为空'
+      })
+    }
+
+    const scopes = normalizeClaudeScopes(claudeAiOauth.scopes)
+    if (!hasClaudeOAuthScopes(scopes)) {
+      return res.status(400).json({
+        success: false,
+        message: '授权结果不是 Claude 官方 OAuth 账户，请重新授权'
+      })
+    }
+
+    const expiresAt = Number(claudeAiOauth.expiresAt)
+    const normalizedClaudeAiOauth = {
+      ...claudeAiOauth,
+      accessToken,
+      refreshToken,
+      expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : currentAccount.expiresAt,
+      scopes
+    }
+
+    const updates = { claudeAiOauth: normalizedClaudeAiOauth }
+    if (claudeAiOauth.subscriptionInfo) {
+      updates.subscriptionInfo = claudeAiOauth.subscriptionInfo
+    }
+
+    // updateAccount 负责加密敏感字段；resetAccountStatus 清理 429/401/5xx 等异常状态
+    await claudeAccountService.updateAccount(accountId, updates)
+    await claudeAccountService.resetAccountStatus(accountId)
+
+    logger.success(`🔐 Admin re-authorized Claude OAuth account: ${accountId}`)
+    return res.json({ success: true, message: '重新授权成功，账户状态已重置' })
+  } catch (error) {
+    logger.error('❌ Failed to re-authorize Claude OAuth account:', error)
+    return res.status(500).json({
+      success: false,
+      message: '重新授权失败',
+      error: error.message
+    })
   }
 })
 
