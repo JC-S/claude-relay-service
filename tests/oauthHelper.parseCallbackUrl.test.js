@@ -2,7 +2,7 @@ const { OAUTH_CONFIG, parseCallbackUrl } = require('../src/utils/oauthHelper')
 
 describe('oauthHelper.parseCallbackUrl', () => {
   test('uses current Anthropic OAuth token endpoint', () => {
-    expect(OAUTH_CONFIG.TOKEN_URL).toBe('https://api.anthropic.com/v1/oauth/token')
+    expect(OAUTH_CONFIG.TOKEN_URL).toBe('https://platform.claude.com/v1/oauth/token')
   })
 
   test('extracts code from arbitrary callback URL', () => {
