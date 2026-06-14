@@ -1785,14 +1785,13 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
 router.post('/api-keys/:keyId/upgrade-v2', authenticateAdmin, async (req, res) => {
   try {
     const { keyId } = req.params
-    const { email, password, totalBudget } = req.body
+    const { email, password } = req.body
     if (!email || !password) {
       return res.status(400).json({ error: 'Missing fields', message: '邮箱和密码为必填项' })
     }
     const result = await apiKeyService.upgradeToV2Parent(keyId, {
       email,
-      password,
-      totalBudget: totalBudget || 0
+      password
     })
     logger.success(`⬆️ Admin upgraded key ${keyId} to v2 parent account`)
     return res.json({ success: true, data: result })

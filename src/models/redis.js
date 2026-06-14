@@ -2985,6 +2985,11 @@ class RedisClient {
   }
 
   // 💰 父账号总账（倍率后成本汇总，永不过期，持续累加）
+  async setV2ParentTotalCost(parentKeyId, amount) {
+    const totalKey = `usage:cost:v2:total:${parentKeyId}`
+    return await this.client.set(totalKey, String(Number(amount) || 0))
+  }
+
   async incrementV2ParentTotalCost(parentKeyId, amount) {
     const totalKey = `usage:cost:v2:total:${parentKeyId}`
     return await this.client.incrbyfloat(totalKey, amount)

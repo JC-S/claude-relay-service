@@ -3343,7 +3343,7 @@ class ApiKeyService {
   }
 
   // ⬆️ 将一个普通 API Key 单向升级为 v2 父账号
-  async upgradeToV2Parent(keyId, { email, password, totalBudget } = {}) {
+  async upgradeToV2Parent(keyId, { email, password } = {}) {
     const keyData = await redis.getApiKey(keyId)
     if (!keyData || Object.keys(keyData).length === 0) {
       throw new Error('API key not found')
@@ -3377,10 +3377,11 @@ class ApiKeyService {
       throw new Error('Password must be at least 8 characters long')
     }
 
-    const budget = Number(totalBudget)
-    if (!Number.isFinite(budget) || budget < 0) {
-      throw new Error('Total budget must be a non-negative number')
-    }
+    // 升级时不单独设置 v2 总账额度：直接沿用原 API Key 的总费用上限。
+    // totalCostLimit=0 保持既有语义，即不限额。
+    const originalTotalLimit = Number(keyData.totalCostLimit)
+    const budget =
+      Number.isFinite(originalTotalLimit) && originalTotalLimit > 0 ? originalTotalLimit : 0
 
     // 原子抢占邮箱（HSETNX）
     const reserved = await redis.setV2EmailIndex(normalizedEmail, keyId)
@@ -3390,8 +3391,17 @@ class ApiKeyService {
       throw err
     }
 
+    let inheritedUsageInitialized = false
     try {
       const v2PasswordHash = await bcrypt.hash(password, 10)
+      const costStats = await redis.getCostStats(keyId)
+      const inheritedUsed = Number(costStats?.total)
+      await redis.setV2ParentTotalCost(
+        keyId,
+        Number.isFinite(inheritedUsed) && inheritedUsed > 0 ? inheritedUsed : 0
+      )
+      inheritedUsageInitialized = true
+
       const updatedData = {
         ...keyData,
         isV2Parent: 'true',
@@ -3437,6 +3447,9 @@ class ApiKeyService {
         const owner = await redis.getV2KeyIdByEmail(normalizedEmail)
         if (owner === keyId) {
           await redis.deleteV2EmailIndex(normalizedEmail)
+        }
+        if (inheritedUsageInitialized) {
+          await redis.deleteV2ParentTotalCost(keyId)
         }
       } catch (rollbackErr) {
         logger.error('❌ Failed to rollback v2 email index after upgrade error:', rollbackErr)

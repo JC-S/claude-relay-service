@@ -46,6 +46,9 @@ jest.mock('../src/models/redis', () => ({
   batchGetApiKeyStats: jest.fn(),
   findApiKeyByHash: jest.fn(), // validateApiKey 端到端用
   getV2ParentTotalCost: jest.fn(), // validateApiKey 子 key 总账信息用
+  setV2ParentTotalCost: jest.fn(),
+  deleteV2ParentTotalCost: jest.fn(),
+  getCostStats: jest.fn(),
   client: { hset: jest.fn() }
 }))
 
@@ -114,6 +117,9 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     jest.clearAllMocks()
     redis.setApiKey.mockResolvedValue()
     redis.deleteApiKeyHash.mockResolvedValue()
+    redis.setV2ParentTotalCost.mockResolvedValue()
+    redis.deleteV2ParentTotalCost.mockResolvedValue()
+    redis.getCostStats.mockResolvedValue({ total: 0 })
     redis.client.hset.mockResolvedValue()
   })
 
@@ -129,22 +135,25 @@ describe('apiKeyService v2 lifecycle fixes', () => {
       name: 'legacy-key',
       apiKey: 'hashed-secret',
       isActive: 'true',
+      totalCostLimit: '125.5',
       expiresAt: '2026-07-01T00:00:00.000Z',
       tags: '[]'
     })
     redis.getSession.mockResolvedValue({ username: 'admin' })
     redis.setV2EmailIndex.mockResolvedValue(true)
+    redis.getCostStats.mockResolvedValue({ total: 17.25 })
 
     const result = await apiKeyService.upgradeToV2Parent('key-1', {
       email: 'tenant@example.com',
-      password: 'password123',
-      totalBudget: 100
+      password: 'password123'
     })
 
     expect(result.success).toBe(true)
+    expect(result.v2TotalBudget).toBe(125.5)
+    expect(redis.setV2ParentTotalCost).toHaveBeenCalledWith('key-1', 17.25)
     expect(redis.setApiKey).toHaveBeenCalledWith(
       'key-1',
-      expect.objectContaining({ isV2Parent: 'true', expiresAt: '' })
+      expect.objectContaining({ isV2Parent: 'true', expiresAt: '', v2TotalBudget: '125.5' })
     )
   })
 

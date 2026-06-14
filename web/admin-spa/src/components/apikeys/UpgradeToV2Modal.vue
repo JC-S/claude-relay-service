@@ -24,7 +24,17 @@
         <i class="fas fa-exclamation-triangle mr-2" />
         升级为单向操作。升级后 API Key「{{ apiKey?.name }}」的原密钥将<strong
           >立即不可用于 API 调用</strong
-        >，请改用其子 key。
+        >，请改用其子 key。V2 总账额度将沿用当前 API 的总费用上限，当前累计已用成本会计入 V2
+        已用量。
+      </div>
+
+      <div
+        class="mb-4 rounded-lg border border-blue-200/70 bg-blue-50 p-3 text-sm text-blue-700 dark:border-blue-800/60 dark:bg-blue-900/20 dark:text-blue-300"
+      >
+        <div class="flex items-center justify-between gap-3">
+          <span class="font-medium">继承总账额度</span>
+          <span>{{ inheritedBudgetText }}</span>
+        </div>
       </div>
 
       <form class="space-y-4" @submit.prevent="submit">
@@ -64,18 +74,6 @@
             type="password"
           />
         </div>
-        <div>
-          <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
-            >总账额度（美元，0 表示不限额）</label
-          >
-          <input
-            v-model.number="form.totalBudget"
-            class="form-input w-full"
-            min="0"
-            step="0.01"
-            type="number"
-          />
-        </div>
         <div class="flex gap-3 pt-2">
           <button
             class="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
@@ -99,7 +97,7 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { showToast } from '@/utils/tools'
 import { upgradeApiKeyToV2Api } from '@/utils/http_apis'
 
@@ -113,7 +111,11 @@ const props = defineProps({
 const emit = defineEmits(['close', 'success'])
 
 const loading = ref(false)
-const form = reactive({ email: '', password: '', confirmPassword: '', totalBudget: 0 })
+const form = reactive({ email: '', password: '', confirmPassword: '' })
+const inheritedBudgetText = computed(() => {
+  const limit = Number(props.apiKey?.totalCostLimit || 0)
+  return limit > 0 ? `$${limit.toFixed(2)}` : '不限额'
+})
 
 const submit = async () => {
   if (form.password !== form.confirmPassword) {
@@ -128,8 +130,7 @@ const submit = async () => {
   try {
     const res = await upgradeApiKeyToV2Api(props.apiKey.id, {
       email: form.email.trim(),
-      password: form.password,
-      totalBudget: form.totalBudget || 0
+      password: form.password
     })
     if (res.success) {
       showToast('升级成功', 'success')
