@@ -56,7 +56,10 @@ const RedisKeys = {
   dailyCost: (keyId, date) => `usage:cost:daily:${keyId}:${date}`,
 
   /** 总费用 */
-  totalCost: (keyId) => `usage:cost:total:${keyId}`
+  totalCost: (keyId) => `usage:cost:total:${keyId}`,
+
+  /** v2 父账号总账（ledger，权威全时段成本） */
+  v2TotalCost: (keyId) => `usage:cost:v2:total:${keyId}`
 }
 
 // ============================================================================
@@ -175,10 +178,10 @@ class CostRankService {
       // 标记为更新中
       await client.hset(metaKey, 'status', 'updating')
 
-      // 1. 获取所有未删除的 API Key IDs
-      const keyIds = await this._getActiveApiKeyIds()
+      // 1. 获取所有未删除的 API Key（含 v2 父账号标识）
+      const activeKeys = await this._getActiveApiKeyIds()
 
-      if (keyIds.length === 0) {
+      if (activeKeys.length === 0) {
         // 无数据时清空索引
         await client.del(rankKey)
         await this._updateMeta(client, metaKey, startTime, 0)
@@ -189,16 +192,16 @@ class CostRankService {
       const dateRange = this._getDateRange(timeRange)
 
       // 3. 分批计算费用
-      const costs = await this._calculateCostsInBatches(keyIds, dateRange)
+      const costs = await this._calculateCostsInBatches(activeKeys, dateRange)
 
       // 4. 原子更新索引（使用临时 key + RENAME 避免竞态条件）
       await this._atomicUpdateIndex(client, rankKey, costs)
 
       // 5. 更新元数据
-      await this._updateMeta(client, metaKey, startTime, keyIds.length)
+      await this._updateMeta(client, metaKey, startTime, activeKeys.length)
 
       logger.info(
-        `📊 Updated cost rank for ${timeRange}: ${keyIds.length} keys in ${Date.now() - startTime}ms`
+        `📊 Updated cost rank for ${timeRange}: ${activeKeys.length} keys in ${Date.now() - startTime}ms`
       )
     } catch (error) {
       await client.hset(metaKey, 'status', 'failed')
@@ -452,18 +455,18 @@ class CostRankService {
     logger.info(`📊 Calculating custom range costs: ${startDate} to ${endDate}`)
     const startTime = Date.now()
 
-    // 1. 获取所有未删除的 API Key IDs
-    const keyIds = await this._getActiveApiKeyIds()
+    // 1. 获取所有未删除的 API Key（含 v2 父账号标识）
+    const activeKeys = await this._getActiveApiKeyIds()
 
-    if (keyIds.length === 0) {
+    if (activeKeys.length === 0) {
       return new Map()
     }
 
     // 2. 分批计算费用
-    const costs = await this._calculateCostsInBatches(keyIds, { startDate, endDate })
+    const costs = await this._calculateCostsInBatches(activeKeys, { startDate, endDate })
 
     const duration = Date.now() - startTime
-    logger.info(`📊 Custom range costs calculated: ${keyIds.length} keys in ${duration}ms`)
+    logger.info(`📊 Custom range costs calculated: ${activeKeys.length} keys in ${duration}ms`)
 
     return costs
   }
@@ -473,9 +476,9 @@ class CostRankService {
   // --------------------------------------------------------------------------
 
   /**
-   * 获取所有未删除的 API Key IDs
+   * 获取所有未删除的 API Key（携带 v2 父账号标识，供费用口径区分）
    * @private
-   * @returns {Promise<string[]>}
+   * @returns {Promise<Array<{ id: string, isV2Parent: boolean }>>}
    */
   async _getActiveApiKeyIds() {
     // 使用现有的 scanApiKeyIds 获取所有 ID
@@ -485,21 +488,23 @@ class CostRankService {
       return []
     }
 
-    // 批量获取 API Key 数据，过滤已删除的
+    // 批量获取 API Key 数据，过滤已删除的（batchGetApiKeys 已将 isV2Parent 解析为布尔）
     const allKeys = await redis.batchGetApiKeys(allKeyIds)
 
-    return allKeys.filter((k) => !k.isDeleted).map((k) => k.id)
+    return allKeys
+      .filter((k) => !k.isDeleted)
+      .map((k) => ({ id: k.id, isV2Parent: k.isV2Parent === true }))
   }
 
   /**
    * 分批计算费用
    * @private
    */
-  async _calculateCostsInBatches(keyIds, dateRange) {
+  async _calculateCostsInBatches(activeKeys, dateRange) {
     const costs = new Map()
 
-    for (let i = 0; i < keyIds.length; i += BATCH_SIZE) {
-      const batch = keyIds.slice(i, i + BATCH_SIZE)
+    for (let i = 0; i < activeKeys.length; i += BATCH_SIZE) {
+      const batch = activeKeys.slice(i, i + BATCH_SIZE)
       const batchCosts = await this._calculateBatchCosts(batch, dateRange)
       batchCosts.forEach((cost, keyId) => costs.set(keyId, cost))
     }
@@ -511,15 +516,21 @@ class CostRankService {
    * 批量计算费用
    * @private
    */
-  async _calculateBatchCosts(keyIds, dateRange) {
+  async _calculateBatchCosts(activeKeys, dateRange) {
     const client = redis.getClient()
     const costs = new Map()
 
+    const keyIds = activeKeys.map((k) => k.id)
+    // 🆕 v2 父账号集合：成本口径走 v2 总账（自身普通成本键恒为 0）
+    const v2ParentIds = new Set(activeKeys.filter((k) => k.isV2Parent).map((k) => k.id))
+
     if (dateRange.useTotal) {
-      // 'all' 时间范围：直接读取 total cost
+      // 'all' 时间范围：直接读取 total cost；v2 父账号改读 v2 总账 ledger
       const pipeline = client.pipeline()
       keyIds.forEach((keyId) => {
-        pipeline.get(RedisKeys.totalCost(keyId))
+        pipeline.get(
+          v2ParentIds.has(keyId) ? RedisKeys.v2TotalCost(keyId) : RedisKeys.totalCost(keyId)
+        )
       })
       const results = await pipeline.exec()
 
@@ -550,6 +561,24 @@ class CostRankService {
         })
         costs.set(keyId, totalCost)
       })
+
+      // 🆕 v2 父账号按日范围需聚合子 key，复用 ledger helper 的 period 覆盖自身值
+      if (v2ParentIds.size > 0) {
+        await Promise.all(
+          [...v2ParentIds].map(async (parentId) => {
+            try {
+              const ledger = await redis.getV2ParentLedgerCostStats(parentId, {
+                dateRange: { startDate: dateRange.startDate, endDate: dateRange.endDate }
+              })
+              costs.set(parentId, ledger.period)
+            } catch (err) {
+              logger.warn(
+                `Failed to aggregate v2 parent ledger cost for rank (${parentId}): ${err.message}`
+              )
+            }
+          })
+        )
+      }
     }
 
     return costs

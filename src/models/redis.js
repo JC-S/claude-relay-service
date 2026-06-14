@@ -3005,6 +3005,136 @@ class RedisClient {
     return await this.client.del(`usage:cost:v2:total:${parentKeyId}`)
   }
 
+  // 💰 v2 父账号总账成本统计（只读，供管理端展示/排序使用）
+  // 口径：total 走权威 ledger 键（含已离场子 key 历史、单向累加）；
+  //       daily/monthly/period 即时聚合父 key + 所有（含软删）子 key 的普通成本键。
+  // options: { timeRange = 'all', startDate, endDate, dateRange: { startDate, endDate } }
+  // 返回:    { total, daily, monthly, period, source: 'v2-parent-ledger' }
+  async getV2ParentLedgerCostStats(parentKeyId, options = {}) {
+    const { timeRange = 'all', startDate, endDate, dateRange } = options
+
+    // 显式日期区间优先（custom 或排序服务传入的 dateRange），其次才看命名 timeRange
+    const explicitRange =
+      dateRange && dateRange.startDate && dateRange.endDate
+        ? { startDate: dateRange.startDate, endDate: dateRange.endDate }
+        : timeRange === 'custom' && startDate && endDate
+          ? { startDate, endDate }
+          : null
+    const isDatedPeriod =
+      !!explicitRange ||
+      timeRange === 'today' ||
+      timeRange === 'monthly' ||
+      timeRange === '7days' ||
+      timeRange === '30days'
+
+    let total = 0
+    try {
+      total = await this.getV2ParentTotalCost(parentKeyId)
+
+      // 聚合 id 集合：父 + 所有子（含软删，使用原始集合）
+      const childIds = await this.getV2ChildIds(parentKeyId)
+      const ids = [parentKeyId, ...(Array.isArray(childIds) ? childIds : [])]
+
+      // 时区日期串，与 incrementDailyCost / getCostStats 完全一致
+      const today = getDateStringInTimezone()
+      const tzDate = getDateInTimezone()
+      const currentMonth = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(
+        2,
+        '0'
+      )}`
+
+      // period 需要按日求和时，先确定日期列表
+      let periodDates = null
+      if (explicitRange) {
+        periodDates = []
+        const start = new Date(explicitRange.startDate)
+        const end = new Date(explicitRange.endDate)
+        if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            periodDates.push(getDateStringInTimezone(d))
+          }
+        }
+      } else if (timeRange === '7days' || timeRange === '30days') {
+        const span = timeRange === '7days' ? 7 : 30
+        // 以 UTC 中午锚定当日的时区日历，避免 setDate 跨夏令时/时区的偏移
+        const base = new Date(
+          Date.UTC(tzDate.getUTCFullYear(), tzDate.getUTCMonth(), tzDate.getUTCDate())
+        )
+        periodDates = []
+        for (let i = 0; i < span; i++) {
+          const d = new Date(base)
+          d.setUTCDate(d.getUTCDate() - i)
+          periodDates.push(
+            `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(
+              d.getUTCDate()
+            ).padStart(2, '0')}`
+          )
+        }
+      }
+
+      // 需查询的 daily 日期 = period 日期 ∪ {today}（today 用于 daily 字段）
+      const dailyDateSet = new Set([today])
+      if (periodDates) {
+        periodDates.forEach((date) => dailyDateSet.add(date))
+      }
+      const dailyDates = [...dailyDateSet]
+
+      // 单条 pipeline 取 ids × (daily 日期 + 当月 monthly)，避免 N+1
+      const pipeline = this.client.pipeline()
+      const order = []
+      for (const id of ids) {
+        for (const date of dailyDates) {
+          pipeline.get(`usage:cost:daily:${id}:${date}`)
+          order.push({ date })
+        }
+        pipeline.get(`usage:cost:monthly:${id}:${currentMonth}`)
+        order.push({ monthly: true })
+      }
+      const results = await pipeline.exec()
+
+      const dailyByDate = new Map()
+      let monthly = 0
+      for (let i = 0; i < results.length; i++) {
+        const [err, value] = results[i]
+        const amount = err ? 0 : parseFloat(value || 0)
+        const meta = order[i]
+        if (meta.monthly) {
+          monthly += amount
+        } else {
+          dailyByDate.set(meta.date, (dailyByDate.get(meta.date) || 0) + amount)
+        }
+      }
+
+      const daily = dailyByDate.get(today) || 0
+
+      let period
+      if (periodDates) {
+        period = periodDates.reduce((sum, date) => sum + (dailyByDate.get(date) || 0), 0)
+      } else if (timeRange === 'today') {
+        period = daily
+      } else if (timeRange === 'monthly') {
+        period = monthly
+      } else {
+        // 'all' 及未知范围：走权威 ledger 总账（daily 有 TTL，无法还原全时段）
+        period = total
+      }
+
+      return { total, daily, monthly, period, source: 'v2-parent-ledger' }
+    } catch (error) {
+      logger.warn(
+        `⚠️ getV2ParentLedgerCostStats 聚合失败 (parent: ${parentKeyId}): ${error.message}`
+      )
+      // fail-soft：total 仍返回 ledger 值（若已取到），具体周期降级为 0，'all' 回退 total
+      return {
+        total,
+        daily: 0,
+        monthly: 0,
+        period: isDatedPeriod ? 0 : total,
+        source: 'v2-parent-ledger'
+      }
+    }
+  }
+
   // 🔗 OAuth会话管理
   async setOAuthSession(sessionId, sessionData, ttl = 600) {
     // 10分钟过期

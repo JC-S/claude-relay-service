@@ -1123,6 +1123,9 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
   let windowStartTime = null
   let windowEndTime = null
   let allTimeCost = 0
+  // 🆕 v2 父账号成本口径（在 try 内填充，各返回点复用）
+  let isV2Parent = false
+  let v2ParentLedger = null
 
   try {
     // 先获取 API Key 配置，判断是否需要查询限制相关数据
@@ -1139,6 +1142,18 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
     // 始终查询 allTimeCost（用于展示和限额校验）
     const totalCostKey = `usage:cost:total:${keyId}`
     allTimeCost = parseFloat((await client.get(totalCostKey)) || '0')
+
+    // 🆕 v2 父账号：成本口径改用 v2 总账（父 key 自身 usage:cost:* 恒为 0）
+    isV2Parent = apiKey?.isV2Parent === 'true'
+    if (isV2Parent) {
+      v2ParentLedger = await redis.getV2ParentLedgerCostStats(keyId, {
+        timeRange,
+        startDate,
+        endDate
+      })
+      allTimeCost = v2ParentLedger.total // 总费用限制进度条恒为 ledger 总账
+      dailyCost = v2ParentLedger.daily // 日费用进度条（v2 下无条件覆盖为总账今日聚合）
+    }
 
     // 只在启用了 Claude 周费用限制时查询（字段名沿用 weeklyOpusCostLimit）
     if (weeklyOpusCostLimit > 0) {
@@ -1197,6 +1212,21 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
 
   // 如果没有使用数据，返回零值但包含窗口数据
   if (uniqueKeys.length === 0) {
+    // 🆕 v2 父账号即使自身无 usage，费用仍来自 ledger 总账
+    if (isV2Parent && v2ParentLedger) {
+      return {
+        requests: 0,
+        tokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreateTokens: 0,
+        cacheReadTokens: 0,
+        cost: v2ParentLedger.period,
+        realCost: v2ParentLedger.period, // 无 v2 real-cost ledger，镜像 rated
+        formattedCost: CostCalculator.formatCost(v2ParentLedger.period),
+        ...limitData
+      }
+    }
     return {
       requests: 0,
       tokens: 0,
@@ -1354,6 +1384,11 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
 
   const tokens = inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens
 
+  // 🆕 v2 父账号：保留已聚合的请求数/Token，仅成本字段改用 v2 总账口径
+  // （升级而来的父 key 可能保留升级前自身 usage，不应被抹掉）
+  const effectiveRatedCost = isV2Parent && v2ParentLedger ? v2ParentLedger.period : totalRatedCost
+  const effectiveRealCost = isV2Parent && v2ParentLedger ? v2ParentLedger.period : totalRealCost
+
   return {
     requests: totalRequests,
     tokens,
@@ -1361,9 +1396,9 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
     outputTokens,
     cacheCreateTokens,
     cacheReadTokens,
-    cost: totalRatedCost,
-    realCost: totalRealCost,
-    formattedCost: CostCalculator.formatCost(totalRatedCost),
+    cost: effectiveRatedCost,
+    realCost: effectiveRealCost, // 无 v2 real-cost ledger，镜像 rated
+    formattedCost: CostCalculator.formatCost(effectiveRatedCost),
     ...limitData
   }
 }
