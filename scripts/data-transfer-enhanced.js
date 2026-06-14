@@ -426,6 +426,16 @@ function sanitizeData(data, type) {
       if (sanitized.apiKey) {
         sanitized.apiKey = `${sanitized.apiKey.substring(0, 10)}...[REDACTED]`
       }
+      // 可逆密文副本（AES 加密的明文 API Key），脱敏导出绝不能带出
+      // 注意：本期未实现跨环境 decrypt 重加密；导入到 ENCRYPTION_KEY 不同的环境后，
+      // 旧 encryptedApiKey 无法 reveal（解密失败），但不影响认证（认证用的是 apiKey 哈希）
+      if (sanitized.encryptedApiKey) {
+        sanitized.encryptedApiKey = '[REDACTED]'
+      }
+      // 隐藏 v2 父账号密码哈希
+      if (sanitized.v2PasswordHash) {
+        sanitized.v2PasswordHash = '[REDACTED]'
+      }
       break
 
     case 'claude_account':

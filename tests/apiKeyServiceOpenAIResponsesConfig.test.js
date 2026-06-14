@@ -2,7 +2,8 @@ jest.mock(
   '../config/config',
   () => ({
     security: {
-      apiKeyPrefix: 'cr_'
+      apiKeyPrefix: 'cr_',
+      encryptionKey: 'test-encryption-key-0000000000000'
     }
   }),
   { virtual: true }

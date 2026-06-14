@@ -774,6 +774,8 @@ class RedisClient {
 
     // 🔒 v2 父账号密码 hash 绝不通过批量/列表/分页读取路径返回（登录校验走 raw getApiKey）
     delete parsed.v2PasswordHash
+    // 🔒 可逆明文副本绝不通过批量/列表/分页读取路径返回（reveal 走 raw getApiKey 读取密文）
+    delete parsed.encryptedApiKey
 
     // 布尔字段
     const boolFields = [

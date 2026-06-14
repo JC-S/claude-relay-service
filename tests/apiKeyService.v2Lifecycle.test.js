@@ -975,3 +975,230 @@ describe('apiKeyService v2 impersonation session', () => {
     expect(redis.setSession).not.toHaveBeenCalled()
   })
 })
+
+// ── 显示 API Key 明文（reveal）─────────────────────────────────────────────────
+// commonHelper 未被 mock，encrypt/decrypt 为真实实现（配合 mock 的 encryptionKey 可真实
+// 加解密），故对密文做 roundtrip 断言；错误用例统一断言 err.code。
+
+describe('apiKeyService 明文 reveal', () => {
+  const { encrypt, decrypt } = require('../src/utils/commonHelper')
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    redis.setApiKey.mockResolvedValue()
+    redis.deleteApiKeyHash.mockResolvedValue()
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  // 1. generateApiKey 把可逆明文副本写入 redis.setApiKey 的 keyData；密文可解回返回的明文；
+  //    手工白名单返回对象不含 encryptedApiKey
+  test('generateApiKey persists a reversible encryptedApiKey copy that decrypts to the returned key', async () => {
+    const result = await apiKeyService.generateApiKey({ name: 'reveal-me' })
+
+    expect(redis.setApiKey).toHaveBeenCalledTimes(1)
+    const [keyId, keyData, hashedKey] = redis.setApiKey.mock.calls[0]
+    expect(keyId).toBe(result.id)
+    expect(typeof hashedKey).toBe('string')
+    expect(keyData.encryptedApiKey).toEqual(expect.any(String))
+    expect(keyData.encryptedApiKey).not.toBe(result.apiKey) // 落库的是密文而非明文
+    expect(decrypt(keyData.encryptedApiKey, false)).toBe(result.apiKey)
+    expect(result.apiKey.startsWith('cr_')).toBe(true)
+    expect(result).not.toHaveProperty('encryptedApiKey')
+  })
+
+  // 2. regenerateApiKey（非父 key）刷新 encryptedApiKey；新密文解回返回的新 key
+  test('regenerateApiKey refreshes encryptedApiKey and the new ciphertext decrypts to the new key', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      name: 'old-name',
+      apiKey: 'old-hashed',
+      isV2Parent: 'false'
+    })
+
+    const result = await apiKeyService.regenerateApiKey('key-1')
+
+    expect(result).toMatchObject({ id: 'key-1', name: 'old-name' })
+    expect(result.key.startsWith('cr_')).toBe(true)
+    expect(redis.deleteApiKeyHash).toHaveBeenCalledWith('old-hashed')
+    expect(redis.setApiKey).toHaveBeenCalledTimes(1)
+    const [, updatedKeyData] = redis.setApiKey.mock.calls[0]
+    expect(updatedKeyData.encryptedApiKey).toEqual(expect.any(String))
+    expect(decrypt(updatedKeyData.encryptedApiKey, false)).toBe(result.key)
+    expect(result).not.toHaveProperty('encryptedApiKey')
+  })
+
+  // getApiKeyPlaintextById ────────────────────────────────────────────────────
+
+  // 3. 正常：用 encrypt('cr_xxx') 造数据 → 解密后原样返回；并写审计日志（不含明文）
+  test('getApiKeyPlaintextById returns the decrypted plaintext and writes a security audit', async () => {
+    const secret = 'cr_plain-secret-123'
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      isDeleted: 'false',
+      encryptedApiKey: encrypt(secret)
+    })
+
+    const plaintext = await apiKeyService.getApiKeyPlaintextById('key-1', 'admin-user')
+
+    expect(plaintext).toBe(secret)
+    expect(logger.security).toHaveBeenCalledTimes(1)
+    expect(logger.security.mock.calls[0][0]).not.toContain(secret) // 审计不落明文
+  })
+
+  // 4. NOT_FOUND：getApiKey 返回 null / 空对象 / isDeleted
+  test('getApiKeyPlaintextById throws NOT_FOUND for missing, empty or soft-deleted keys', async () => {
+    redis.getApiKey.mockResolvedValueOnce(null)
+    await expect(apiKeyService.getApiKeyPlaintextById('key-1')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    })
+
+    redis.getApiKey.mockResolvedValueOnce({})
+    await expect(apiKeyService.getApiKeyPlaintextById('key-1')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    })
+
+    redis.getApiKey.mockResolvedValueOnce({ id: 'key-1', isDeleted: 'true' })
+    await expect(apiKeyService.getApiKeyPlaintextById('key-1')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    })
+
+    expect(logger.security).not.toHaveBeenCalled()
+  })
+
+  // 5. V2_PARENT_NO_SECRET：v2 父账号无可调用 secret
+  test('getApiKeyPlaintextById throws V2_PARENT_NO_SECRET for a v2 parent', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: PARENT_ID,
+      isDeleted: 'false',
+      isV2Parent: 'true',
+      encryptedApiKey: encrypt('cr_should-not-matter')
+    })
+
+    await expect(apiKeyService.getApiKeyPlaintextById(PARENT_ID)).rejects.toMatchObject({
+      code: 'V2_PARENT_NO_SECRET'
+    })
+    expect(logger.security).not.toHaveBeenCalled()
+  })
+
+  // 6. PLAINTEXT_UNAVAILABLE：旧 key 无 encryptedApiKey 副本
+  test('getApiKeyPlaintextById throws PLAINTEXT_UNAVAILABLE when no encrypted copy exists', async () => {
+    redis.getApiKey.mockResolvedValue({ id: 'legacy-key', isDeleted: 'false' })
+
+    await expect(apiKeyService.getApiKeyPlaintextById('legacy-key')).rejects.toMatchObject({
+      code: 'PLAINTEXT_UNAVAILABLE'
+    })
+    expect(logger.security).not.toHaveBeenCalled()
+  })
+
+  // 7. PLAINTEXT_DECRYPT_FAILED：密文解出的明文不以 cr_ 开头（如 encrypt('garbage')）
+  test('getApiKeyPlaintextById throws PLAINTEXT_DECRYPT_FAILED when the decrypted value lacks the prefix', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      isDeleted: 'false',
+      encryptedApiKey: encrypt('garbage-without-prefix')
+    })
+
+    await expect(apiKeyService.getApiKeyPlaintextById('key-1')).rejects.toMatchObject({
+      code: 'PLAINTEXT_DECRYPT_FAILED'
+    })
+    // 审计在解密之前已写出（reveal 意图已记录），此处不对其断言
+  })
+
+  // getV2ChildPlaintext ────────────────────────────────────────────────────────
+
+  // 8. 归属内正常：返回解密明文 + 写审计（含 parent/child id，不含明文）
+  test('getV2ChildPlaintext returns the decrypted plaintext for an owned child', async () => {
+    const secret = 'cr_child-secret-xyz'
+    redis.getApiKey.mockResolvedValue({
+      id: 'child-1',
+      parentKeyId: PARENT_ID,
+      isDeleted: 'false',
+      encryptedApiKey: encrypt(secret)
+    })
+
+    const plaintext = await apiKeyService.getV2ChildPlaintext(PARENT_ID, 'child-1', 'tenant')
+
+    expect(plaintext).toBe(secret)
+    expect(logger.security).toHaveBeenCalledTimes(1)
+    expect(logger.security.mock.calls[0][0]).not.toContain(secret)
+  })
+
+  // 9. NOT_FOUND：不存在 / 非归属 / 已软删（assertV2ChildOwnership 统一按 404）
+  test('getV2ChildPlaintext throws NOT_FOUND for missing, mismatched-parent or deleted children', async () => {
+    redis.getApiKey.mockResolvedValueOnce(null)
+    await expect(apiKeyService.getV2ChildPlaintext(PARENT_ID, 'child-1')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    })
+
+    redis.getApiKey.mockResolvedValueOnce({ id: 'child-1', parentKeyId: 'other-parent' })
+    await expect(apiKeyService.getV2ChildPlaintext(PARENT_ID, 'child-1')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    })
+
+    redis.getApiKey.mockResolvedValueOnce({
+      id: 'child-1',
+      parentKeyId: PARENT_ID,
+      isDeleted: 'true'
+    })
+    await expect(apiKeyService.getV2ChildPlaintext(PARENT_ID, 'child-1')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    })
+
+    expect(logger.security).not.toHaveBeenCalled()
+  })
+
+  // 10. PLAINTEXT_UNAVAILABLE：归属内但无 encryptedApiKey 副本
+  test('getV2ChildPlaintext throws PLAINTEXT_UNAVAILABLE when the owned child has no encrypted copy', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'child-1',
+      parentKeyId: PARENT_ID,
+      isDeleted: 'false'
+    })
+
+    await expect(apiKeyService.getV2ChildPlaintext(PARENT_ID, 'child-1')).rejects.toMatchObject({
+      code: 'PLAINTEXT_UNAVAILABLE'
+    })
+    expect(logger.security).not.toHaveBeenCalled()
+  })
+
+  // strip：列表/恢复返回对象绝不含 encryptedApiKey（也不含 apiKey）─────────────────
+
+  // 11. getAllApiKeysFast 剥离 encryptedApiKey / apiKey
+  test('getAllApiKeysFast strips encryptedApiKey and apiKey from returned objects', async () => {
+    redis.batchGetApiKeys.mockResolvedValue([
+      { id: 'c1', isDeleted: false, apiKey: 'hashed', encryptedApiKey: encrypt('cr_secret') }
+    ])
+    redis.batchGetApiKeyStats.mockResolvedValue(new Map())
+
+    const keys = await apiKeyService.getAllApiKeysFast(false, ['c1'])
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).not.toHaveProperty('encryptedApiKey')
+    expect(keys[0]).not.toHaveProperty('apiKey')
+  })
+
+  // 12. restoreApiKey 返回的安全副本剥离 encryptedApiKey / apiKey（hash）
+  //     （返回结构为 { success, apiKey: <safeKey> }，故对内层 safeKey 断言）
+  test('restoreApiKey strips encryptedApiKey and the hashed apiKey from the safe copy', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      name: 'restored',
+      apiKey: 'hashed',
+      encryptedApiKey: encrypt('cr_secret'),
+      isDeleted: 'true',
+      tags: '[]'
+    })
+    redis.client.hdel = jest.fn().mockResolvedValue()
+    redis.setApiKeyHash = jest.fn().mockResolvedValue()
+
+    const restored = await apiKeyService.restoreApiKey('key-1')
+
+    expect(restored.success).toBe(true)
+    expect(restored.apiKey).not.toHaveProperty('encryptedApiKey')
+    expect(restored.apiKey.apiKey).toBeUndefined() // hash 也已剥离
+    expect(restored.apiKey).not.toHaveProperty('v2PasswordHash')
+  })
+})

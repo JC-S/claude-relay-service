@@ -1857,6 +1857,38 @@ router.post('/api-keys/:keyId/v2-impersonate', authenticateAdmin, async (req, re
   }
 })
 
+// 🔓 显示 API Key 明文（仅 admin；响应不缓存；明文绝不入日志）
+router.post('/api-keys/:keyId/secret/reveal', authenticateAdmin, async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store')
+    const apiKey = await apiKeyService.getApiKeyPlaintextById(
+      req.params.keyId,
+      req.admin?.username || 'admin'
+    )
+    return res.json({ success: true, data: { apiKey } })
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'Not found', message: 'API key not found' })
+    }
+    if (error.code === 'V2_PARENT_NO_SECRET') {
+      return res.status(400).json({ error: 'No secret', message: 'v2 父账号无可调用的 API Key' })
+    }
+    if (error.code === 'PLAINTEXT_UNAVAILABLE') {
+      return res
+        .status(409)
+        .json({ error: 'Plaintext unavailable', message: '该 Key 创建于功能上线前，无法显示明文' })
+    }
+    if (error.code === 'PLAINTEXT_DECRYPT_FAILED') {
+      return res.status(500).json({
+        error: 'Decrypt failed',
+        message: 'API Key 明文解密失败，请检查 ENCRYPTION_KEY 是否匹配'
+      })
+    }
+    logger.error('Failed to reveal API key secret:', error)
+    return res.status(500).json({ error: 'Reveal failed', message: error.message })
+  }
+})
+
 // 批量创建API Keys
 router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
   try {

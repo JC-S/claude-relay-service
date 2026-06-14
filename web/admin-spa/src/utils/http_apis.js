@@ -118,6 +118,8 @@ export const batchUpdateApiKeysApi = (data) =>
   request({ url: '/admin/api-keys/batch', method: 'PUT', data })
 export const getApiKeyUsageRecordsApi = (id, params) =>
   request({ url: `/admin/api-keys/${id}/usage-records`, method: 'GET', params })
+export const revealApiKeySecretApi = (id) =>
+  request({ url: `/admin/api-keys/${id}/secret/reveal`, method: 'POST' })
 
 // 🆕 v2 账号
 export const upgradeApiKeyToV2Api = (id, data) =>
@@ -134,6 +136,8 @@ export const updateV2ApiKeyApi = (id, data) =>
 export const deleteV2ApiKeyApi = (id) => request({ url: `/admin/v2/keys/${id}`, method: 'DELETE' })
 export const getV2ApiKeyUsageRecordsApi = (id, params) =>
   request({ url: `/admin/v2/keys/${id}/usage-records`, method: 'GET', params })
+export const revealV2ApiKeySecretApi = (id) =>
+  request({ url: `/admin/v2/keys/${id}/secret/reveal`, method: 'POST' })
 export const changeV2PasswordApi = (data) =>
   request({ url: '/admin/v2/account/password', method: 'POST', data })
 export const getV2IpWhitelistApi = () =>

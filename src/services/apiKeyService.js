@@ -10,6 +10,7 @@ const { isClaudeFamilyModel } = require('../utils/modelHelper')
 const { finalizeRequestDetailMeta } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('./requestBodyRuleService')
 const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
+const { encrypt, decrypt } = require('../utils/commonHelper')
 
 const ACCOUNT_TYPE_CONFIG = {
   claude: { prefix: 'claude:account:' },
@@ -310,6 +311,7 @@ class ApiKeyService {
       name,
       description,
       apiKey: hashedKey,
+      encryptedApiKey: encrypt(apiKey), // 🆕 可逆明文副本，仅供 reveal，绝不随列表/详情/导出返回
       tokenLimit: String(tokenLimit ?? 0),
       concurrencyLimit: String(concurrencyLimit ?? 0),
       rateLimitWindow: String(rateLimitWindow ?? 0),
@@ -1315,6 +1317,7 @@ class ApiKeyService {
         }
 
         delete key.apiKey // 不返回哈希后的key
+        delete key.encryptedApiKey // 🔒 绝不返回可逆明文副本
         delete key.v2PasswordHash // 🔒 绝不返回 v2 密码 hash
       }
 
@@ -1559,6 +1562,7 @@ class ApiKeyService {
           key.maskedKey = `${this.prefix}****${key.apiKey.slice(-4)}`
         }
         delete key.apiKey
+        delete key.encryptedApiKey // 🔒 绝不返回可逆明文副本
         delete key.ccrAccountId
         delete key.v2PasswordHash // 🔒 绝不返回 v2 密码 hash
 
@@ -1895,6 +1899,7 @@ class ApiKeyService {
       // 🆕 返回前剥离敏感字段（apiKey hash、v2 密码 hash），任何响应都不得包含
       const safeApiKey = { ...updatedData }
       delete safeApiKey.apiKey
+      delete safeApiKey.encryptedApiKey // 🔒 绝不返回可逆明文副本
       delete safeApiKey.v2PasswordHash
 
       return { success: true, apiKey: safeApiKey }
@@ -2925,6 +2930,7 @@ class ApiKeyService {
       const updatedKeyData = {
         ...existingKey,
         apiKey: newHashedKey,
+        encryptedApiKey: encrypt(newApiKey), // 🆕 同步刷新可逆明文副本
         updatedAt: new Date().toISOString()
       }
 
@@ -2943,6 +2949,39 @@ class ApiKeyService {
       logger.error('❌ Failed to regenerate API key:', error)
       throw error
     }
+  }
+
+  // 🔓 解密存储的可逆明文副本（decrypt 失败会原样返回密文，故必须前缀校验；useCache=false 不缓存明文密钥）
+  _decryptStoredApiKeySecret(encryptedValue) {
+    const plaintext = decrypt(encryptedValue, false)
+    if (!plaintext || !plaintext.startsWith(this.prefix)) {
+      const err = new Error('API key secret cannot be decrypted')
+      err.code = 'PLAINTEXT_DECRYPT_FAILED'
+      throw err
+    }
+    return plaintext
+  }
+
+  // 🔓 管理员显示 API Key 明文（只返回明文、绝不记录明文；旧 key 无副本 → PLAINTEXT_UNAVAILABLE）
+  async getApiKeyPlaintextById(keyId, actor = 'admin') {
+    const keyData = await redis.getApiKey(keyId)
+    if (!keyData || Object.keys(keyData).length === 0 || keyData.isDeleted === 'true') {
+      const err = new Error('API key not found')
+      err.code = 'NOT_FOUND'
+      throw err
+    }
+    if (keyData.isV2Parent === 'true') {
+      const err = new Error('v2 parent account has no callable API secret')
+      err.code = 'V2_PARENT_NO_SECRET'
+      throw err
+    }
+    if (!keyData.encryptedApiKey) {
+      const err = new Error('API key plaintext is unavailable')
+      err.code = 'PLAINTEXT_UNAVAILABLE'
+      throw err
+    }
+    logger.security(`API key secret revealed by ${actor}: ${keyId}`)
+    return this._decryptStoredApiKeySecret(keyData.encryptedApiKey)
   }
 
   // 🗑️ 硬删除API Key (完全移除)
@@ -3796,6 +3835,20 @@ class ApiKeyService {
       throw err
     }
     return child
+  }
+
+  // 🔓 v2 自助显示子 key 明文（先归属校验；只返回该子 key 明文，无任何上游/父账号信息）
+  async getV2ChildPlaintext(parentKeyId, childKeyId, actor = 'v2') {
+    const child = await this.assertV2ChildOwnership(parentKeyId, childKeyId)
+    if (!child.encryptedApiKey) {
+      const err = new Error('API key plaintext is unavailable')
+      err.code = 'PLAINTEXT_UNAVAILABLE'
+      throw err
+    }
+    logger.security(
+      `v2 child API key secret revealed by ${actor}: parent=${parentKeyId}, child=${childKeyId}`
+    )
+    return this._decryptStoredApiKeySecret(child.encryptedApiKey)
   }
 
   // 📝 v2 更新子 key（归属校验 + 硬白名单 + 数值/状态规范化全部收敛在 service 层，

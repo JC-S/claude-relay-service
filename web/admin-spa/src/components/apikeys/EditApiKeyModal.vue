@@ -17,7 +17,7 @@
           </div>
           <button
             class="p-1 text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-            @click="$emit('close')"
+            @click="handleClose"
           >
             <i class="fas fa-times text-lg sm:text-xl" />
           </button>
@@ -42,6 +42,22 @@
                 type="text"
               />
               <button
+                v-if="!apiKey.isV2Parent"
+                class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700/40 dark:hover:text-gray-100"
+                :disabled="revealingApiKey"
+                title="显示完整 Key"
+                type="button"
+                @click="revealApiKey"
+              >
+                <i
+                  :class="[
+                    'mr-1.5 text-xs',
+                    revealingApiKey ? 'fas fa-spinner fa-spin' : 'fas fa-eye'
+                  ]"
+                />
+                显示完整 Key
+              </button>
+              <button
                 v-if="apiKey.isV2Parent"
                 class="inline-flex items-center justify-center rounded-lg border border-purple-200 px-3 py-2 text-sm font-medium text-purple-600 transition-colors hover:bg-purple-50 hover:text-purple-900 dark:border-purple-700 dark:text-purple-400 dark:hover:bg-purple-900/20"
                 title="v2 管理"
@@ -65,6 +81,41 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 sm:mt-2">
               用于识别此 API Key 的用途
             </p>
+
+            <!-- 完整 API Key 明文展示（仅存内存，关闭即清） -->
+            <div
+              v-if="revealedApiKey"
+              class="mt-3 rounded-lg border border-gray-200 bg-gray-50/80 p-3 backdrop-blur-sm dark:border-gray-700 dark:bg-gray-800/50"
+            >
+              <div class="mb-2 flex items-center justify-between">
+                <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                  完整 API Key
+                </span>
+                <div class="flex items-center gap-2">
+                  <button
+                    class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-200/70 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-100"
+                    type="button"
+                    @click="toggleShowFullApiKey"
+                  >
+                    <i :class="['text-xs', showFullApiKey ? 'fas fa-eye-slash' : 'fas fa-eye']" />
+                    {{ showFullApiKey ? '隐藏' : '显示' }}
+                  </button>
+                  <button
+                    class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 hover:text-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/20 dark:hover:text-blue-300"
+                    type="button"
+                    @click="copyRevealedApiKey"
+                  >
+                    <i class="fas fa-copy text-xs" />
+                    复制
+                  </button>
+                </div>
+              </div>
+              <code
+                class="block break-all rounded-md border border-gray-200 bg-white px-3 py-2 font-mono text-sm text-gray-800 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"
+              >
+                {{ showFullApiKey ? revealedApiKey : maskedApiKey }}
+              </code>
+            </div>
           </div>
 
           <!-- 服务倍率设置 -->
@@ -1145,7 +1196,7 @@
             <button
               class="flex-1 rounded-xl bg-gray-100 px-6 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
               type="button"
-              @click="$emit('close')"
+              @click="handleClose"
             >
               取消
             </button>
@@ -1179,7 +1230,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
-import { showToast, parseIpWhitelistInput } from '@/utils/tools'
+import { showToast, parseIpWhitelistInput, copyText } from '@/utils/tools'
 import { useClientsStore } from '@/stores/clients'
 import { useApiKeysStore } from '@/stores/apiKeys'
 import * as httpApis from '@/utils/http_apis'
@@ -1215,6 +1266,61 @@ const clientsStore = useClientsStore()
 const apiKeysStore = useApiKeysStore()
 const loading = ref(false)
 const accountsLoading = ref(false)
+
+// 显示完整 API Key 明文（仅存内存，关闭即清）
+const revealedApiKey = ref('')
+const showFullApiKey = ref(false)
+const revealingApiKey = ref(false)
+
+const maskedApiKey = computed(() => {
+  const key = revealedApiKey.value
+  if (!key) {
+    return ''
+  }
+  if (key.length <= 12) {
+    return key
+  }
+  return `${key.slice(0, 8)}●●●●${key.slice(-4)}`
+})
+
+const revealApiKey = async () => {
+  if (revealingApiKey.value) {
+    return
+  }
+  revealingApiKey.value = true
+  try {
+    const res = await httpApis.revealApiKeySecretApi(props.apiKey.id)
+    if (res.success && res.data?.apiKey) {
+      revealedApiKey.value = res.data.apiKey
+      showFullApiKey.value = true
+    } else {
+      showToast(res.message || '显示失败', 'error')
+    }
+  } catch (error) {
+    showToast(error?.message || '显示失败', 'error')
+  } finally {
+    revealingApiKey.value = false
+  }
+}
+
+const toggleShowFullApiKey = () => {
+  showFullApiKey.value = !showFullApiKey.value
+}
+
+const copyRevealedApiKey = () => {
+  copyText(revealedApiKey.value)
+}
+
+const resetRevealedApiKey = () => {
+  revealedApiKey.value = ''
+  showFullApiKey.value = false
+  revealingApiKey.value = false
+}
+
+const handleClose = () => {
+  resetRevealedApiKey()
+  emit('close')
+}
 
 // ConfirmModal 状态
 const showConfirmModal = ref(false)
@@ -1618,6 +1724,7 @@ const updateApiKey = async () => {
     const result = await httpApis.updateApiKeyApi(props.apiKey.id, data)
 
     if (result.success) {
+      resetRevealedApiKey()
       emit('success')
       emit('close')
     } else {

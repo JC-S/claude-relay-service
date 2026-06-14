@@ -152,6 +152,35 @@ router.get('/keys/:keyId/usage-records', async (req, res) => {
   }
 })
 
+// 🔓 v2 自助显示自己子 key 的明文（先归属校验；只返回该 key 明文，无上游信息）
+router.post('/keys/:keyId/secret/reveal', async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store')
+    const apiKey = await apiKeyService.getV2ChildPlaintext(
+      req.v2Account.parentKeyId,
+      req.params.keyId,
+      req.v2Account.email || 'v2'
+    )
+    return res.json({ success: true, data: { apiKey } })
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'Not found', message: 'API key not found' })
+    }
+    if (error.code === 'PLAINTEXT_UNAVAILABLE') {
+      return res
+        .status(409)
+        .json({ error: 'Plaintext unavailable', message: '该 Key 创建于功能上线前，无法显示明文' })
+    }
+    if (error.code === 'PLAINTEXT_DECRYPT_FAILED') {
+      return res
+        .status(500)
+        .json({ error: 'Decrypt failed', message: 'API Key 明文解密失败，请联系管理员' })
+    }
+    logger.error('Failed to reveal v2 child API key secret:', error)
+    return res.status(500).json({ error: 'Reveal failed', message: error.message })
+  }
+})
+
 // 🔑 创建子 key（只接受 name/description/dailyCostLimit/totalCostLimit，其余实时继承父账号）
 router.post('/keys', async (req, res) => {
   try {

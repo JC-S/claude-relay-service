@@ -174,7 +174,7 @@
           </h3>
           <button
             class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-            @click="showFormModal = false"
+            @click="closeFormModal"
           >
             <i class="fas fa-times text-xl" />
           </button>
@@ -227,6 +227,45 @@
           </div>
           <div v-if="editingId">
             <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+              >完整 API Key</label
+            >
+            <button
+              class="inline-flex items-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-60 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              :disabled="revealingApiKey"
+              type="button"
+              @click="revealApiKey"
+            >
+              <div v-if="revealingApiKey" class="loading-spinner" />
+              <i v-else class="fas fa-eye" />
+              显示完整 Key
+            </button>
+            <div
+              v-if="revealedApiKey"
+              class="mt-2 flex items-center gap-2 rounded-lg bg-gray-100 p-3 dark:bg-gray-700"
+            >
+              <code class="flex-1 break-all font-mono text-xs text-gray-800 dark:text-gray-200">{{
+                showFullApiKey ? revealedApiKey : maskedRevealedApiKey()
+              }}</code>
+              <button
+                class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                :title="showFullApiKey ? '隐藏' : '显示'"
+                type="button"
+                @click="toggleShowFullApiKey"
+              >
+                <i :class="showFullApiKey ? 'fas fa-eye-slash' : 'fas fa-eye'" />
+              </button>
+              <button
+                class="text-blue-500 hover:text-blue-700"
+                title="复制"
+                type="button"
+                @click="copyRevealedApiKey"
+              >
+                <i class="fas fa-copy" />
+              </button>
+            </div>
+          </div>
+          <div v-if="editingId">
+            <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
               >IP 白名单</label
             >
             <div class="space-y-2">
@@ -258,7 +297,7 @@
             <button
               class="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
               type="button"
-              @click="showFormModal = false"
+              @click="closeFormModal"
             >
               取消
             </button>
@@ -757,7 +796,8 @@ import {
   deleteV2ApiKeyApi,
   getV2ApiKeyUsageRecordsApi,
   getV2IpWhitelistApi,
-  updateV2IpWhitelistApi
+  updateV2IpWhitelistApi,
+  revealV2ApiKeySecretApi
 } from '@/utils/http_apis'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 
@@ -781,6 +821,11 @@ const form = reactive({
 
 const showSecretModal = ref(false)
 const newSecret = ref('')
+
+// 编辑态：显示该子 key 完整明文（仅本 key，不含任何父账号/上游信息）
+const revealedApiKey = ref('')
+const showFullApiKey = ref(false)
+const revealingApiKey = ref(false)
 
 // 账号级 IP 白名单弹窗
 const showAccountIpWhitelistModal = ref(false)
@@ -869,6 +914,12 @@ const refresh = async () => {
   await Promise.all([loadAccount(), loadKeys()])
 }
 
+const resetRevealState = () => {
+  revealedApiKey.value = ''
+  showFullApiKey.value = false
+  revealingApiKey.value = false
+}
+
 const openCreateModal = () => {
   editingId.value = null
   form.name = ''
@@ -878,6 +929,7 @@ const openCreateModal = () => {
   form.isActive = true
   form.ipWhitelistMode = 'inherit'
   form.ipWhitelistInput = ''
+  resetRevealState()
   showFormModal.value = true
 }
 
@@ -898,6 +950,7 @@ const openEditModal = (key) => {
     form.ipWhitelistMode = 'disabled'
     form.ipWhitelistInput = ''
   }
+  resetRevealState()
   showFormModal.value = true
 }
 
@@ -1112,6 +1165,51 @@ const closeRecordDetail = () => {
 const copySecret = async () => {
   await copyText(newSecret.value)
   showToast('已复制', 'success')
+}
+
+const closeFormModal = () => {
+  showFormModal.value = false
+  resetRevealState()
+}
+
+// 编辑态显示该子 key 完整明文；request() 不抛异常，失败统一 toast 后端中文提示
+const revealApiKey = async () => {
+  if (revealingApiKey.value) {
+    return
+  }
+  revealingApiKey.value = true
+  try {
+    const res = await revealV2ApiKeySecretApi(editingId.value)
+    if (res.success && res.data?.apiKey) {
+      revealedApiKey.value = res.data.apiKey
+      showFullApiKey.value = true
+    } else {
+      showToast(res.message || '显示失败', 'error')
+    }
+  } catch (error) {
+    showToast(error?.message || '显示失败', 'error')
+  } finally {
+    revealingApiKey.value = false
+  }
+}
+
+const toggleShowFullApiKey = () => {
+  showFullApiKey.value = !showFullApiKey.value
+}
+
+const maskedRevealedApiKey = () => {
+  const key = revealedApiKey.value
+  if (!key) {
+    return ''
+  }
+  if (key.length <= 12) {
+    return key
+  }
+  return `${key.slice(0, 8)}●●●●${key.slice(-4)}`
+}
+
+const copyRevealedApiKey = async () => {
+  await copyText(revealedApiKey.value)
 }
 
 onMounted(refresh)

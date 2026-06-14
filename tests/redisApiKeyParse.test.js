@@ -47,6 +47,21 @@ describe('redis api key parsing', () => {
     ])
   })
 
+  test('strips reversible/secret fields from batch list/pagination data', () => {
+    const parsed = redis._parseApiKeyData({
+      name: 'k1',
+      apiKey: 'hashed-value',
+      encryptedApiKey: 'iv:cipher',
+      v2PasswordHash: 'bcrypt-hash'
+    })
+
+    // 🔒 可逆明文副本与 v2 密码 hash 绝不经 batchGetApiKeys（列表/分页/索引/费用排序）路径返回
+    expect(parsed).not.toHaveProperty('encryptedApiKey')
+    expect(parsed).not.toHaveProperty('v2PasswordHash')
+    // 普通字段正常透传
+    expect(parsed.name).toBe('k1')
+  })
+
   test('uses safe defaults for missing openai responses fields', () => {
     const parsed = redis._parseApiKeyData({})
 
