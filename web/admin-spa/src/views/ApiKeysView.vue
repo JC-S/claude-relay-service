@@ -465,13 +465,36 @@
                         :class="shouldShowCheckboxes ? 'left-[50px]' : 'left-0'"
                       >
                         <div class="min-w-0">
-                          <!-- 名称 -->
-                          <div
-                            class="cursor-pointer truncate text-sm font-semibold text-gray-900 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-400"
-                            title="点击复制"
-                            @click.stop="copyText(key.name)"
-                          >
-                            {{ key.name }}
+                          <!-- 名称（含 v2 父账号展开箭头 + v2 徽章） -->
+                          <div class="flex items-center gap-1">
+                            <button
+                              v-if="groupingEnabled && key.isV2Parent"
+                              class="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                              :title="expandedV2Parents[key.id] ? '收起子 API' : '展开子 API'"
+                              type="button"
+                              @click.stop="toggleV2Children(key.id)"
+                            >
+                              <i
+                                :class="[
+                                  'fas',
+                                  expandedV2Parents[key.id] ? 'fa-chevron-down' : 'fa-chevron-right'
+                                ]"
+                              />
+                            </button>
+                            <div
+                              class="min-w-0 cursor-pointer truncate text-sm font-semibold text-gray-900 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-400"
+                              title="点击复制"
+                              @click.stop="copyText(key.name)"
+                            >
+                              {{ key.name }}
+                            </div>
+                            <span
+                              v-if="key.isV2Parent"
+                              class="inline-flex flex-shrink-0 items-center rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
+                              title="v2 账号（父账号）"
+                            >
+                              <i class="fas fa-layer-group mr-1 text-[9px]" />v2
+                            </span>
                           </div>
                           <!-- 显示所有者信息 -->
                           <div
@@ -1009,9 +1032,109 @@
                       </td>
                     </tr>
 
+                    <!-- 🆕 v2 子 API 展开区域 -->
+                    <tr v-if="groupingEnabled && key.isV2Parent && expandedV2Parents[key.id]">
+                      <td
+                        class="bg-indigo-50/40 px-3 py-3 dark:bg-indigo-900/10"
+                        :colspan="apiKeyTableColspan"
+                      >
+                        <div
+                          v-if="isV2ChildrenLoading(key.id)"
+                          class="py-3 text-center text-sm text-gray-500 dark:text-gray-400"
+                        >
+                          <i class="fas fa-spinner fa-spin mr-1" />加载子 API…
+                        </div>
+                        <div
+                          v-else-if="getV2Children(key.id).length === 0"
+                          class="py-3 text-center text-sm text-gray-400 dark:text-gray-500"
+                        >
+                          该账号暂无子 API
+                        </div>
+                        <div v-else class="space-y-1">
+                          <div
+                            class="flex items-center gap-2 px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500"
+                          >
+                            <span class="min-w-[160px]">子 API 名称</span>
+                            <span class="w-14 text-center">状态</span>
+                            <span class="w-24 text-right">费用</span>
+                            <span class="w-20 text-right">请求数</span>
+                            <span class="w-32 text-right">最后使用</span>
+                            <span class="ml-auto">操作</span>
+                          </div>
+                          <div
+                            v-for="child in getV2Children(key.id)"
+                            :key="child.id"
+                            class="flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-white/60 dark:hover:bg-gray-800/40"
+                          >
+                            <span
+                              class="min-w-[160px] cursor-pointer truncate font-medium text-gray-800 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-400"
+                              :title="child.name"
+                              @click.stop="copyText(child.name)"
+                            >
+                              {{ child.name }}
+                            </span>
+                            <span
+                              class="w-14 text-center"
+                              :class="child.isActive ? 'text-green-600' : 'text-red-500'"
+                            >
+                              {{ child.isActive ? '活跃' : '停用' }}
+                            </span>
+                            <span class="w-24 text-right text-green-600 dark:text-green-400">
+                              {{ getCachedStats(child.id)?.formattedCost || '$0.00' }}
+                            </span>
+                            <span class="w-20 text-right text-gray-600 dark:text-gray-300">
+                              {{ formatNumber(getCachedStats(child.id)?.requests || 0) }}
+                            </span>
+                            <span class="w-32 text-right text-gray-500 dark:text-gray-400">
+                              {{ child.lastUsedAt ? formatLastUsed(child.lastUsedAt) : '从未使用' }}
+                            </span>
+                            <span class="ml-auto inline-flex items-center gap-2">
+                              <button
+                                class="text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                                title="详情"
+                                @click.stop="showUsageDetails(child)"
+                              >
+                                <i class="fas fa-chart-line" />
+                              </button>
+                              <button
+                                class="text-gray-600 hover:text-gray-700 dark:text-gray-300"
+                                title="编辑"
+                                @click.stop="openEditApiKeyModal(child)"
+                              >
+                                <i class="fas fa-edit" />
+                              </button>
+                              <button
+                                :class="
+                                  child.isActive
+                                    ? 'text-orange-600 hover:text-orange-700 dark:text-orange-400'
+                                    : 'text-green-600 hover:text-green-700 dark:text-green-400'
+                                "
+                                :title="child.isActive ? '禁用' : '激活'"
+                                @click.stop="toggleApiKeyStatus(child)"
+                              >
+                                <i
+                                  :class="['fas', child.isActive ? 'fa-ban' : 'fa-check-circle']"
+                                />
+                              </button>
+                              <button
+                                class="text-red-600 hover:text-red-700 dark:text-red-400"
+                                title="删除"
+                                @click.stop="deleteApiKey(child.id)"
+                              >
+                                <i class="fas fa-trash" />
+                              </button>
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+
                     <!-- 模型统计展开区域 -->
                     <tr v-if="key && key.id && expandedApiKeys[key.id]">
-                      <td class="bg-gray-50 px-3 py-3 dark:bg-gray-700" colspan="13">
+                      <td
+                        class="bg-gray-50 px-3 py-3 dark:bg-gray-700"
+                        :colspan="apiKeyTableColspan"
+                      >
                         <div v-if="!apiKeyModelStats[key.id]" class="py-4 text-center">
                           <div class="loading-spinner mx-auto" />
                           <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
@@ -1290,13 +1413,36 @@
                     :value="key.id"
                     @change="updateSelectAllState"
                   />
+                  <button
+                    v-if="groupingEnabled && key.isV2Parent"
+                    class="inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                    :title="expandedV2Parents[key.id] ? '收起子 API' : '展开子 API'"
+                    type="button"
+                    @click.stop="toggleV2Children(key.id)"
+                  >
+                    <i
+                      :class="[
+                        'fas',
+                        expandedV2Parents[key.id] ? 'fa-chevron-down' : 'fa-chevron-right'
+                      ]"
+                    />
+                  </button>
                   <div>
-                    <h4
-                      class="cursor-pointer text-sm font-semibold text-gray-900 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-400"
-                      title="点击复制"
-                      @click.stop="copyText(key.name)"
-                    >
-                      {{ key.name }}
+                    <h4 class="flex items-center gap-1.5">
+                      <span
+                        class="cursor-pointer text-sm font-semibold text-gray-900 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-400"
+                        title="点击复制"
+                        @click.stop="copyText(key.name)"
+                      >
+                        {{ key.name }}
+                      </span>
+                      <span
+                        v-if="key.isV2Parent"
+                        class="inline-flex flex-shrink-0 items-center rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
+                        title="v2 账号（父账号）"
+                      >
+                        <i class="fas fa-layer-group mr-1 text-[9px]" />v2
+                      </span>
                     </h4>
                     <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                       {{ key.id }}
@@ -1682,6 +1828,91 @@
                 >
                   <i class="fas fa-trash" />
                 </button>
+              </div>
+
+              <!-- 🆕 v2 子 API 卡片组 -->
+              <div
+                v-if="groupingEnabled && key.isV2Parent && expandedV2Parents[key.id]"
+                class="mt-3 space-y-2 border-l-2 border-indigo-200 pl-3 dark:border-indigo-800"
+              >
+                <div
+                  v-if="isV2ChildrenLoading(key.id)"
+                  class="py-2 text-center text-xs text-gray-500 dark:text-gray-400"
+                >
+                  <i class="fas fa-spinner fa-spin mr-1" />加载子 API…
+                </div>
+                <div
+                  v-else-if="getV2Children(key.id).length === 0"
+                  class="py-2 text-center text-xs text-gray-400 dark:text-gray-500"
+                >
+                  该账号暂无子 API
+                </div>
+                <template v-else>
+                  <div
+                    v-for="child in getV2Children(key.id)"
+                    :key="child.id"
+                    class="rounded-lg bg-gray-50 p-2.5 dark:bg-gray-800/40"
+                  >
+                    <div class="mb-1.5 flex items-center justify-between gap-2">
+                      <span
+                        class="cursor-pointer truncate text-xs font-semibold text-gray-800 dark:text-gray-100"
+                        @click.stop="copyText(child.name)"
+                      >
+                        {{ child.name }}
+                      </span>
+                      <span
+                        class="flex-shrink-0 text-[11px]"
+                        :class="child.isActive ? 'text-green-600' : 'text-red-500'"
+                      >
+                        {{ child.isActive ? '活跃' : '停用' }}
+                      </span>
+                    </div>
+                    <div
+                      class="mb-2 flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400"
+                    >
+                      <span class="text-green-600 dark:text-green-400">
+                        {{ getCachedStats(child.id)?.formattedCost || '$0.00' }}
+                      </span>
+                      <span>{{ formatNumber(getCachedStats(child.id)?.requests || 0) }} 次</span>
+                      <span>{{
+                        child.lastUsedAt ? formatLastUsed(child.lastUsedAt) : '从未使用'
+                      }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button
+                        class="flex-1 rounded bg-blue-50 px-2 py-1 text-[11px] text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+                        @click.stop="showUsageDetails(child)"
+                      >
+                        <i class="fas fa-chart-line mr-1" />详情
+                      </button>
+                      <button
+                        class="flex-1 rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                        @click.stop="openEditApiKeyModal(child)"
+                      >
+                        <i class="fas fa-edit mr-1" />编辑
+                      </button>
+                      <button
+                        class="flex-1 rounded px-2 py-1 text-[11px]"
+                        :class="
+                          child.isActive
+                            ? 'bg-orange-50 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400'
+                            : 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400'
+                        "
+                        @click.stop="toggleApiKeyStatus(child)"
+                      >
+                        <i
+                          :class="['fas', child.isActive ? 'fa-ban' : 'fa-check-circle', 'mr-1']"
+                        />{{ child.isActive ? '禁用' : '激活' }}
+                      </button>
+                      <button
+                        class="rounded bg-red-50 px-2 py-1 text-[11px] text-red-600 dark:bg-red-900/30 dark:text-red-400"
+                        @click.stop="deleteApiKey(child.id)"
+                      >
+                        <i class="fas fa-trash" />
+                      </button>
+                    </div>
+                  </div>
+                </template>
               </div>
             </div>
           </div>
@@ -2335,6 +2566,17 @@ const searchModeOptions = computed(() => [
   { value: 'bindingAccount', label: '按所属账号', icon: 'fa-id-badge' }
 ])
 
+// 🆕 v2 账号分组：父账号折叠子 key（按需展开）
+const expandedV2Parents = ref({}) // { [parentId]: true }
+const v2ChildrenCache = ref(new Map()) // parentId -> child[]（完整 key 形状）
+const v2ChildrenLoading = ref(new Set()) // 正在拉取子 key 的 parentId
+// 分组（折叠子 key + 父行箭头）仅在纯浏览生效：无搜索 / 无模型筛选 / 无标签筛选
+const groupingEnabled = computed(
+  () => !searchKeyword.value && selectedModels.value.length === 0 && !selectedTagFilter.value
+)
+// API Key 表格列数：有 checkbox 13 列、无 12 列（与表头一致，供展开子行 colspan 用）
+const apiKeyTableColspan = computed(() => (shouldShowCheckboxes.value ? 13 : 12))
+
 const tagOptions = computed(() => {
   const options = [{ value: '', label: '所有标签', icon: 'fa-asterisk' }]
   availableTags.value.forEach((tag) => {
@@ -2668,6 +2910,11 @@ const loadApiKeys = async (clearStatsCache = true) => {
       params.set('models', selectedModels.value.join(','))
     }
 
+    // 分组浏览：纯浏览时排除 v2 子 key（子 key 经展开按需拉取）
+    if (groupingEnabled.value) {
+      params.set('excludeV2Children', 'true')
+    }
+
     // 排序参数（支持费用排序）
     const validSortFields = [
       'name',
@@ -2749,9 +2996,9 @@ const loadApiKeys = async (clearStatsCache = true) => {
   }
 }
 
-// 异步加载当前页的统计数据
-const loadPageStats = async () => {
-  const currentPageKeys = apiKeys.value
+// 异步加载当前页的统计数据（keys 默认当页；展开子 key 时传入子列表）
+const loadPageStats = async (keys = apiKeys.value) => {
+  const currentPageKeys = keys
   if (!currentPageKeys || currentPageKeys.length === 0) return
 
   // 获取当前时间范围
@@ -2829,14 +3076,14 @@ const isStatsLoading = (keyId) => {
   return statsLoading.value.has(keyId)
 }
 
-// 异步加载当前页的最后使用账号数据
-const loadPageLastUsage = async () => {
-  const currentPageKeys = apiKeys.value
+// 异步加载当前页的最后使用账号数据（keys 默认当页；展开子 key 时传入子列表）
+const loadPageLastUsage = async (keys = apiKeys.value) => {
+  const currentPageKeys = keys
   if (!currentPageKeys || currentPageKeys.length === 0) return
 
   // 筛选出需要加载的 keys（未缓存且有 lastUsedAt 的）
   const keysNeedLastUsage = currentPageKeys.filter((key) => {
-    // 没有使用过的不需要加载
+    // 没有使用过的不需要加载（v2 父账号无子使用时后端已置 lastUsedAt=null）
     if (!key.lastUsedAt) return false
     // 已经有缓存的不需要加载
     if (lastUsageCache.value.has(key.id)) return false
@@ -2845,24 +3092,35 @@ const loadPageLastUsage = async () => {
 
   if (keysNeedLastUsage.length === 0) return
 
-  // 标记为加载中
-  const keyIds = keysNeedLastUsage.map((k) => k.id)
-  keyIds.forEach((id) => lastUsageLoading.value.add(id))
+  // v2 父账号用胜出子 key id 拉取「最后使用账号」，结果缓存回父 id 名下；其余按自身 id
+  const pairs = keysNeedLastUsage.map((k) => ({
+    cacheId: k.id,
+    fetchId: k.lastUsedChildId || k.id
+  }))
+  const cacheIds = pairs.map((p) => p.cacheId)
+  // 对 fetchId 去重，避免重复传参（batch-last-usage 单次硬限 100，当页/子分批均 ≤100）
+  const fetchIds = [...new Set(pairs.map((p) => p.fetchId))]
+
+  // 标记为加载中（按展示用的 cacheId）
+  cacheIds.forEach((id) => lastUsageLoading.value.add(id))
 
   try {
-    const response = await httpApis.getApiKeysBatchLastUsageApi({ keyIds })
+    const response = await httpApis.getApiKeysBatchLastUsageApi({ keyIds: fetchIds })
 
     if (response.success && response.data) {
-      // 更新缓存
-      for (const [keyId, lastUsage] of Object.entries(response.data)) {
-        lastUsageCache.value.set(keyId, lastUsage)
+      // 按 fetchId → cacheId 回填缓存
+      for (const p of pairs) {
+        const v = response.data[p.fetchId]
+        if (v !== undefined) {
+          lastUsageCache.value.set(p.cacheId, v)
+        }
       }
     }
   } catch (error) {
     console.error('加载最后使用账号数据失败:', error)
     // 不显示 toast，避免打扰用户
   } finally {
-    keyIds.forEach((id) => lastUsageLoading.value.delete(id))
+    cacheIds.forEach((id) => lastUsageLoading.value.delete(id))
   }
 }
 
@@ -2874,6 +3132,74 @@ const getCachedLastUsage = (keyId) => {
 // 检查是否正在加载最后使用账号
 const isLastUsageLoading = (keyId) => {
   return lastUsageLoading.value.has(keyId)
+}
+
+// 🆕 v2 子 key 的费用/最后使用按 100 分批加载（batch-stats / batch-last-usage 均硬限 100）
+const loadStatsAndLastUsageChunked = async (items) => {
+  for (let i = 0; i < items.length; i += 100) {
+    const chunk = items.slice(i, i + 100)
+    await Promise.all([loadPageStats(chunk), loadPageLastUsage(chunk)])
+  }
+}
+
+// 拉取某 v2 父账号的子 key（缓存 + 拉子 key 费用/最后使用）
+const fetchV2Children = async (parentId) => {
+  // 替换新 Set 触发响应式
+  v2ChildrenLoading.value = new Set(v2ChildrenLoading.value).add(parentId)
+  try {
+    const res = await httpApis.getApiKeyV2ChildrenApi(parentId)
+    if (res.success) {
+      const items = res.data?.items || []
+      v2ChildrenCache.value.set(parentId, items)
+      v2ChildrenCache.value = new Map(v2ChildrenCache.value) // 触发响应式
+      await loadStatsAndLastUsageChunked(items)
+    }
+  } catch {
+    showToast('加载子 API 失败', 'error')
+  } finally {
+    const s = new Set(v2ChildrenLoading.value)
+    s.delete(parentId)
+    v2ChildrenLoading.value = s
+  }
+}
+
+// 展开/收起 v2 父账号的子 key（首次展开按需拉取）
+const toggleV2Children = async (parentId) => {
+  expandedV2Parents.value[parentId] = !expandedV2Parents.value[parentId]
+  if (expandedV2Parents.value[parentId] && !v2ChildrenCache.value.has(parentId)) {
+    await fetchV2Children(parentId)
+  }
+}
+
+const getV2Children = (parentId) => v2ChildrenCache.value.get(parentId) || []
+const isV2ChildrenLoading = (parentId) => v2ChildrenLoading.value.has(parentId)
+
+// 子 key 增删改后让对应父账号缓存失效（仍展开则即时刷新）
+// 入参可为 key 对象（带 parentKeyId）或仅 id（回查缓存定位父）
+const invalidateV2ChildrenCacheFor = (keyOrId) => {
+  let parentId = null
+  if (keyOrId && typeof keyOrId === 'object') {
+    parentId = keyOrId.parentKeyId || null
+  } else {
+    for (const [pid, list] of v2ChildrenCache.value) {
+      if (Array.isArray(list) && list.some((c) => c.id === keyOrId)) {
+        parentId = pid
+        break
+      }
+    }
+  }
+  if (!parentId) return
+  v2ChildrenCache.value.delete(parentId)
+  v2ChildrenCache.value = new Map(v2ChildrenCache.value)
+  if (expandedV2Parents.value[parentId]) {
+    fetchV2Children(parentId)
+  }
+}
+
+// 清空全部子 key 缓存（父配置变更/升级后整体失效）
+const clearAllV2ChildrenCache = () => {
+  v2ChildrenCache.value = new Map()
+  expandedV2Parents.value = {}
 }
 
 // 加载已删除的API Keys
@@ -3893,6 +4219,10 @@ const handleBatchEditSuccess = () => {
 const handleEditSuccess = () => {
   showEditApiKeyModal.value = false
   showToast('API Key 更新成功', 'success')
+  // 若编辑的是 v2 子 key，失效其父账号的子列表缓存
+  if (editingApiKey.value && editingApiKey.value.parentKeyId) {
+    invalidateV2ChildrenCacheFor(editingApiKey.value)
+  }
   loadApiKeys()
 }
 
@@ -3954,6 +4284,7 @@ const openUpgradeToV2Modal = (key) => {
 }
 const handleUpgradeV2Success = () => {
   showUpgradeToV2Modal.value = false
+  clearAllV2ChildrenCache()
   loadApiKeys()
 }
 const openV2ManageModal = (key) => {
@@ -3962,6 +4293,8 @@ const openV2ManageModal = (key) => {
 }
 const handleV2ManageSuccess = () => {
   showV2ManageModal.value = false
+  // 父配置可能影响子 key 继承/展示，整体失效子缓存
+  clearAllV2ChildrenCache()
   loadApiKeys()
 }
 const handleEditModalUpgradeV2 = (key) => {
@@ -4000,6 +4333,10 @@ const toggleApiKeyStatus = async (key) => {
       if (localKey) {
         localKey.isActive = !key.isActive
       }
+      // 若切换的是 v2 子 key，失效其父账号子列表缓存（展开区即时刷新）
+      if (key.parentKeyId) {
+        invalidateV2ChildrenCacheFor(key)
+      }
     } else {
       showToast(data.message || '操作失败', 'error')
     }
@@ -4031,6 +4368,8 @@ const deleteApiKey = async (keyId) => {
         selectedApiKeys.value.splice(index, 1)
       }
       updateSelectAllState()
+      // 若删除的是 v2 子 key，失效其父账号子列表缓存（回查缓存定位父）
+      invalidateV2ChildrenCacheFor(keyId)
       loadApiKeys()
     } else {
       showToast(data.message || '删除失败', 'error')

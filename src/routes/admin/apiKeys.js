@@ -202,6 +202,9 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
     // 解析模型筛选参数
     const modelFilter = models ? models.split(',').filter((m) => m.trim()) : []
 
+    // 管理端分组浏览：排除 v2 子 key（仅显示父账号 + 普通 key），子 key 按需经专用端点拉取
+    const excludeV2Children = req.query.excludeV2Children === 'true'
+
     // 验证分页参数
     const pageNum = Math.max(1, parseInt(page) || 1)
     const pageSizeNum = [10, 20, 50, 100].includes(parseInt(pageSize)) ? parseInt(pageSize) : 20
@@ -293,7 +296,8 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
           searchMode,
           tag,
           isActive,
-          modelFilter
+          modelFilter,
+          excludeV2Children
         })
 
         costSortStatus = {
@@ -327,7 +331,8 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
           searchMode,
           tag,
           isActive,
-          modelFilter
+          modelFilter,
+          excludeV2Children
         })
 
         costSortStatus.isRealTimeCalculation = false
@@ -343,7 +348,8 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
         isActive,
         sortBy: validSortBy,
         sortOrder: validSortOrder,
-        modelFilter
+        modelFilter,
+        excludeV2Children
       })
     }
 
@@ -380,6 +386,9 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
       }
     }
 
+    // v2 父账号「最后使用」聚合：覆盖父 lastUsedAt + 附 lastUsedChildId（三路径统一）
+    await attachV2ParentLastUsed(result.items)
+
     // 返回分页数据
     const responseData = {
       success: true,
@@ -405,6 +414,28 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
 })
 
 /**
+ * 为列表中的 v2 父账号附加「最后使用」聚合：覆盖父 lastUsedAt + 附 lastUsedChildId。
+ * 无子使用记录 → 置 null（清升级前残留时间）。扫描路径在 lastUsedAt 排序时已聚合
+ *（lastUsedChildId 已定义）则跳过，避免重复调用 getV2ParentsLastUsed。
+ */
+async function attachV2ParentLastUsed(items) {
+  const parents = items.filter((k) => k.isV2Parent === true || k.isV2Parent === 'true')
+  if (parents.length === 0) {
+    return
+  }
+  const need = parents.filter((k) => k.lastUsedChildId === undefined)
+  const map = need.length > 0 ? await redis.getV2ParentsLastUsed(need.map((k) => k.id)) : new Map()
+  for (const p of parents) {
+    if (p.lastUsedChildId !== undefined) {
+      continue // 扫描路径已聚合
+    }
+    const agg = map.get(p.id)
+    p.lastUsedAt = agg ? agg.lastUsedAt : null
+    p.lastUsedChildId = agg ? agg.lastUsedChildId : null
+  }
+}
+
+/**
  * 使用预计算索引进行费用排序的分页查询
  */
 async function getApiKeysSortedByCostPrecomputed(options) {
@@ -417,7 +448,8 @@ async function getApiKeysSortedByCostPrecomputed(options) {
     searchMode,
     tag,
     isActive,
-    modelFilter = []
+    modelFilter = [],
+    excludeV2Children = false
   } = options
   const costRankService = require('../../services/costRankService')
 
@@ -438,6 +470,11 @@ async function getApiKeysSortedByCostPrecomputed(options) {
   // 3. 保持排序顺序（使用 Map 优化查找）
   const keyMap = new Map(allKeys.map((k) => [k.id, k]))
   let orderedKeys = rankedKeyIds.map((id) => keyMap.get(id)).filter((k) => k && !k.isDeleted)
+
+  // 排除 v2 子 key（管理端分组浏览）
+  if (excludeV2Children) {
+    orderedKeys = orderedKeys.filter((k) => !k.parentKeyId)
+  }
 
   // 4. 应用筛选条件
   // 状态筛选
@@ -526,7 +563,8 @@ async function getApiKeysSortedByCostCustom(options) {
     searchMode,
     tag,
     isActive,
-    modelFilter = []
+    modelFilter = [],
+    excludeV2Children = false
   } = options
   const costRankService = require('../../services/costRankService')
 
@@ -553,6 +591,11 @@ async function getApiKeysSortedByCostCustom(options) {
   // 4. 保持排序顺序
   const keyMap = new Map(allKeys.map((k) => [k.id, k]))
   let orderedKeys = rankedKeyIds.map((id) => keyMap.get(id)).filter((k) => k && !k.isDeleted)
+
+  // 排除 v2 子 key（管理端分组浏览）
+  if (excludeV2Children) {
+    orderedKeys = orderedKeys.filter((k) => !k.parentKeyId)
+  }
 
   // 5. 应用筛选条件
   // 状态筛选
@@ -1888,6 +1931,53 @@ router.post('/api-keys/:keyId/v2-impersonate', authenticateAdmin, async (req, re
   } catch (error) {
     logger.error('❌ Failed to impersonate v2 account:', error)
     return res.status(400).json({ error: 'Impersonation failed', message: error.message })
+  }
+})
+
+// 📋 管理员获取某 v2 父账号的子 key 列表（完整 key 形状，供主列表展开子行按需加载）
+router.get('/api-keys/:keyId/v2-children', authenticateAdmin, async (req, res) => {
+  try {
+    const { keyId } = req.params
+    const parent = await redis.getApiKey(keyId)
+    if (!parent || Object.keys(parent).length === 0 || parent.isV2Parent !== 'true') {
+      return res.status(404).json({ error: 'Not found', message: '该 API Key 不是 v2 父账号' })
+    }
+
+    const items = await apiKeyService.getV2ChildrenForAdmin(keyId, false)
+
+    // 复用主列表的 ownerDisplayName + 空 usage 补全逻辑
+    const userService = require('../../services/userService')
+    const userIdsToFetch = [...new Set(items.filter((k) => k.userId).map((k) => k.userId))]
+    const userMap = new Map()
+    if (userIdsToFetch.length > 0) {
+      const users = await Promise.all(
+        userIdsToFetch.map((id) => userService.getUserById(id, false).catch(() => null))
+      )
+      userIdsToFetch.forEach((id, i) => {
+        if (users[i]) {
+          userMap.set(id, users[i])
+        }
+      })
+    }
+    for (const apiKey of items) {
+      if (apiKey.userId && userMap.has(apiKey.userId)) {
+        const user = userMap.get(apiKey.userId)
+        apiKey.ownerDisplayName = user.displayName || user.username || 'Unknown User'
+      } else if (apiKey.userId) {
+        apiKey.ownerDisplayName = 'Unknown User'
+      } else {
+        apiKey.ownerDisplayName =
+          apiKey.createdBy === 'admin' ? 'Admin' : apiKey.createdBy || 'Admin'
+      }
+      if (!apiKey.usage) {
+        apiKey.usage = { total: { requests: 0, tokens: 0, cost: 0, formattedCost: '$0.00' } }
+      }
+    }
+
+    return res.json({ success: true, data: { items } })
+  } catch (error) {
+    logger.error('❌ Failed to get v2 children:', error)
+    return res.status(500).json({ error: 'Failed to get v2 children', message: error.message })
   }
 })
 

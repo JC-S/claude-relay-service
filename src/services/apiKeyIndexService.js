@@ -437,7 +437,8 @@ class ApiKeyIndexService {
       sortOrder = 'desc',
       isActive,
       tag,
-      excludeDeleted = true
+      excludeDeleted = true,
+      excludeV2Children = false
     } = options
 
     const client = this.redis.getClientSafe()
@@ -487,7 +488,14 @@ class ApiKeyIndexService {
       }
 
       // 2. 获取筛选后的 keyId 集合
-      const filterMembers = await client.smembers(filterSet)
+      let filterMembers = await client.smembers(filterSet)
+      // 管理端分组浏览：在排序/分页前剔除 v2 子 key，保证 pagination.total 不计子 API
+      if (excludeV2Children) {
+        const childIds = await this.redis.getAllV2ChildKeyIds()
+        if (childIds.size > 0) {
+          filterMembers = filterMembers.filter((id) => !childIds.has(id))
+        }
+      }
       if (filterMembers.length === 0) {
         // 没有匹配的数据
         return {

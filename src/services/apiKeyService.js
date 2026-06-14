@@ -3840,6 +3840,14 @@ class ApiKeyService {
       .filter(Boolean)
   }
 
+  // 🛠️ 管理员视角的子 key 列表：完整 key 形状（与主列表行一致），不经 _toV2ChildView 最小化。
+  // _getV2ChildKeys 经 v2:children 集合加载并已 fail-closed 过滤归属；getAllApiKeysFast 已删
+  // apiKey / encryptedApiKey / v2PasswordHash，无明文/密码泄漏。createdAt 倒序保证 UI 稳定。
+  async getV2ChildrenForAdmin(parentKeyId, includeDeleted = false) {
+    const children = await this._getV2ChildKeys(parentKeyId, includeDeleted)
+    return children.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+  }
+
   // 🔐 校验子 key 归属（不归属/不存在均按 404，避免探测其它 key 是否存在）
   async assertV2ChildOwnership(parentKeyId, childKeyId) {
     const child = await redis.getApiKey(childKeyId)

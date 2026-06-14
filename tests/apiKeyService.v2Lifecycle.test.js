@@ -275,6 +275,55 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     expect(fastSpy).not.toHaveBeenCalled()
   })
 
+  // 8.5 🆕 getV2ChildrenForAdmin：管理端完整 key 形状（非 _toV2ChildView 最小化），
+  //      仅本父未删子、createdAt 倒序；保留账号绑定等字段、不含 apiKey/encryptedApiKey/v2PasswordHash
+  test('getV2ChildrenForAdmin returns full (non-minimized) key shape, own non-deleted only, newest first', async () => {
+    redis.getV2ChildIds.mockResolvedValue(['c1', 'c2', 'dirty'])
+    const fastSpy = jest.spyOn(apiKeyService, 'getAllApiKeysFast').mockResolvedValue([
+      {
+        id: 'c2',
+        parentKeyId: PARENT_ID,
+        name: 'B',
+        isActive: true,
+        claudeAccountId: 'acc-x',
+        createdAt: '2026-06-01T00:00:00.000Z'
+      },
+      {
+        id: 'c1',
+        parentKeyId: PARENT_ID,
+        name: 'A',
+        isActive: true,
+        claudeAccountId: 'acc-y',
+        createdAt: '2026-06-05T00:00:00.000Z'
+      },
+      { id: 'dirty', parentKeyId: 'other-parent', name: 'D', createdAt: '2026-06-09T00:00:00.000Z' }
+    ])
+
+    const children = await apiKeyService.getV2ChildrenForAdmin(PARENT_ID, false)
+
+    // includeDeleted=false 透传给 getAllApiKeysFast（未软删子）
+    expect(fastSpy).toHaveBeenCalledWith(false, ['c1', 'c2', 'dirty'])
+    // 仅本父（dirty 归属他父被过滤）、createdAt 倒序
+    expect(children.map((c) => c.id)).toEqual(['c1', 'c2'])
+    // 完整 key 形状（非 _toV2ChildView）：parentKeyId / claudeAccountId 等被保留
+    expect(children[0].parentKeyId).toBe(PARENT_ID)
+    expect(children[0].claudeAccountId).toBe('acc-y')
+    // 不含敏感字段
+    expect(children[0]).not.toHaveProperty('apiKey')
+    expect(children[0]).not.toHaveProperty('encryptedApiKey')
+    expect(children[0]).not.toHaveProperty('v2PasswordHash')
+  })
+
+  test('getV2ChildrenForAdmin returns [] without batch loading when the children set is empty', async () => {
+    redis.getV2ChildIds.mockResolvedValue([])
+    const fastSpy = jest.spyOn(apiKeyService, 'getAllApiKeysFast')
+
+    const children = await apiKeyService.getV2ChildrenForAdmin(PARENT_ID)
+
+    expect(children).toEqual([])
+    expect(fastSpy).not.toHaveBeenCalled()
+  })
+
   // 9. 子 key 上限按「未软删除」数量判断（_getV2ChildKeys 以 includeDeleted=false 调用）
   test('createV2Child rejects at the cap, counting only non-deleted children', async () => {
     mockActiveParent()

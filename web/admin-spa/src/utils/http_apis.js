@@ -128,6 +128,8 @@ export const updateV2ConfigApi = (id, data) =>
   request({ url: `/admin/api-keys/${id}/v2-config`, method: 'PUT', data })
 export const impersonateV2Api = (id) =>
   request({ url: `/admin/api-keys/${id}/v2-impersonate`, method: 'POST' })
+export const getApiKeyV2ChildrenApi = (id) =>
+  request({ url: `/admin/api-keys/${id}/v2-children`, method: 'GET' })
 export const getV2AccountApi = () => request({ url: '/admin/v2/account', method: 'GET' })
 export const getV2ApiKeysApi = (params) => request({ url: '/admin/v2/keys', method: 'GET', params })
 export const createV2ApiKeyApi = (data) => request({ url: '/admin/v2/keys', method: 'POST', data })

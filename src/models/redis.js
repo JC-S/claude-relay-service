@@ -896,6 +896,7 @@ class RedisClient {
       sortBy = 'createdAt',
       sortOrder = 'desc',
       excludeDeleted = true, // 默认排除已删除的 API Keys
+      excludeV2Children = false, // 管理端分组浏览：排除 v2 子 key
       modelFilter = []
     } = options
 
@@ -908,12 +909,15 @@ class RedisClient {
     // - 非 bindingAccount 搜索模式（索引不支持）
     // - 非 status/expiresAt 排序（索引不支持）
     // - 无搜索关键词（索引只搜 name，旧逻辑搜 name+owner，不一致）
+    // 注：分组浏览 + 按 lastUsedAt 排序时强制走扫描路径——父账号「最后使用」需在排序前
+    // 用子 key 聚合值覆盖（索引路径按预建 lastUsedAt 索引排序，无法体现聚合）。
     const canUseIndex =
       indexReady &&
       modelFilter.length === 0 &&
       searchMode !== 'bindingAccount' &&
       !['status', 'expiresAt'].includes(sortBy) &&
-      !search
+      !search &&
+      !(excludeV2Children && sortBy === 'lastUsedAt')
 
     if (canUseIndex) {
       // 使用索引查询
@@ -925,7 +929,8 @@ class RedisClient {
           sortOrder,
           isActive: isActive === '' ? undefined : isActive === 'true' || isActive === true,
           tag,
-          excludeDeleted
+          excludeDeleted,
+          excludeV2Children
         })
       } catch (error) {
         logger.warn('⚠️ 索引查询失败，降级到全量扫描:', error.message)
@@ -944,6 +949,11 @@ class RedisClient {
     // 排除已删除的 API Keys（默认行为）
     if (excludeDeleted) {
       filteredKeys = filteredKeys.filter((k) => !k.isDeleted)
+    }
+
+    // 排除 v2 子 key（管理端分组浏览：只显示父账号 + 普通 key）
+    if (excludeV2Children) {
+      filteredKeys = filteredKeys.filter((k) => !k.parentKeyId)
     }
 
     // 状态筛选
@@ -984,6 +994,25 @@ class RedisClient {
         modelFilter
       )
       filteredKeys = filteredKeys.filter((k) => keyIdsWithModels.has(k.id))
+    }
+
+    // 3.5 v2 父账号「最后使用」排序前聚合（仅 excludeV2Children + lastUsedAt 排序触发）
+    // 必须在排序「之前」用子 key 聚合值覆盖父账号 lastUsedAt，否则父账号按自身（升级前残留）
+    // 时间排序，位次与前端显示的聚合值不一致；无子使用记录的父账号置 null（清残留）。
+    if (excludeV2Children && sortBy === 'lastUsedAt') {
+      const parentIds = filteredKeys
+        .filter((k) => k.isV2Parent === true || k.isV2Parent === 'true')
+        .map((k) => k.id)
+      if (parentIds.length > 0) {
+        const lastUsedMap = await this.getV2ParentsLastUsed(parentIds)
+        for (const k of filteredKeys) {
+          if (k.isV2Parent === true || k.isV2Parent === 'true') {
+            const agg = lastUsedMap.get(k.id)
+            k.lastUsedAt = agg ? agg.lastUsedAt : null
+            k.lastUsedChildId = agg ? agg.lastUsedChildId : null
+          }
+        }
+      }
     }
 
     // 4. 排序
@@ -2982,6 +3011,97 @@ class RedisClient {
 
   async deleteV2Children(parentKeyId) {
     return await this.client.del(`v2:children:${parentKeyId}`)
+  }
+
+  // 🗂️ 所有 v2 子 key id 的并集（供索引路径在分页前排除子 key）
+  // 只扫极小的 v2:children:* keyspace（每父一个 set），不触发扫全量 apikey:*；fail-soft 返回空 Set。
+  async getAllV2ChildKeyIds() {
+    try {
+      const setKeys = await this.scanKeys('v2:children:*')
+      if (!setKeys || setKeys.length === 0) {
+        return new Set()
+      }
+      const pipeline = this.client.pipeline()
+      setKeys.forEach((k) => pipeline.smembers(k))
+      const res = await pipeline.exec()
+      const ids = new Set()
+      res.forEach(([err, members]) => {
+        if (!err && Array.isArray(members)) {
+          members.forEach((m) => ids.add(m))
+        }
+      })
+      return ids
+    } catch (error) {
+      logger.warn(`⚠️ getAllV2ChildKeyIds 失败: ${error.message}`)
+      return new Set()
+    }
+  }
+
+  // 🕒 v2 父账号「最后使用」聚合：每个父账号取「未删除」子 key 中 lastUsedAt 最大者
+  // 返回 Map<parentId, { lastUsedAt, lastUsedChildId }>；无任何子使用记录的父账号不写入
+  //（调用方据此将父账号 lastUsedAt 置 null，避免展示升级前残留时间）。只读、fail-soft。
+  async getV2ParentsLastUsed(parentIds, options = {}) {
+    const result = new Map()
+    if (!Array.isArray(parentIds) || parentIds.length === 0) {
+      return result
+    }
+    const { includeDeletedChildren = false } = options
+    try {
+      // 1. 批量取每个父账号的子 id 列表
+      const childIdsPipeline = this.client.pipeline()
+      parentIds.forEach((pid) => childIdsPipeline.smembers(`v2:children:${pid}`))
+      const childIdsRes = await childIdsPipeline.exec()
+
+      // 2. 扁平化所有子 id，一次 pipeline 读取 lastUsedAt / isDeleted
+      const flat = [] // { parentId, childId }
+      childIdsRes.forEach(([err, members], i) => {
+        if (!err && Array.isArray(members)) {
+          const pid = parentIds[i]
+          members.forEach((cid) => flat.push({ parentId: pid, childId: cid }))
+        }
+      })
+      if (flat.length === 0) {
+        return result
+      }
+
+      const fieldsPipeline = this.client.pipeline()
+      flat.forEach(({ childId }) =>
+        fieldsPipeline.hmget(`apikey:${childId}`, 'lastUsedAt', 'isDeleted')
+      )
+      const fieldsRes = await fieldsPipeline.exec()
+
+      // 3. 每个父账号取 lastUsedAt 最大的未删除子 key
+      const best = new Map() // parentId -> { lastUsedAt, lastUsedChildId, ts }
+      fieldsRes.forEach(([err, vals], i) => {
+        if (err || !Array.isArray(vals)) {
+          return
+        }
+        const [lastUsedAt, isDeleted] = vals
+        if (!includeDeletedChildren && (isDeleted === 'true' || isDeleted === true)) {
+          return
+        }
+        if (!lastUsedAt) {
+          return
+        }
+        const ts = new Date(lastUsedAt).getTime()
+        if (Number.isNaN(ts)) {
+          return
+        }
+        const { parentId, childId } = flat[i]
+        const cur = best.get(parentId)
+        if (!cur || ts > cur.ts) {
+          best.set(parentId, { lastUsedAt, lastUsedChildId: childId, ts })
+        }
+      })
+
+      for (const [pid, v] of best) {
+        result.set(pid, { lastUsedAt: v.lastUsedAt, lastUsedChildId: v.lastUsedChildId })
+      }
+      return result
+    } catch (error) {
+      logger.warn(`⚠️ getV2ParentsLastUsed 聚合失败: ${error.message}`)
+      return new Map()
+    }
   }
 
   // 💰 父账号总账（倍率后成本汇总，永不过期，持续累加）
