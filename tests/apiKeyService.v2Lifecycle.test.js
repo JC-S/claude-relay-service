@@ -276,16 +276,43 @@ describe('apiKeyService v2 lifecycle fixes', () => {
   })
 
   // 8.5 🆕 getV2ChildrenForAdmin：管理端完整 key 形状（非 _toV2ChildView 最小化），
-  //      仅本父未删子、createdAt 倒序；保留账号绑定等字段、不含 apiKey/encryptedApiKey/v2PasswordHash
-  test('getV2ChildrenForAdmin returns full (non-minimized) key shape, own non-deleted only, newest first', async () => {
+  //      仅本父未删子、createdAt 倒序；叠加父账号展示用继承字段、不含 apiKey/encryptedApiKey/v2PasswordHash
+  test('getV2ChildrenForAdmin overlays inherited display fields and keeps child-owned fields', async () => {
     redis.getV2ChildIds.mockResolvedValue(['c1', 'c2', 'dirty'])
+    redis.getApiKey.mockResolvedValue({
+      id: PARENT_ID,
+      isV2Parent: 'true',
+      isActive: 'true',
+      isDeleted: 'false',
+      claudeAccountId: 'parent-claude',
+      openaiAccountId: 'responses:parent-openai',
+      permissions: '["claude","openai"]',
+      enableClientRestriction: 'true',
+      allowedClients: '["claude_code"]',
+      enableIpWhitelist: 'true',
+      ipWhitelist: '["8.8.8.8"]',
+      concurrencyLimit: '5',
+      rateLimitWindow: '15',
+      rateLimitRequests: '25',
+      rateLimitCost: '3.25',
+      weeklyOpusCostLimit: '99.5',
+      weeklyResetDay: '3',
+      weeklyResetHour: '4',
+      serviceRates: '{"claude":1.2}',
+      disableGptFastMode: 'true',
+      enableGeneralOpenAIEndpoint: 'true',
+      enableOpenAIResponsesCodexAdaptation: '',
+      dailyCostLimit: '777',
+      totalCostLimit: '888'
+    })
     const fastSpy = jest.spyOn(apiKeyService, 'getAllApiKeysFast').mockResolvedValue([
       {
         id: 'c2',
         parentKeyId: PARENT_ID,
         name: 'B',
         isActive: true,
-        claudeAccountId: 'acc-x',
+        dailyCostLimit: 20,
+        totalCostLimit: 200,
         createdAt: '2026-06-01T00:00:00.000Z'
       },
       {
@@ -293,7 +320,11 @@ describe('apiKeyService v2 lifecycle fixes', () => {
         parentKeyId: PARENT_ID,
         name: 'A',
         isActive: true,
-        claudeAccountId: 'acc-y',
+        dailyCostLimit: 10,
+        totalCostLimit: 100,
+        v2IpWhitelistOverride: 'true',
+        enableIpWhitelist: false,
+        ipWhitelist: [],
         createdAt: '2026-06-05T00:00:00.000Z'
       },
       { id: 'dirty', parentKeyId: 'other-parent', name: 'D', createdAt: '2026-06-09T00:00:00.000Z' }
@@ -307,7 +338,32 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     expect(children.map((c) => c.id)).toEqual(['c1', 'c2'])
     // 完整 key 形状（非 _toV2ChildView）：parentKeyId / claudeAccountId 等被保留
     expect(children[0].parentKeyId).toBe(PARENT_ID)
-    expect(children[0].claudeAccountId).toBe('acc-y')
+    expect(children[0].claudeAccountId).toBe('parent-claude')
+    expect(children[0].openaiAccountId).toBe('responses:parent-openai')
+    expect(children[0].permissions).toEqual(['claude', 'openai'])
+    expect(children[0].enableClientRestriction).toBe(true)
+    expect(children[0].allowedClients).toEqual(['claude_code'])
+    expect(children[0].concurrencyLimit).toBe(5)
+    expect(children[0].rateLimitWindow).toBe(15)
+    expect(children[0].rateLimitRequests).toBe(25)
+    expect(children[0].rateLimitCost).toBe(3.25)
+    expect(children[0].weeklyOpusCostLimit).toBe(99.5)
+    expect(children[0].weeklyResetDay).toBe(3)
+    expect(children[0].weeklyResetHour).toBe(4)
+    expect(children[0].serviceRates).toEqual({ claude: 1.2 })
+    expect(children[0].disableGptFastMode).toBe(true)
+    expect(children[0].enableGeneralOpenAIEndpoint).toBe(true)
+    expect(children[0].enableOpenAIResponsesCodexAdaptation).toBe(true)
+    // 子 key 自有字段不被父账号覆盖
+    expect(children[0].name).toBe('A')
+    expect(children[0].dailyCostLimit).toBe(10)
+    expect(children[0].totalCostLimit).toBe(100)
+    expect(children[0].isActive).toBe(true)
+    // 子 key 开启自定义 IP 白名单时，展示自己的 IP 白名单状态，其余字段仍继承
+    expect(children[0].enableIpWhitelist).toBe(false)
+    expect(children[0].ipWhitelist).toEqual([])
+    expect(children[1].enableIpWhitelist).toBe(true)
+    expect(children[1].ipWhitelist).toEqual(['8.8.8.8'])
     // 不含敏感字段
     expect(children[0]).not.toHaveProperty('apiKey')
     expect(children[0]).not.toHaveProperty('encryptedApiKey')

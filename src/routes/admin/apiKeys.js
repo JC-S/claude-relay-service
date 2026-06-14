@@ -1943,7 +1943,7 @@ router.get('/api-keys/:keyId/v2-children', authenticateAdmin, async (req, res) =
       return res.status(404).json({ error: 'Not found', message: '该 API Key 不是 v2 父账号' })
     }
 
-    const items = await apiKeyService.getV2ChildrenForAdmin(keyId, false)
+    const items = await apiKeyService.getV2ChildrenForAdmin(keyId, false, parent)
 
     // 复用主列表的 ownerDisplayName + 空 usage 补全逻辑
     const userService = require('../../services/userService')

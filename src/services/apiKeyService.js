@@ -204,6 +204,30 @@ const V2_INHERIT_CONFIG_FIELDS = [
   'openaiResponsesPayloadRules'
 ]
 
+const V2_ADMIN_BOOLEAN_INHERIT_FIELDS = new Set([
+  'enableModelRestriction',
+  'enableClientRestriction',
+  'enableIpWhitelist',
+  'disableGptFastMode',
+  'enableGeneralOpenAIEndpoint',
+  'enableGeneralPromptCacheAssist',
+  'enableClaudeThinkingSignatureLossyFallback',
+  'enableOpenAIResponsesCodexAdaptation',
+  'enableOpenAIResponsesPayloadRules'
+])
+
+const V2_ADMIN_INTEGER_INHERIT_FIELDS = new Set([
+  'concurrencyLimit',
+  'rateLimitWindow',
+  'rateLimitRequests',
+  'weeklyResetDay',
+  'weeklyResetHour'
+])
+
+const V2_ADMIN_FLOAT_INHERIT_FIELDS = new Set(['rateLimitCost', 'weeklyOpusCostLimit'])
+
+const V2_ADMIN_ARRAY_INHERIT_FIELDS = new Set(['restrictedModels', 'allowedClients'])
+
 // 🆕 单个 v2 父账号的子 key 数量上限（按未软删除数量计，env 可覆盖；非法值回退 100）
 const V2_MAX_CHILD_KEYS = (() => {
   const parsed = parseInt(process.env.V2_MAX_CHILD_KEYS || '100', 10)
@@ -238,6 +262,70 @@ function parseV2Boolean(value, fieldName) {
     return value === 'true'
   }
   throw new Error(`${fieldName} must be a boolean`)
+}
+
+function parseJsonArrayWithDefault(value) {
+  if (Array.isArray(value)) {
+    return value
+  }
+  if (value === undefined || value === null || value === '') {
+    return []
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function parseJsonObjectWithDefault(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value
+  }
+  if (value === undefined || value === null || value === '') {
+    return {}
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+function normalizeV2InheritedFieldForAdmin(field, value) {
+  if (field === 'permissions') {
+    return normalizePermissions(value)
+  }
+  if (V2_ADMIN_BOOLEAN_INHERIT_FIELDS.has(field)) {
+    return parseBooleanWithDefault(value, field === 'enableOpenAIResponsesCodexAdaptation')
+  }
+  if (V2_ADMIN_INTEGER_INHERIT_FIELDS.has(field)) {
+    return parseInt(value) || 0
+  }
+  if (V2_ADMIN_FLOAT_INHERIT_FIELDS.has(field)) {
+    return parseFloat(value) || 0
+  }
+  if (V2_ADMIN_ARRAY_INHERIT_FIELDS.has(field)) {
+    return parseJsonArrayWithDefault(value)
+  }
+  if (field === 'ipWhitelist') {
+    return normalizeIpWhitelist(value)
+  }
+  if (field === 'serviceRates') {
+    return parseJsonObjectWithDefault(value)
+  }
+  if (field === 'openaiResponsesPayloadRules') {
+    return parseOpenAIResponsesPayloadRules(value)
+  }
+  return value
 }
 
 class ApiKeyService {
@@ -956,6 +1044,30 @@ class ApiKeyService {
       }
     }
     return keyData
+  }
+
+  // 🛠️ 管理员子列表专用：返回“展示用”继承字段，保持 Redis 中子 key 原始存储不变。
+  // 仅 admin-only /v2-children 使用；公开 stats/v2 自助接口不得暴露账户绑定字段。
+  _overlayV2ParentFieldsForAdmin(keyData, parentData) {
+    const displayKey = { ...keyData }
+    if (
+      !parentData ||
+      Object.keys(parentData).length === 0 ||
+      (parentData.isV2Parent !== 'true' && parentData.isV2Parent !== true) ||
+      parentData.isDeleted === 'true' ||
+      parentData.isDeleted === true
+    ) {
+      return displayKey
+    }
+
+    const skipFields = getV2InheritSkipFields(keyData)
+    for (const field of [...V2_INHERIT_ACCOUNT_FIELDS, ...V2_INHERIT_CONFIG_FIELDS]) {
+      if (skipFields.has(field) || parentData[field] === undefined) {
+        continue
+      }
+      displayKey[field] = normalizeV2InheritedFieldForAdmin(field, parentData[field])
+    }
+    return displayKey
   }
 
   // 🆕 公开 stats 的 apiId 查询路径专用：按 id 取原始 keyData，拒绝 v2 父账号，
@@ -3843,9 +3955,17 @@ class ApiKeyService {
   // 🛠️ 管理员视角的子 key 列表：完整 key 形状（与主列表行一致），不经 _toV2ChildView 最小化。
   // _getV2ChildKeys 经 v2:children 集合加载并已 fail-closed 过滤归属；getAllApiKeysFast 已删
   // apiKey / encryptedApiKey / v2PasswordHash，无明文/密码泄漏。createdAt 倒序保证 UI 稳定。
-  async getV2ChildrenForAdmin(parentKeyId, includeDeleted = false) {
+  async getV2ChildrenForAdmin(parentKeyId, includeDeleted = false, parentData = null) {
     const children = await this._getV2ChildKeys(parentKeyId, includeDeleted)
-    return children.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    const sortedChildren = children.sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+    )
+    if (sortedChildren.length === 0) {
+      return []
+    }
+
+    const parent = parentData || (await redis.getApiKey(parentKeyId))
+    return sortedChildren.map((child) => this._overlayV2ParentFieldsForAdmin(child, parent))
   }
 
   // 🔐 校验子 key 归属（不归属/不存在均按 404，避免探测其它 key 是否存在）
