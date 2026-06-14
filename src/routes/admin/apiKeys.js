@@ -68,6 +68,57 @@ function validateServiceRates(serviceRates) {
   return null
 }
 
+function normalizeExpectedByKeyId(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  return value
+}
+
+function selectUsageRecordByExpectedTimestamp(records, expectedIso, toleranceMs = 2000) {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { record: null, matched: false, bestDiff: null, reason: 'empty' }
+  }
+
+  const fallback = records[0]
+  const expectedMs = Date.parse(expectedIso)
+  if (!Number.isFinite(expectedMs)) {
+    return { record: fallback, matched: false, bestDiff: null, reason: 'invalid_expected' }
+  }
+
+  let bestRecord = null
+  let bestDiff = Infinity
+  for (const record of records) {
+    const recordMs = Date.parse(record?.timestamp)
+    if (!Number.isFinite(recordMs)) continue
+
+    const diff = Math.abs(recordMs - expectedMs)
+    if (diff < bestDiff) {
+      bestRecord = record
+      bestDiff = diff
+    }
+  }
+
+  if (bestRecord && bestDiff <= toleranceMs) {
+    return { record: bestRecord, matched: true, bestDiff, reason: 'matched' }
+  }
+
+  return {
+    record: fallback,
+    matched: false,
+    bestDiff: Number.isFinite(bestDiff) ? bestDiff : null,
+    reason: 'out_of_tolerance'
+  }
+}
+
+function formatApiKeyListCost(cost) {
+  const numericCost = Number(cost)
+  if (!Number.isFinite(numericCost) || numericCost === 0) {
+    return '$0.00'
+  }
+  return CostCalculator.formatCost(numericCost)
+}
+
 // 👥 用户管理 (用于API Key分配)
 
 // 获取所有用户列表（用于API Key分配）
@@ -1266,7 +1317,7 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
         cacheReadTokens: 0,
         cost: v2ParentLedger.period,
         realCost: v2ParentLedger.period, // 无 v2 real-cost ledger，镜像 rated
-        formattedCost: CostCalculator.formatCost(v2ParentLedger.period),
+        formattedCost: formatApiKeyListCost(v2ParentLedger.period),
         ...limitData
       }
     }
@@ -1441,7 +1492,7 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
     cacheReadTokens,
     cost: effectiveRatedCost,
     realCost: effectiveRealCost, // 无 v2 real-cost ledger，镜像 rated
-    formattedCost: CostCalculator.formatCost(effectiveRatedCost),
+    formattedCost: formatApiKeyListCost(effectiveRatedCost),
     ...limitData
   }
 }
@@ -1455,6 +1506,7 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
 router.post('/api-keys/batch-last-usage', authenticateAdmin, async (req, res) => {
   try {
     const { keyIds } = req.body
+    const expectedByKeyId = normalizeExpectedByKeyId(req.body?.expectedByKeyId)
 
     // 参数验证
     if (!Array.isArray(keyIds) || keyIds.length === 0) {
@@ -1482,14 +1534,26 @@ router.post('/api-keys/batch-last-usage', authenticateAdmin, async (req, res) =>
     await Promise.all(
       keyIds.map(async (keyId) => {
         try {
-          // 获取最新的使用记录
-          const usageRecords = await redis.getUsageRecords(keyId, 1)
+          const expectedIso =
+            typeof expectedByKeyId[keyId] === 'string' ? expectedByKeyId[keyId] : null
+          const usageRecords = await redis.getUsageRecords(keyId, expectedIso ? 20 : 1)
           if (!Array.isArray(usageRecords) || usageRecords.length === 0) {
             lastUsageData[keyId] = null
             return
           }
 
-          const lastUsageRecord = usageRecords[0]
+          const selection = expectedIso
+            ? selectUsageRecordByExpectedTimestamp(usageRecords, expectedIso)
+            : { record: usageRecords[0], matched: true, bestDiff: 0, reason: 'latest' }
+
+          if (expectedIso && !selection.matched && selection.reason === 'out_of_tolerance') {
+            logger.debug('Batch last-usage expected timestamp did not match recent records:', {
+              keyId,
+              bestDiffMs: selection.bestDiff
+            })
+          }
+
+          const lastUsageRecord = selection.record
           if (!lastUsageRecord || (!lastUsageRecord.accountId && !lastUsageRecord.accountType)) {
             lastUsageData[keyId] = null
             return

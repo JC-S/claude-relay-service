@@ -476,7 +476,7 @@
                             </span>
                             <button
                               v-if="groupingEnabled && key.isV2Parent"
-                              class="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                              class="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-[10px] text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
                               :title="expandedV2Parents[key.id] ? '收起子 API' : '展开子 API'"
                               type="button"
                               @click.stop="toggleV2Children(key.id)"
@@ -1350,7 +1350,7 @@
                     />
                     <button
                       v-if="groupingEnabled && key.isV2Parent"
-                      class="inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                      class="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-[11px] text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
                       :title="expandedV2Parents[key.id] ? '收起子 API' : '展开子 API'"
                       type="button"
                       @click.stop="toggleV2Children(key.id)"
@@ -2344,6 +2344,29 @@ const globalDateFilter = reactive({
   customRange: null
 })
 
+const getCurrentStatsWindow = () => {
+  if (
+    globalDateFilter.type === 'custom' &&
+    globalDateFilter.customStart &&
+    globalDateFilter.customEnd
+  ) {
+    return {
+      timeRange: 'custom',
+      startDate: globalDateFilter.customStart,
+      endDate: globalDateFilter.customEnd
+    }
+  }
+
+  return {
+    timeRange: globalDateFilter.preset || '7days',
+    startDate: null,
+    endDate: null
+  }
+}
+
+const isSameStatsWindow = (a, b) =>
+  a?.timeRange === b?.timeRange && a?.startDate === b?.startDate && a?.endDate === b?.endDate
+
 // 是否应该显示多选框
 const shouldShowCheckboxes = computed(() => {
   return showCheckboxes.value
@@ -2882,6 +2905,8 @@ const loadApiKeys = async (clearStatsCache = true) => {
       loadPageStats()
       // 异步加载当前页的最后使用账号数据
       loadPageLastUsage()
+      // 已展开的 v2 子 API 不在主分页数据中，需要单独补刷统计/最后使用账号
+      refreshExpandedV2Children()
     }
   } catch {
     showToast('加载 API Keys 失败', 'error')
@@ -2895,30 +2920,13 @@ const loadPageStats = async (keys = apiKeys.value) => {
   const currentPageKeys = keys
   if (!currentPageKeys || currentPageKeys.length === 0) return
 
-  // 获取当前时间范围
-  let currentTimeRange = globalDateFilter.preset
-  let startDate = null
-  let endDate = null
-
-  if (
-    globalDateFilter.type === 'custom' &&
-    globalDateFilter.customStart &&
-    globalDateFilter.customEnd
-  ) {
-    currentTimeRange = 'custom'
-    startDate = globalDateFilter.customStart
-    endDate = globalDateFilter.customEnd
-  }
+  const requestWindow = getCurrentStatsWindow()
 
   // 筛选出需要加载的 keys（未缓存或时间范围变化）
   const keysNeedStats = currentPageKeys.filter((key) => {
     const cached = statsCache.value.get(key.id)
     if (!cached) return true
-    if (cached.timeRange !== currentTimeRange) return true
-    if (currentTimeRange === 'custom') {
-      if (cached.startDate !== startDate || cached.endDate !== endDate) return true
-    }
-    return false
+    return !isSameStatsWindow(cached, requestWindow)
   })
 
   if (keysNeedStats.length === 0) return
@@ -2930,23 +2938,25 @@ const loadPageStats = async (keys = apiKeys.value) => {
   try {
     const requestBody = {
       keyIds,
-      timeRange: currentTimeRange
+      timeRange: requestWindow.timeRange
     }
-    if (currentTimeRange === 'custom') {
-      requestBody.startDate = startDate
-      requestBody.endDate = endDate
+    if (requestWindow.timeRange === 'custom') {
+      requestBody.startDate = requestWindow.startDate
+      requestBody.endDate = requestWindow.endDate
     }
 
     const response = await httpApis.getApiKeysBatchStatsApi(requestBody)
 
     if (response.success && response.data) {
+      if (!isSameStatsWindow(requestWindow, getCurrentStatsWindow())) return
+
       // 更新缓存
       for (const [keyId, stats] of Object.entries(response.data)) {
         statsCache.value.set(keyId, {
           stats,
-          timeRange: currentTimeRange,
-          startDate,
-          endDate,
+          timeRange: requestWindow.timeRange,
+          startDate: requestWindow.startDate,
+          endDate: requestWindow.endDate,
           timestamp: Date.now()
         })
       }
@@ -2962,6 +2972,7 @@ const loadPageStats = async (keys = apiKeys.value) => {
 // 获取缓存的统计数据
 const getCachedStats = (keyId) => {
   const cached = statsCache.value.get(keyId)
+  if (!isSameStatsWindow(cached, getCurrentStatsWindow())) return null
   return cached?.stats || null
 }
 
@@ -2989,17 +3000,27 @@ const loadPageLastUsage = async (keys = apiKeys.value) => {
   // v2 父账号用胜出子 key id 拉取「最后使用账号」，结果缓存回父 id 名下；其余按自身 id
   const pairs = keysNeedLastUsage.map((k) => ({
     cacheId: k.id,
-    fetchId: k.lastUsedChildId || k.id
+    fetchId: k.lastUsedChildId || k.id,
+    expectedIso: k.lastUsedAt || null
   }))
   const cacheIds = pairs.map((p) => p.cacheId)
   // 对 fetchId 去重，避免重复传参（batch-last-usage 单次硬限 100，当页/子分批均 ≤100）
   const fetchIds = [...new Set(pairs.map((p) => p.fetchId))]
+  const expectedByKeyId = {}
+  for (const pair of pairs) {
+    if (pair.expectedIso && !expectedByKeyId[pair.fetchId]) {
+      expectedByKeyId[pair.fetchId] = pair.expectedIso
+    }
+  }
 
   // 标记为加载中（按展示用的 cacheId）
   cacheIds.forEach((id) => lastUsageLoading.value.add(id))
 
   try {
-    const response = await httpApis.getApiKeysBatchLastUsageApi({ keyIds: fetchIds })
+    const response = await httpApis.getApiKeysBatchLastUsageApi({
+      keyIds: fetchIds,
+      expectedByKeyId
+    })
 
     if (response.success && response.data) {
       // 按 fetchId → cacheId 回填缓存
@@ -3033,6 +3054,27 @@ const loadStatsAndLastUsageChunked = async (items) => {
   for (let i = 0; i < items.length; i += 100) {
     const chunk = items.slice(i, i + 100)
     await Promise.all([loadPageStats(chunk), loadPageLastUsage(chunk)])
+  }
+}
+
+const refreshExpandedV2Children = async () => {
+  if (!groupingEnabled.value) return
+
+  const visibleParentIds = new Set(
+    apiKeys.value.filter((key) => key?.isV2Parent).map((key) => key.id)
+  )
+
+  for (const [parentId, expanded] of Object.entries(expandedV2Parents.value)) {
+    if (!expanded || !visibleParentIds.has(parentId)) continue
+
+    const children = v2ChildrenCache.value.get(parentId)
+    if (!Array.isArray(children) || children.length === 0) continue
+
+    try {
+      await loadStatsAndLastUsageChunked(children)
+    } catch (error) {
+      console.warn('[v2] refreshExpandedV2Children failed for', parentId, error)
+    }
   }
 }
 
