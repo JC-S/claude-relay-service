@@ -175,9 +175,13 @@ function buildUsagePayloadFromStats(stats) {
 }
 
 function calculateModelCostFromStats(model, stats) {
-  return reconcileStoredModelCost(redis.calculateModelCostFromStats(CostCalculator, stats, model), stats, {
-    formatCost: (amount) => CostCalculator.formatCost(amount)
-  })
+  return reconcileStoredModelCost(
+    redis.calculateModelCostFromStats(CostCalculator, stats, model),
+    stats,
+    {
+      formatCost: (amount) => CostCalculator.formatCost(amount)
+    }
+  )
 }
 
 function buildDisplayModelStats(model, stats, period) {
@@ -1048,6 +1052,14 @@ router.get('/api-keys/:keyId/model-stats', authenticateAdmin, async (req, res) =
       '0'
     )}`
 
+    // 🆕 v2 父账号：展开为父 + 所有子(含软删) source id，模型明细才能聚合子 key 用量
+    const targetKey = await redis.getApiKey(keyId)
+    const isV2Parent = targetKey?.isV2Parent === 'true'
+    const sourceKeyIds = isV2Parent ? await redis.getV2ParentSourceKeyIds(keyId) : [keyId]
+    // 索引路径返回所有 key 的当日 model 数据，靠此判定归属（普通 key 即等价于原 startsWith 过滤）
+    const belongsToSource = (key) =>
+      sourceKeyIds.some((sid) => key.startsWith(`usage:${sid}:model:`))
+
     let searchPatterns = []
 
     if (period === 'custom' && startDate && endDate) {
@@ -1107,8 +1119,8 @@ router.get('/api-keys/:keyId/model-stats', authenticateAdmin, async (req, res) =
       const allResults = await Promise.all(fetchPromises)
       for (const results of allResults) {
         for (const { key, data } of results) {
-          // 过滤出属于该 keyId 的记录
-          if (!key.startsWith(`usage:${keyId}:model:`)) {
+          // 过滤出属于该 keyId（v2 父账号含所有子）的记录
+          if (!belongsToSource(key)) {
             continue
           }
           const match = key.match(/usage:.+:model:daily:(.+):\d{4}-\d{2}-\d{2}$/)
@@ -1133,11 +1145,16 @@ router.get('/api-keys/:keyId/model-stats', authenticateAdmin, async (req, res) =
         )
       } else {
         // monthly - 需要月度 keymodel 索引，暂时回退到 SCAN
-        const pattern = `usage:${keyId}:model:monthly:*:${currentMonth}`
-        results = await redis.scanAndGetAllChunked(pattern)
+        // v2 父账号对每个 source id 各扫一次并合并（普通 key 即单次，与原逻辑等价）
+        const monthlyResults = await Promise.all(
+          sourceKeyIds.map((sid) =>
+            redis.scanAndGetAllChunked(`usage:${sid}:model:monthly:*:${currentMonth}`)
+          )
+        )
+        results = monthlyResults.flat()
       }
       for (const { key, data } of results) {
-        if (!key.startsWith(`usage:${keyId}:model:`)) {
+        if (!belongsToSource(key)) {
           continue
         }
         const match =

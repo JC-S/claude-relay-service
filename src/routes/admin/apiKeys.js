@@ -1163,34 +1163,50 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
   const tzDate = redis.getDateInTimezone()
   const today = redis.getDateStringInTimezone()
 
-  // 构建搜索模式
-  const searchPatterns = []
+  // 🆕 v2 父账号：必须在构建搜索模式之前判定并收集 source key id，
+  // 否则 searchPatterns 只覆盖父账号自身的 model 键，漏掉所有子 key 的请求数/Token。
+  let apiKey = null
+  let isV2Parent = false
+  let sourceKeyIds = [keyId]
+  try {
+    apiKey = await redis.getApiKey(keyId)
+    isV2Parent = apiKey?.isV2Parent === 'true'
+    if (isV2Parent) {
+      sourceKeyIds = await redis.getV2ParentSourceKeyIds(keyId)
+    }
+  } catch (error) {
+    logger.warn(`⚠️ 判定 v2 父账号失败 (key: ${keyId}):`, error.message)
+  }
 
-  if (timeRange === 'custom' && startDate && endDate) {
-    // 自定义日期范围
-    const start = new Date(startDate)
-    const end = new Date(endDate)
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = redis.getDateStringInTimezone(d)
-      searchPatterns.push(`usage:${keyId}:model:daily:*:${dateStr}`)
+  // 构建搜索模式（v2 父账号展开为父 + 所有子，普通 key 即 [keyId]）
+  const searchPatterns = []
+  for (const sid of sourceKeyIds) {
+    if (timeRange === 'custom' && startDate && endDate) {
+      // 自定义日期范围
+      const start = new Date(startDate)
+      const end = new Date(endDate)
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const dateStr = redis.getDateStringInTimezone(d)
+        searchPatterns.push(`usage:${sid}:model:daily:*:${dateStr}`)
+      }
+    } else if (timeRange === 'today') {
+      searchPatterns.push(`usage:${sid}:model:daily:*:${today}`)
+    } else if (timeRange === '7days') {
+      // 最近7天
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(tzDate)
+        d.setDate(d.getDate() - i)
+        const dateStr = redis.getDateStringInTimezone(d)
+        searchPatterns.push(`usage:${sid}:model:daily:*:${dateStr}`)
+      }
+    } else if (timeRange === 'monthly') {
+      // 当月
+      const currentMonth = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(2, '0')}`
+      searchPatterns.push(`usage:${sid}:model:monthly:*:${currentMonth}`)
+    } else {
+      // all - 使用 alltime key（无 TTL，数据完整），避免 daily/monthly 键过期导致数据丢失
+      searchPatterns.push(`usage:${sid}:model:alltime:*`)
     }
-  } else if (timeRange === 'today') {
-    searchPatterns.push(`usage:${keyId}:model:daily:*:${today}`)
-  } else if (timeRange === '7days') {
-    // 最近7天
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(tzDate)
-      d.setDate(d.getDate() - i)
-      const dateStr = redis.getDateStringInTimezone(d)
-      searchPatterns.push(`usage:${keyId}:model:daily:*:${dateStr}`)
-    }
-  } else if (timeRange === 'monthly') {
-    // 当月
-    const currentMonth = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(2, '0')}`
-    searchPatterns.push(`usage:${keyId}:model:monthly:*:${currentMonth}`)
-  } else {
-    // all - 使用 alltime key（无 TTL，数据完整），避免 daily/monthly 键过期导致数据丢失
-    searchPatterns.push(`usage:${keyId}:model:alltime:*`)
   }
 
   // 使用 SCAN 收集所有匹配的 keys
@@ -1217,13 +1233,11 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
   let windowStartTime = null
   let windowEndTime = null
   let allTimeCost = 0
-  // 🆕 v2 父账号成本口径（在 try 内填充，各返回点复用）
-  let isV2Parent = false
+  // 🆕 v2 父账号成本口径（在 try 内填充，各返回点复用）；isV2Parent/apiKey 已在函数开头读取
   let v2ParentLedger = null
 
   try {
-    // 先获取 API Key 配置，判断是否需要查询限制相关数据
-    const apiKey = await redis.getApiKey(keyId)
+    // apiKey 已在函数开头读取（用于 v2 判定与 source id 收集），此处复用，避免二次读取
     const rateLimitWindow = parseInt(apiKey?.rateLimitWindow) || 0
     const dailyCostLimit = parseFloat(apiKey?.dailyCostLimit) || 0
     const weeklyOpusCostLimit = parseFloat(apiKey?.weeklyOpusCostLimit) || 0
@@ -1238,7 +1252,6 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
     allTimeCost = parseFloat((await client.get(totalCostKey)) || '0')
 
     // 🆕 v2 父账号：成本口径改用 v2 总账（父 key 自身 usage:cost:* 恒为 0）
-    isV2Parent = apiKey?.isV2Parent === 'true'
     if (isV2Parent) {
       v2ParentLedger = await redis.getV2ParentLedgerCostStats(keyId, {
         timeRange,
@@ -1253,7 +1266,10 @@ async function calculateKeyStats(keyId, timeRange, startDate, endDate) {
     if (weeklyOpusCostLimit > 0) {
       const resetDay = parseInt(apiKey?.weeklyResetDay || 1)
       const resetHour = parseInt(apiKey?.weeklyResetHour || 0)
-      weeklyOpusCost = await redis.getWeeklyOpusCost(keyId, resetDay, resetHour)
+      // 🆕 v2 父账号周费用读侧聚合父 + 所有子；普通 key 维持原口径
+      weeklyOpusCost = isV2Parent
+        ? await redis.getV2ParentWeeklyOpusCost(keyId, resetDay, resetHour)
+        : await redis.getWeeklyOpusCost(keyId, resetDay, resetHour)
     }
 
     // 只在启用了窗口限制时查询窗口数据

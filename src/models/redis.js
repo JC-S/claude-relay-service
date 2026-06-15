@@ -126,6 +126,51 @@ function getPeriodStartDate(resetDay = 1, resetHour = 0, date = new Date()) {
   return periodStart
 }
 
+// 归一化单个 usage hash（兼容旧数据：缺 input/output 分离时按 30/70 拆分）
+// 返回 { tokens, inputTokens, outputTokens, cacheCreateTokens, cacheReadTokens, allTokens, requests }
+// 抽成模块级函数供 getUsageStats 与 getV2ParentUsageStats 复用，避免两处字段兼容逻辑漂移。
+function normalizeUsageStatsHash(data) {
+  const d = data || {}
+  // 优先使用total*字段（存储时使用的字段）
+  const tokens = parseInt(d.totalTokens) || parseInt(d.tokens) || 0
+  const inputTokens = parseInt(d.totalInputTokens) || parseInt(d.inputTokens) || 0
+  const outputTokens = parseInt(d.totalOutputTokens) || parseInt(d.outputTokens) || 0
+  const requests = parseInt(d.totalRequests) || parseInt(d.requests) || 0
+
+  // 新增缓存token字段
+  const cacheCreateTokens = parseInt(d.totalCacheCreateTokens) || parseInt(d.cacheCreateTokens) || 0
+  const cacheReadTokens = parseInt(d.totalCacheReadTokens) || parseInt(d.cacheReadTokens) || 0
+  const allTokens = parseInt(d.totalAllTokens) || parseInt(d.allTokens) || 0
+
+  const totalFromSeparate = inputTokens + outputTokens
+  // 计算实际的总tokens（包含所有类型）
+  const actualAllTokens =
+    allTokens || inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens
+
+  if (totalFromSeparate === 0 && tokens > 0) {
+    // 旧数据：没有输入输出分离
+    return {
+      tokens, // 保持兼容性，但统一使用allTokens
+      inputTokens: Math.round(tokens * 0.3), // 假设30%为输入
+      outputTokens: Math.round(tokens * 0.7), // 假设70%为输出
+      cacheCreateTokens: 0, // 旧数据没有缓存token
+      cacheReadTokens: 0,
+      allTokens: tokens, // 对于旧数据，allTokens等于tokens
+      requests
+    }
+  }
+  // 新数据或无数据 - 统一使用allTokens作为tokens的值
+  return {
+    tokens: actualAllTokens, // 统一使用allTokens作为总数
+    inputTokens,
+    outputTokens,
+    cacheCreateTokens,
+    cacheReadTokens,
+    allTokens: actualAllTokens,
+    requests
+  }
+}
+
 // 并发队列相关常量
 const QUEUE_STATS_TTL_SECONDS = 86400 * 7 // 统计计数保留 7 天
 const WAIT_TIME_TTL_SECONDS = 86400 // 等待时间样本保留 1 天（滚动窗口，无需长期保留）
@@ -1871,54 +1916,10 @@ class RedisClient {
     const avgRPM = totalRequests / totalMinutes
     const avgTPM = totalTokens / totalMinutes
 
-    // 处理旧数据兼容性（支持缓存token）
-    const handleLegacyData = (data) => {
-      // 优先使用total*字段（存储时使用的字段）
-      const tokens = parseInt(data.totalTokens) || parseInt(data.tokens) || 0
-      const inputTokens = parseInt(data.totalInputTokens) || parseInt(data.inputTokens) || 0
-      const outputTokens = parseInt(data.totalOutputTokens) || parseInt(data.outputTokens) || 0
-      const requests = parseInt(data.totalRequests) || parseInt(data.requests) || 0
-
-      // 新增缓存token字段
-      const cacheCreateTokens =
-        parseInt(data.totalCacheCreateTokens) || parseInt(data.cacheCreateTokens) || 0
-      const cacheReadTokens =
-        parseInt(data.totalCacheReadTokens) || parseInt(data.cacheReadTokens) || 0
-      const allTokens = parseInt(data.totalAllTokens) || parseInt(data.allTokens) || 0
-
-      const totalFromSeparate = inputTokens + outputTokens
-      // 计算实际的总tokens（包含所有类型）
-      const actualAllTokens =
-        allTokens || inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens
-
-      if (totalFromSeparate === 0 && tokens > 0) {
-        // 旧数据：没有输入输出分离
-        return {
-          tokens, // 保持兼容性，但统一使用allTokens
-          inputTokens: Math.round(tokens * 0.3), // 假设30%为输入
-          outputTokens: Math.round(tokens * 0.7), // 假设70%为输出
-          cacheCreateTokens: 0, // 旧数据没有缓存token
-          cacheReadTokens: 0,
-          allTokens: tokens, // 对于旧数据，allTokens等于tokens
-          requests
-        }
-      } else {
-        // 新数据或无数据 - 统一使用allTokens作为tokens的值
-        return {
-          tokens: actualAllTokens, // 统一使用allTokens作为总数
-          inputTokens,
-          outputTokens,
-          cacheCreateTokens,
-          cacheReadTokens,
-          allTokens: actualAllTokens,
-          requests
-        }
-      }
-    }
-
-    const totalData = handleLegacyData(total)
-    const dailyData = handleLegacyData(daily)
-    const monthlyData = handleLegacyData(monthly)
+    // 处理旧数据兼容性（支持缓存token），复用模块级 normalizeUsageStatsHash
+    const totalData = normalizeUsageStatsHash(total)
+    const dailyData = normalizeUsageStatsHash(daily)
+    const monthlyData = normalizeUsageStatsHash(monthly)
 
     return {
       total: totalData,
@@ -3252,6 +3253,121 @@ class RedisClient {
         period: isDatedPeriod ? 0 : total,
         source: 'v2-parent-ledger'
       }
+    }
+  }
+
+  // 🗂️ v2 父账号读侧聚合的 source key id 集合：父 + 所有子（含软删，使用原始集合）
+  // 与 getV2ParentLedgerCostStats 的口径一字不差。异常 fail-soft 返回 [parentKeyId]。
+  async getV2ParentSourceKeyIds(parentKeyId) {
+    try {
+      const childIds = await this.getV2ChildIds(parentKeyId)
+      return [parentKeyId, ...(Array.isArray(childIds) ? childIds : [])]
+    } catch (error) {
+      logger.warn(`⚠️ getV2ParentSourceKeyIds 失败 (parent: ${parentKeyId}): ${error.message}`)
+      return [parentKeyId]
+    }
+  }
+
+  // 💰 v2 父账号本周期 Claude(Opus)周费用：读时聚合父 + 所有子(含软删)的 usage:opus:weekly 计数
+  // 口径与 recalibrate_claude_weekly_usage / getV2ParentLedgerCostStats 一致。
+  // 子 key 的周键以父账号周期串存储（recordOpusCost 用父 reset 配置），故同周期串直接求和即对齐。
+  async getV2ParentWeeklyOpusCost(parentKeyId, resetDay = 1, resetHour = 0) {
+    const periodStr = getPeriodString(resetDay, resetHour)
+    try {
+      const ids = await this.getV2ParentSourceKeyIds(parentKeyId)
+      const pipeline = this.client.pipeline()
+      for (const id of ids) {
+        pipeline.get(`usage:opus:weekly:${id}:${periodStr}`)
+      }
+      const results = await pipeline.exec()
+      let sum = 0
+      for (const [err, value] of results) {
+        if (!err) {
+          sum += parseFloat(value || 0)
+        }
+      }
+      return sum
+    } catch (error) {
+      // fail-soft：聚合失败时退回父键自身值（与现状一致，不致整页报错）
+      logger.warn(
+        `⚠️ getV2ParentWeeklyOpusCost 聚合失败 (parent: ${parentKeyId}): ${error.message}`
+      )
+      return await this.getWeeklyOpusCost(parentKeyId, resetDay, resetHour)
+    }
+  }
+
+  // 📊 v2 父账号读侧聚合用量统计：父 + 所有子(含软删)的 total/daily/monthly 求和
+  // 返回与 getUsageStats(keyId) 同形对象（averages 以父账号 createdAt 为基准重算）。
+  async getV2ParentUsageStats(parentKeyId) {
+    try {
+      const ids = await this.getV2ParentSourceKeyIds(parentKeyId)
+      const today = getDateStringInTimezone()
+      const tzDate = getDateInTimezone()
+      const currentMonth = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(
+        2,
+        '0'
+      )}`
+
+      // 单条 pipeline 取 ids × (total + daily + monthly) 三个 hash，避免 N+1
+      const pipeline = this.client.pipeline()
+      for (const id of ids) {
+        pipeline.hgetall(`usage:${id}`)
+        pipeline.hgetall(`usage:daily:${id}:${today}`)
+        pipeline.hgetall(`usage:monthly:${id}:${currentMonth}`)
+      }
+      const results = await pipeline.exec()
+
+      const makeBucket = () => ({
+        tokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreateTokens: 0,
+        cacheReadTokens: 0,
+        allTokens: 0,
+        requests: 0
+      })
+      const acc = { total: makeBucket(), daily: makeBucket(), monthly: makeBucket() }
+      const bucketNames = ['total', 'daily', 'monthly']
+      for (let i = 0; i < results.length; i++) {
+        const [err, value] = results[i]
+        if (err) {
+          continue
+        }
+        const bucket = acc[bucketNames[i % 3]]
+        const norm = normalizeUsageStatsHash(value)
+        bucket.tokens += norm.tokens
+        bucket.inputTokens += norm.inputTokens
+        bucket.outputTokens += norm.outputTokens
+        bucket.cacheCreateTokens += norm.cacheCreateTokens
+        bucket.cacheReadTokens += norm.cacheReadTokens
+        bucket.allTokens += norm.allTokens
+        bucket.requests += norm.requests
+      }
+
+      // averages 以父账号 createdAt 为基准重算（避免用子账号创建时间混算）
+      const parentData = await this.client.hgetall(`apikey:${parentKeyId}`)
+      const createdAt = parentData.createdAt ? new Date(parentData.createdAt) : new Date()
+      const now = new Date()
+      const daysSinceCreated = Math.max(1, Math.ceil((now - createdAt) / (1000 * 60 * 60 * 24)))
+      const totalMinutes = Math.max(1, daysSinceCreated * 24 * 60)
+      const totalRequests = acc.total.requests
+      const totalTokens = acc.total.tokens
+
+      return {
+        total: acc.total,
+        daily: acc.daily,
+        monthly: acc.monthly,
+        averages: {
+          rpm: Math.round((totalRequests / totalMinutes) * 100) / 100,
+          tpm: Math.round((totalTokens / totalMinutes) * 100) / 100,
+          dailyRequests: Math.round((totalRequests / daysSinceCreated) * 100) / 100,
+          dailyTokens: Math.round((totalTokens / daysSinceCreated) * 100) / 100
+        }
+      }
+    } catch (error) {
+      // fail-soft：聚合失败时退回父账号自身用量（与现状一致，不致整页报错）
+      logger.warn(`⚠️ getV2ParentUsageStats 聚合失败 (parent: ${parentKeyId}): ${error.message}`)
+      return await this.getUsageStats(parentKeyId)
     }
   }
 

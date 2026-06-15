@@ -1257,15 +1257,24 @@ class ApiKeyService {
 
       // 为每个key添加使用统计和当前并发数
       for (const key of apiKeys) {
-        key.usage = await redis.getUsageStats(key.id)
-        const costStats = await redis.getCostStats(key.id)
+        // 🆕 v2 父账号：升级后自身不跑流量，usage/成本/周费用改用读侧聚合（父 + 所有子，含软删）
+        const isV2ParentKey = key.isV2Parent === 'true' || key.isV2Parent === true
+        const v2Ledger = isV2ParentKey
+          ? await redis.getV2ParentLedgerCostStats(key.id, { timeRange: 'all' })
+          : null
+
+        key.usage = isV2ParentKey
+          ? await redis.getV2ParentUsageStats(key.id)
+          : await redis.getUsageStats(key.id)
+        const costStats = isV2ParentKey ? null : await redis.getCostStats(key.id)
+        const effectiveTotalCost = isV2ParentKey ? v2Ledger.total : costStats ? costStats.total : 0
         // 为前端兼容性：把费用信息同步到 usage 对象里
-        if (key.usage && costStats) {
+        if (key.usage) {
           key.usage.total = key.usage.total || {}
-          key.usage.total.cost = costStats.total
-          key.usage.totalCost = costStats.total
+          key.usage.total.cost = effectiveTotalCost
+          key.usage.totalCost = effectiveTotalCost
         }
-        key.totalCost = costStats ? costStats.total : 0
+        key.totalCost = effectiveTotalCost
         key.tokenLimit = parseInt(key.tokenLimit)
         key.concurrencyLimit = parseInt(key.concurrencyLimit || 0)
         key.rateLimitWindow = parseInt(key.rateLimitWindow || 0)
@@ -1302,13 +1311,20 @@ class ApiKeyService {
         key.dailyCostLimit = parseFloat(key.dailyCostLimit || 0)
         key.totalCostLimit = parseFloat(key.totalCostLimit || 0)
         key.weeklyOpusCostLimit = parseFloat(key.weeklyOpusCostLimit || 0)
-        key.dailyCost = (await redis.getDailyCost(key.id)) || 0
-        key.weeklyOpusCost =
-          (await redis.getWeeklyOpusCost(
-            key.id,
-            parseInt(key.weeklyResetDay || 1),
-            parseInt(key.weeklyResetHour || 0)
-          )) || 0
+        key.dailyCost = isV2ParentKey
+          ? v2Ledger.daily || 0
+          : (await redis.getDailyCost(key.id)) || 0
+        key.weeklyOpusCost = isV2ParentKey
+          ? (await redis.getV2ParentWeeklyOpusCost(
+              key.id,
+              parseInt(key.weeklyResetDay || 1),
+              parseInt(key.weeklyResetHour || 0)
+            )) || 0
+          : (await redis.getWeeklyOpusCost(
+              key.id,
+              parseInt(key.weeklyResetDay || 1),
+              parseInt(key.weeklyResetHour || 0)
+            )) || 0
         key.activationDays = parseInt(key.activationDays || 0)
         key.activationUnit = key.activationUnit || 'days'
         key.expirationMode = key.expirationMode || 'fixed'
@@ -1687,6 +1703,28 @@ class ApiKeyService {
         // 不获取 lastUsage（太慢），设为 null
         key.lastUsage = null
       }
+
+      // 🆕 v2 父账号：batchGetApiKeyStats 读的是父账号自身计数(≈0)，且其 weeklyOpusCost
+      // 用 ISO 周键格式与写入周期串不一致，均不可信。用读侧聚合(父 + 所有子)覆盖。
+      const v2Parents = apiKeys.filter((k) => k.isV2Parent === true || k.isV2Parent === 'true')
+      await Promise.all(
+        v2Parents.map(async (key) => {
+          const resetDay = parseInt(key.weeklyResetDay || 1)
+          const resetHour = parseInt(key.weeklyResetHour || 0)
+          const [usage, ledger, weeklyOpusCost] = await Promise.all([
+            redis.getV2ParentUsageStats(key.id),
+            redis.getV2ParentLedgerCostStats(key.id, { timeRange: 'all' }),
+            redis.getV2ParentWeeklyOpusCost(key.id, resetDay, resetHour)
+          ])
+          key.usage = usage
+          key.usage.total = key.usage.total || {}
+          key.usage.total.cost = ledger.total
+          key.usage.totalCost = ledger.total
+          key.totalCost = ledger.total
+          key.dailyCost = ledger.daily || 0
+          key.weeklyOpusCost = weeklyOpusCost || 0
+        })
+      )
 
       return apiKeys
     } catch (error) {
