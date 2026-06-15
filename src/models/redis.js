@@ -5395,7 +5395,9 @@ redisClient.scanAndGetAll = async function (pattern, batchSize = 200) {
  * @param {string[]} keyIds - API Key ID 列表
  * @returns {Promise<Map<string, Object>>} keyId -> 统计数据的映射
  */
-redisClient.batchGetApiKeyStats = async function (keyIds) {
+// concurrencyPoolIds（可选）：Map<keyId, poolId>。v2 子 key 的并发池在父账号（共享池），
+// 传入后该 key 的并发 zcard 改读 poolId（父账号 id），其余统计仍按 key 自身 id。默认用自身 id。
+redisClient.batchGetApiKeyStats = async function (keyIds, concurrencyPoolIds = null) {
   if (!keyIds || keyIds.length === 0) {
     return new Map()
   }
@@ -5420,8 +5422,9 @@ redisClient.batchGetApiKeyStats = async function (keyIds) {
     pipeline.get(`usage:cost:monthly:${keyId}:${currentMonth}`)
     pipeline.get(`usage:cost:hourly:${keyId}:${currentHour}`)
     pipeline.get(`usage:cost:total:${keyId}`)
-    // concurrency (1 zcard)
-    pipeline.zcard(`concurrency:${keyId}`)
+    // concurrency (1 zcard)；v2 子 key 读父账号共享池
+    const concurrencyId = (concurrencyPoolIds && concurrencyPoolIds.get(keyId)) || keyId
+    pipeline.zcard(`concurrency:${concurrencyId}`)
     // weekly opus cost (1 get)
     pipeline.get(`usage:opus:weekly:${keyId}:${currentWeek}`)
     // rate limit (4 get)

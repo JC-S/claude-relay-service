@@ -1159,7 +1159,8 @@ class ApiKeyService {
         key.rateLimitWindow = parseInt(key.rateLimitWindow || 0)
         key.rateLimitRequests = parseInt(key.rateLimitRequests || 0)
         key.rateLimitCost = parseFloat(key.rateLimitCost || 0) // 新增：速率限制费用字段
-        key.currentConcurrency = await redis.getConcurrency(key.id)
+        // 🆕 v2 子 key 的并发池按父账号聚合（共享池），列表展示对齐到父账号池
+        key.currentConcurrency = await redis.getConcurrency(key.parentKeyId || key.id)
         key.isActive = key.isActive === 'true'
         key.enableModelRestriction = key.enableModelRestriction === 'true'
         key.enableClientRestriction = key.enableClientRestriction === 'true'
@@ -1354,7 +1355,12 @@ class ApiKeyService {
 
       // 4. 批量获取统计数据（单次 Pipeline）
       const activeKeyIds = apiKeys.map((k) => k.id)
-      const statsMap = await redis.batchGetApiKeyStats(activeKeyIds)
+      // 🆕 v2 子 key 的并发池在父账号（共享池）：构建「子 id → 父 id」映射，
+      // 使 batchGetApiKeyStats 的并发 zcard 读父账号池，currentConcurrency 反映共享池实时并发
+      const concurrencyPoolIds = new Map(
+        apiKeys.filter((k) => k.parentKeyId).map((k) => [k.id, k.parentKeyId])
+      )
+      const statsMap = await redis.batchGetApiKeyStats(activeKeyIds, concurrencyPoolIds)
 
       // 5. 合并数据
       for (const key of apiKeys) {

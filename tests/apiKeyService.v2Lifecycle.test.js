@@ -230,6 +230,25 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     expect(keys).toHaveLength(1)
   })
 
+  // 6.5 🆕 v2 子 key 的并发池在父账号：getAllApiKeysFast 传「子→父」池映射给 batchGetApiKeyStats，
+  // 使子 key 的 currentConcurrency 反映父账号共享池（普通 key 不进映射，仍用自身 id）
+  test('getAllApiKeysFast passes a child→parent concurrency pool map for v2 children', async () => {
+    redis.batchGetApiKeys.mockResolvedValue([
+      { id: 'child1', parentKeyId: 'parent1', isDeleted: false },
+      { id: 'normal1', isDeleted: false }
+    ])
+    redis.batchGetApiKeyStats.mockResolvedValue(new Map())
+
+    await apiKeyService.getAllApiKeysFast(false, ['child1', 'normal1'])
+
+    expect(redis.batchGetApiKeyStats).toHaveBeenCalledTimes(1)
+    const [ids, poolMap] = redis.batchGetApiKeyStats.mock.calls[0]
+    expect(ids).toEqual(['child1', 'normal1'])
+    expect(poolMap instanceof Map).toBe(true)
+    expect(poolMap.get('child1')).toBe('parent1') // 子 key → 父账号池
+    expect(poolMap.has('normal1')).toBe(false) // 普通 key 不进映射，用自身 id
+  })
+
   // 7. getV2Children：经 children 集合批量加载，脏数据二次过滤，createdAt 倒序
   test('getV2Children loads via the children set, filters dirty entries and sorts newest first', async () => {
     redis.getV2ChildIds.mockResolvedValue(['c1', 'c2', 'dirty'])

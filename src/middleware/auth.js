@@ -631,6 +631,9 @@ const authenticateApiKey = async (req, res, next) => {
 
     // 检查并发限制
     const concurrencyLimit = validation.keyData.concurrencyLimit || 0
+    // 🆕 v2 子 key 的并发按父账号聚合（全账号共享一个并发池）；普通 key 用自身 id。
+    // 占位与所有释放路径必须用同一 id，否则会导致父池计数泄漏。
+    const concurrencyKeyId = validation.keyData.parentKeyId || validation.keyData.id
     if (!skipKeyRestrictions && concurrencyLimit > 0) {
       const { leaseSeconds: configLeaseSeconds, renewIntervalSeconds: configRenewIntervalSeconds } =
         resolveConcurrencyConfig()
@@ -678,7 +681,7 @@ const authenticateApiKey = async (req, res, next) => {
           }
           hasConcurrencySlot = false
           try {
-            await redis.decrConcurrency(validation.keyData.id, requestId)
+            await redis.decrConcurrency(concurrencyKeyId, requestId)
           } catch (cleanupError) {
             logger.error(
               `Failed to decrement concurrency after auth error for key ${validation.keyData.id}:`,
@@ -689,7 +692,7 @@ const authenticateApiKey = async (req, res, next) => {
       }
 
       const currentConcurrency = await redis.incrConcurrency(
-        validation.keyData.id,
+        concurrencyKeyId,
         requestId,
         leaseSeconds
       )
@@ -702,7 +705,7 @@ const authenticateApiKey = async (req, res, next) => {
       if (currentConcurrency > concurrencyLimit) {
         // 1. 先释放刚占用的槽位
         try {
-          await redis.decrConcurrency(validation.keyData.id, requestId)
+          await redis.decrConcurrency(concurrencyKeyId, requestId)
         } catch (error) {
           logger.error(
             `Failed to decrement concurrency after limit exceeded for key ${validation.keyData.id}:`,
@@ -741,7 +744,7 @@ const authenticateApiKey = async (req, res, next) => {
         // 4.5 排队健康检查：过载时快速失败
         // 详见 design.md Decision 7: 排队健康检查与快速失败
         const overloadCheck = await shouldRejectDueToOverload(
-          validation.keyData.id,
+          concurrencyKeyId,
           queueConfig.concurrentRequestQueueTimeoutMs,
           queueConfig,
           maxQueueSize
@@ -757,7 +760,7 @@ const authenticateApiKey = async (req, res, next) => {
           )
           // 记录被拒绝的过载统计
           redis
-            .incrConcurrencyQueueStats(validation.keyData.id, 'rejected_overload')
+            .incrConcurrencyQueueStats(concurrencyKeyId, 'rejected_overload')
             .catch((e) => logger.warn('Failed to record rejected_overload stat:', e))
           // 返回 429 + Retry-After，让客户端稍后重试
           const retryAfterSeconds = 30
@@ -780,14 +783,14 @@ const authenticateApiKey = async (req, res, next) => {
         let queueIncremented = false
         try {
           const newQueueCount = await redis.incrConcurrencyQueue(
-            validation.keyData.id,
+            concurrencyKeyId,
             queueConfig.concurrentRequestQueueTimeoutMs
           )
           queueIncremented = true
 
           if (newQueueCount > maxQueueSize) {
             // 超过最大排队数，立即释放并返回 429
-            await redis.decrConcurrencyQueue(validation.keyData.id)
+            await redis.decrConcurrencyQueue(concurrencyKeyId)
             queueIncremented = false
             logger.api(
               `🚦 Concurrency queue full for key: ${validation.keyData.id} (${validation.keyData.name}), ` +
@@ -814,7 +817,7 @@ const authenticateApiKey = async (req, res, next) => {
               `queue position: ${newQueueCount}`
           )
           redis
-            .incrConcurrencyQueueStats(validation.keyData.id, 'entered')
+            .incrConcurrencyQueueStats(concurrencyKeyId, 'entered')
             .catch((e) => logger.warn('Failed to record entered stat:', e))
 
           // ⚠️ 仅在请求实际进入排队时设置 Connection: close
@@ -844,7 +847,7 @@ const authenticateApiKey = async (req, res, next) => {
           // 外层 catch 块会重复减少计数（finally 已经减过一次）
           queueIncremented = false
 
-          const slot = await waitForConcurrencySlot(req, res, validation.keyData.id, {
+          const slot = await waitForConcurrencySlot(req, res, concurrencyKeyId, {
             concurrencyLimit,
             requestId,
             leaseSeconds,
@@ -925,7 +928,7 @@ const authenticateApiKey = async (req, res, next) => {
             // 释放刚获取的槽位
             hasConcurrencySlot = false
             await redis
-              .decrConcurrency(validation.keyData.id, requestId)
+              .decrConcurrency(concurrencyKeyId, requestId)
               .catch((e) => logger.error('Failed to release slot after client abandoned:', e))
             // 不返回响应（客户端已不在等待）
             return
@@ -952,11 +955,11 @@ const authenticateApiKey = async (req, res, next) => {
             // 释放刚获取的槽位
             hasConcurrencySlot = false
             await redis
-              .decrConcurrency(validation.keyData.id, requestId)
+              .decrConcurrency(concurrencyKeyId, requestId)
               .catch((e) => logger.error('Failed to release slot after socket identity change:', e))
             // 记录 socket_changed 统计
             redis
-              .incrConcurrencyQueueStats(validation.keyData.id, 'socket_changed')
+              .incrConcurrencyQueueStats(concurrencyKeyId, 'socket_changed')
               .catch((e) => logger.warn('Failed to record socket_changed stat:', e))
             // 不返回响应（socket 已被其他请求使用）
             return
@@ -966,7 +969,7 @@ const authenticateApiKey = async (req, res, next) => {
           // 1. 清理排队计数（如果还没被 waitForConcurrencySlot 的 finally 清理）
           if (queueIncremented) {
             await redis
-              .decrConcurrencyQueue(validation.keyData.id)
+              .decrConcurrencyQueue(concurrencyKeyId)
               .catch((e) => logger.error('Failed to cleanup queue count after error:', e))
           }
 
@@ -976,7 +979,7 @@ const authenticateApiKey = async (req, res, next) => {
           if (hasConcurrencySlot) {
             hasConcurrencySlot = false
             await redis
-              .decrConcurrency(validation.keyData.id, requestId)
+              .decrConcurrency(concurrencyKeyId, requestId)
               .catch((e) =>
                 logger.error('Failed to cleanup concurrency slot after queue error:', e)
               )
@@ -1016,7 +1019,7 @@ const authenticateApiKey = async (req, res, next) => {
             // 强制减少并发计数（如果还没减少）
             if (!concurrencyDecremented) {
               concurrencyDecremented = true
-              redis.decrConcurrency(validation.keyData.id, requestId).catch((error) => {
+              redis.decrConcurrency(concurrencyKeyId, requestId).catch((error) => {
                 logger.error(
                   `Failed to decrement concurrency after max refresh for key ${validation.keyData.id}:`,
                   error
@@ -1027,7 +1030,7 @@ const authenticateApiKey = async (req, res, next) => {
           }
 
           redis
-            .refreshConcurrencyLease(validation.keyData.id, requestId, leaseSeconds)
+            .refreshConcurrencyLease(concurrencyKeyId, requestId, leaseSeconds)
             .catch((error) => {
               logger.error(
                 `Failed to refresh concurrency lease for key ${validation.keyData.id}:`,
@@ -1050,7 +1053,7 @@ const authenticateApiKey = async (req, res, next) => {
             leaseRenewInterval = null
           }
           try {
-            const newCount = await redis.decrConcurrency(validation.keyData.id, requestId)
+            const newCount = await redis.decrConcurrency(concurrencyKeyId, requestId)
             logger.api(
               `📉 Decremented concurrency for key: ${validation.keyData.id} (${validation.keyData.name}), new count: ${newCount}`
             )
@@ -1114,8 +1117,11 @@ const authenticateApiKey = async (req, res, next) => {
       })
 
       // 存储并发信息到请求对象，便于后续处理
+      // concurrencyKeyId 是真实并发池 id（v2 子 key 为父账号 id），供诊断/清理时使用，
+      // 避免误用调用方自身 id（apiKeyId）去查/清并发槽位
       req.concurrencyInfo = {
         apiKeyId: validation.keyData.id,
+        concurrencyKeyId,
         apiKeyName: validation.keyData.name,
         requestId,
         decrementConcurrency

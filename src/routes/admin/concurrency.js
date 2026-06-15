@@ -209,13 +209,21 @@ router.delete('/concurrency-queue', authenticateAdmin, async (req, res) => {
 router.get('/concurrency/:apiKeyId', authenticateAdmin, async (req, res) => {
   try {
     const { apiKeyId } = req.params
-    const status = await redis.getConcurrencyStatus(apiKeyId)
-    const queueCount = await redis.getConcurrencyQueueCount(apiKeyId)
+    // 🆕 v2 子 key 的并发池在父账号（共享池）。若传入子 key id，解析到父账号 id 再查询，
+    // 否则会查到子 key 自身的空池
+    const keyData = await redis.getApiKey(apiKeyId)
+    const concurrencyKeyId = keyData?.parentKeyId || apiKeyId
+    const isV2Child = !!keyData?.parentKeyId
+    const status = await redis.getConcurrencyStatus(concurrencyKeyId)
+    const queueCount = await redis.getConcurrencyQueueCount(concurrencyKeyId)
 
     res.json({
       success: true,
       concurrencyStatus: {
         ...status,
+        apiKeyId,
+        concurrencyKeyId,
+        isV2Child,
         queueCount
       }
     })
@@ -236,15 +244,22 @@ router.get('/concurrency/:apiKeyId', authenticateAdmin, async (req, res) => {
 router.delete('/concurrency/:apiKeyId', authenticateAdmin, async (req, res) => {
   try {
     const { apiKeyId } = req.params
-    const result = await redis.forceClearConcurrency(apiKeyId)
+    // 🆕 v2 子 key 的并发池在父账号（共享池），传入子 key id 时解析到父账号 id 再清理
+    const keyData = await redis.getApiKey(apiKeyId)
+    const concurrencyKeyId = keyData?.parentKeyId || apiKeyId
+    const isV2Child = !!keyData?.parentKeyId
+    const result = await redis.forceClearConcurrency(concurrencyKeyId)
 
     logger.warn(
-      `🧹 Admin ${req.admin?.username || 'unknown'} force cleared concurrency for key ${apiKeyId}`
+      `🧹 Admin ${req.admin?.username || 'unknown'} force cleared concurrency for key ${apiKeyId} (pool ${concurrencyKeyId})`
     )
 
     res.json({
       success: true,
       message: `Successfully cleared concurrency for API key ${apiKeyId}`,
+      apiKeyId,
+      concurrencyKeyId,
+      isV2Child,
       result
     })
   } catch (error) {
