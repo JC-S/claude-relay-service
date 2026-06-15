@@ -37,17 +37,6 @@
             type="number"
           />
         </div>
-        <div>
-          <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
-            >重置密码（留空表示不修改）</label
-          >
-          <input
-            v-model="form.newPassword"
-            class="form-input w-full"
-            placeholder="至少 8 位"
-            type="password"
-          />
-        </div>
         <div class="flex gap-3 pt-2">
           <button
             class="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
@@ -58,7 +47,7 @@
           </button>
           <button
             class="btn btn-primary flex-1 px-4 py-2.5 font-semibold"
-            :disabled="loading"
+            :disabled="loading || passwordLoading"
             type="submit"
           >
             <div v-if="loading" class="loading-spinner mr-2" />
@@ -66,6 +55,53 @@
           </button>
         </div>
       </form>
+
+      <!-- 密码重置：form 外独立区块，默认折叠，仅展开后内联出现输入与提交 -->
+      <div class="mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
+        <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+          >密码</label
+        >
+        <button
+          v-if="!showPasswordReset"
+          class="inline-flex items-center gap-2 rounded-xl border border-gray-300 px-4 py-2.5 font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700/50"
+          :disabled="loading || passwordLoading"
+          type="button"
+          @click="openPasswordReset"
+        >
+          <i class="fas fa-key" />
+          重置密码
+        </button>
+        <div v-else class="space-y-3">
+          <input
+            v-model="newPassword"
+            autocomplete="new-password"
+            class="form-input w-full"
+            :disabled="loading || passwordLoading"
+            placeholder="新密码（至少 8 位）"
+            type="password"
+            @keydown.enter.prevent="submitPasswordReset"
+          />
+          <div class="flex gap-3">
+            <button
+              class="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 font-semibold text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              :disabled="loading || passwordLoading"
+              type="button"
+              @click="cancelPasswordReset"
+            >
+              取消
+            </button>
+            <button
+              class="btn btn-primary flex-1 px-4 py-2.5 font-semibold"
+              :disabled="loading || passwordLoading"
+              type="button"
+              @click="submitPasswordReset"
+            >
+              <div v-if="passwordLoading" class="loading-spinner mr-2" />
+              确认重置
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- 模拟登录：form 外独立区块（type=button，永不触发表单保存） -->
       <div class="mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
@@ -105,23 +141,19 @@ const emit = defineEmits(['close', 'success'])
 const authStore = useAuthStore()
 const loading = ref(false)
 const impersonating = ref(false)
+const passwordLoading = ref(false)
+const showPasswordReset = ref(false)
+const newPassword = ref('')
 const form = reactive({
   newEmail: props.apiKey?.v2Email || '',
-  totalBudget: props.apiKey?.v2TotalBudget || 0,
-  newPassword: ''
+  totalBudget: props.apiKey?.v2TotalBudget || 0
 })
 
 const submit = async () => {
-  if (form.newPassword && form.newPassword.length < 8) {
-    showToast('密码长度至少 8 位', 'error')
-    return
-  }
+  if (loading.value || passwordLoading.value) return
   const payload = { totalBudget: form.totalBudget || 0 }
   if (form.newEmail && form.newEmail.trim().toLowerCase() !== (props.apiKey?.v2Email || '')) {
     payload.newEmail = form.newEmail.trim()
-  }
-  if (form.newPassword) {
-    payload.newPassword = form.newPassword
   }
   loading.value = true
   try {
@@ -137,6 +169,41 @@ const submit = async () => {
     showToast(error.message || '保存失败', 'error')
   } finally {
     loading.value = false
+  }
+}
+
+const openPasswordReset = () => {
+  if (loading.value || passwordLoading.value) return
+  newPassword.value = ''
+  showPasswordReset.value = true
+}
+
+const cancelPasswordReset = () => {
+  if (passwordLoading.value) return
+  newPassword.value = ''
+  showPasswordReset.value = false
+}
+
+const submitPasswordReset = async () => {
+  if (loading.value || passwordLoading.value) return
+  if (!newPassword.value || newPassword.value.length < 8) {
+    showToast('密码长度至少 8 位', 'error')
+    return
+  }
+  passwordLoading.value = true
+  try {
+    const res = await updateV2ConfigApi(props.apiKey.id, { newPassword: newPassword.value })
+    if (res.success) {
+      showToast('密码已重置', 'success')
+      newPassword.value = ''
+      showPasswordReset.value = false
+    } else {
+      showToast(res.message || '密码重置失败', 'error')
+    }
+  } catch (error) {
+    showToast(error.message || '密码重置失败', 'error')
+  } finally {
+    passwordLoading.value = false
   }
 }
 
