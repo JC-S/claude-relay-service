@@ -687,26 +687,6 @@
                           </template>
                           <!-- 已加载状态 -->
                           <template v-else>
-                            <!-- v2 父账号总额度：只展示额度数值，避免依赖统计聚合未上线时误显已用量 -->
-                            <div
-                              v-if="isV2ParentKey(key)"
-                              class="rounded-lg border border-purple-100 bg-purple-50/70 px-2 py-1.5 dark:border-purple-900/60 dark:bg-purple-900/20"
-                            >
-                              <div class="flex items-center justify-between gap-2">
-                                <span
-                                  class="flex items-center gap-1 text-[11px] font-medium text-purple-700 dark:text-purple-300"
-                                >
-                                  <i class="fas fa-wallet text-[10px]" />
-                                  账号总额度
-                                </span>
-                                <span
-                                  class="text-xs font-bold text-purple-800 dark:text-purple-200"
-                                >
-                                  {{ formatV2TotalBudget(key) }}
-                                </span>
-                              </div>
-                            </div>
-
                             <!-- Claude 周额度限制 - 独立显示 -->
                             <LimitProgressBar
                               v-if="key.weeklyOpusCostLimit > 0"
@@ -714,6 +694,16 @@
                               label="Claude 周限制"
                               :limit="key.weeklyOpusCostLimit"
                               type="opus"
+                              variant="compact"
+                            />
+
+                            <!-- v2 父账号总费用限制 -->
+                            <LimitProgressBar
+                              v-if="isV2ParentKey(key)"
+                              :current="getCachedStats(key.id)?.allTimeCost || 0"
+                              label="总费用限制"
+                              :limit="toPositiveNumber(key.v2TotalBudget)"
+                              type="total"
                               variant="compact"
                             />
 
@@ -1626,23 +1616,15 @@
                         variant="compact"
                       />
 
-                      <!-- v2 父账号总额度 -->
-                      <div
+                      <!-- v2 父账号总费用限制 -->
+                      <LimitProgressBar
                         v-if="isV2ParentKey(key)"
-                        class="rounded-lg border border-purple-100 bg-purple-50/70 px-3 py-2 dark:border-purple-900/60 dark:bg-purple-900/20"
-                      >
-                        <div class="flex items-center justify-between gap-2">
-                          <span
-                            class="flex items-center gap-1.5 text-xs font-medium text-purple-700 dark:text-purple-300"
-                          >
-                            <i class="fas fa-wallet text-[11px]" />
-                            账号总额度
-                          </span>
-                          <span class="text-sm font-bold text-purple-800 dark:text-purple-200">
-                            {{ formatV2TotalBudget(key) }}
-                          </span>
-                        </div>
-                      </div>
+                        :current="getCachedStats(key.id)?.allTimeCost || 0"
+                        label="总费用限制"
+                        :limit="toPositiveNumber(key.v2TotalBudget)"
+                        type="total"
+                        variant="compact"
+                      />
 
                       <!-- 每日费用限制 -->
                       <LimitProgressBar
@@ -3033,7 +3015,7 @@ const hasStatsDependentLimitDisplay = (key) => {
     toPositiveNumber(key?.rateLimitWindow) > 0 && toPositiveNumber(key?.rateLimitCost) > 0
 
   if (isV2ParentKey(key)) {
-    return hasWeeklyLimit || hasWindowLimit
+    return hasWeeklyLimit || hasWindowLimit || toPositiveNumber(key?.v2TotalBudget) > 0
   }
 
   return (
@@ -3052,8 +3034,6 @@ const formatLimitCurrency = (value) => {
   const decimals = Number.isInteger(amount) ? 0 : 2
   return `$${amount.toFixed(decimals)}`
 }
-
-const formatV2TotalBudget = (key) => formatLimitCurrency(key?.v2TotalBudget)
 
 const formatExportLimit = (value) => {
   const amount = toPositiveNumber(value)
