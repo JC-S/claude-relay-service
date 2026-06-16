@@ -33,6 +33,7 @@ jest.mock('../src/services/apiKeyService', () => ({
   assertV2ChildOwnership: jest.fn(),
   createV2Child: jest.fn(),
   getV2Children: jest.fn(),
+  getV2ChildrenUsageStats: jest.fn(),
   getV2AccountSummary: jest.fn(),
   changeV2Password: jest.fn(),
   deleteApiKey: jest.fn(),
@@ -59,7 +60,9 @@ require('../src/routes/admin/v2Account')
 
 const PUT_PATH = '/keys/:keyId'
 const IP_WHITELIST_PATH = '/account/ip-whitelist'
+const USAGE_STATS_PATH = '/keys/usage-stats'
 const handler = mockRouter.put.mock.calls.find((call) => call[0] === PUT_PATH)[1]
+const usageStatsHandler = mockRouter.post.mock.calls.find((call) => call[0] === USAGE_STATS_PATH)[1]
 const getIpWhitelistHandler = mockRouter.get.mock.calls.find(
   (call) => call[0] === IP_WHITELIST_PATH
 )[1]
@@ -218,6 +221,73 @@ describe('GET /admin/v2/account/ip-whitelist', () => {
 
     expect(res.status).toHaveBeenCalledWith(500)
     expect(res.body.error).toBe('Failed to load IP whitelist')
+  })
+})
+
+describe('POST /admin/v2/keys/usage-stats', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    apiKeyService.getV2ChildrenUsageStats.mockResolvedValue({
+      'child-1': {
+        requests: 2,
+        tokens: 30,
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheCreateTokens: 0,
+        cacheReadTokens: 0,
+        cost: 1.5,
+        formattedCost: '$1.50'
+      }
+    })
+  })
+
+  test('derives child keys from the v2 session and ignores client supplied keyIds', async () => {
+    const res = createRes()
+    await usageStatsHandler(
+      createReq({
+        keyIds: ['other-key'],
+        timeRange: '7days'
+      }),
+      res
+    )
+
+    expect(apiKeyService.getV2ChildrenUsageStats).toHaveBeenCalledWith('parent-1', {
+      timeRange: '7days',
+      startDate: undefined,
+      endDate: undefined
+    })
+    expect(res.status).not.toHaveBeenCalled()
+    expect(res.body).toEqual({
+      success: true,
+      data: {
+        'child-1': {
+          requests: 2,
+          tokens: 30,
+          inputTokens: 10,
+          outputTokens: 20,
+          cacheCreateTokens: 0,
+          cacheReadTokens: 0,
+          cost: 1.5,
+          formattedCost: '$1.50'
+        }
+      }
+    })
+  })
+
+  test('returns 400 for invalid custom date ranges', async () => {
+    const res = createRes()
+    await usageStatsHandler(
+      createReq({
+        timeRange: 'custom',
+        startDate: '2026-06-02',
+        endDate: '2026-06-01'
+      }),
+      res
+    )
+
+    expect(apiKeyService.getV2ChildrenUsageStats).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(res.body.error).toBe('Invalid time range')
   })
 })
 

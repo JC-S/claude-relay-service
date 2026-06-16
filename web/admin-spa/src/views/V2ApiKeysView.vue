@@ -35,8 +35,40 @@
     </div>
 
     <!-- 操作栏 -->
-    <div class="mb-4 flex items-center justify-between">
-      <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100">我的 API Keys</h2>
+    <div class="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100">我的 API Keys</h2>
+        <div class="group relative min-w-[140px]">
+          <div
+            class="absolute -inset-0.5 rounded-lg bg-gradient-to-r from-blue-500 to-purple-500 opacity-0 blur transition duration-300 group-hover:opacity-20"
+          ></div>
+          <CustomDropdown
+            v-model="dateFilter.preset"
+            icon="fa-calendar-alt"
+            icon-color="text-blue-500"
+            :options="timeRangeDropdownOptions"
+            placeholder="选择时间范围"
+            @change="handleTimeRangeChange"
+          />
+        </div>
+        <div v-if="dateFilter.type === 'custom'" class="flex items-center">
+          <el-date-picker
+            class="api-key-date-picker custom-date-range-picker"
+            :clearable="true"
+            end-placeholder="结束日期"
+            format="YYYY-MM-DD HH:mm:ss"
+            :model-value="dateFilter.customRange"
+            range-separator="至"
+            size="small"
+            start-placeholder="开始日期"
+            style="width: 320px; height: 38px"
+            type="datetimerange"
+            :unlink-panels="false"
+            value-format="YYYY-MM-DD HH:mm:ss"
+            @update:model-value="onCustomDateRangeChange"
+          />
+        </div>
+      </div>
       <div class="flex items-center gap-2">
         <button
           class="rounded-xl bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
@@ -68,7 +100,7 @@
             <th class="px-3 py-2">名称</th>
             <th class="px-3 py-2">Key</th>
             <th class="px-3 py-2">状态</th>
-            <th class="px-3 py-2">今日费用</th>
+            <th class="px-3 py-2">{{ rangeCostColumnTitle }}</th>
             <th class="px-3 py-2">总费用</th>
             <th class="px-3 py-2">最后使用</th>
             <th class="px-3 py-2 text-right">操作</th>
@@ -102,8 +134,22 @@
               </span>
             </td>
             <td class="px-3 py-3">
-              {{ fmtCost(key.dailyCost) }}
-              <span v-if="key.dailyCostLimit > 0" class="text-xs text-gray-400">
+              <div v-if="rangeStatsLoading" class="text-xs text-gray-400 dark:text-gray-500">
+                加载中...
+              </div>
+              <template v-else>
+                <div class="font-semibold text-gray-900 dark:text-gray-100">
+                  {{ getRangeStats(key.id).formattedCost }}
+                </div>
+                <div class="text-xs text-gray-400 dark:text-gray-500">
+                  {{ formatNumber(getRangeStats(key.id).requests) }} 次 ·
+                  {{ formatNumber(getRangeStats(key.id).tokens) }} tokens
+                </div>
+              </template>
+              <span
+                v-if="showDailyLimitInRangeColumn && key.dailyCostLimit > 0"
+                class="text-xs text-gray-400"
+              >
                 / {{ fmtCost(key.dailyCostLimit) }}
               </span>
             </td>
@@ -786,11 +832,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { showToast, copyText, formatDate, formatNumber, parseIpWhitelistInput } from '@/utils/tools'
 import {
   getV2AccountApi,
   getV2ApiKeysApi,
+  getV2KeysUsageStatsApi,
   createV2ApiKeyApi,
   updateV2ApiKeyApi,
   deleteV2ApiKeyApi,
@@ -800,10 +847,47 @@ import {
   revealV2ApiKeySecretApi
 } from '@/utils/http_apis'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
+import CustomDropdown from '@/components/common/CustomDropdown.vue'
 
 const loading = ref(true)
 const account = ref({ v2Email: '', v2TotalBudget: 0, used: 0, remaining: 0, unlimited: true })
 const keys = ref([])
+const rangeStats = ref({})
+const rangeStatsLoading = ref(false)
+let rangeStatsRequestSeq = 0
+
+const dateFilter = reactive({
+  type: 'preset',
+  preset: 'today',
+  customStart: '',
+  customEnd: '',
+  customRange: null
+})
+
+const timeRangeDropdownOptions = computed(() => [
+  { value: 'today', label: '今日', icon: 'fa-calendar-day' },
+  { value: '7days', label: '最近7天', icon: 'fa-calendar-week' },
+  { value: '30days', label: '最近30天', icon: 'fa-calendar-alt' },
+  { value: 'all', label: '全部时间', icon: 'fa-infinity' },
+  { value: 'custom', label: '自定义范围', icon: 'fa-calendar-check' }
+])
+
+const rangeCostColumnTitle = computed(() => {
+  if (dateFilter.type === 'custom') {
+    return '区间费用'
+  }
+  const labels = {
+    today: '今日费用',
+    '7days': '近7天费用',
+    '30days': '近30天费用',
+    all: '全部费用'
+  }
+  return labels[dateFilter.preset] || '区间费用'
+})
+
+const showDailyLimitInRangeColumn = computed(
+  () => dateFilter.type !== 'custom' && dateFilter.preset === 'today'
+)
 
 const showFormModal = ref(false)
 const formLoading = ref(false)
@@ -875,6 +959,91 @@ const handleCancelConfirm = () => {
 
 const fmtCost = (n) => `$${Number(n || 0).toFixed(4)}`
 
+const getCurrentStatsWindow = () => {
+  if (dateFilter.type === 'custom') {
+    if (!dateFilter.customStart || !dateFilter.customEnd) {
+      return null
+    }
+    return {
+      timeRange: 'custom',
+      startDate: dateFilter.customStart,
+      endDate: dateFilter.customEnd
+    }
+  }
+  return {
+    timeRange: dateFilter.preset || 'today',
+    startDate: null,
+    endDate: null
+  }
+}
+
+const getEmptyRangeStats = () => ({
+  requests: 0,
+  tokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreateTokens: 0,
+  cacheReadTokens: 0,
+  cost: 0,
+  formattedCost: '$0.00'
+})
+
+const getRangeStats = (keyId) => rangeStats.value[keyId] || getEmptyRangeStats()
+
+const loadRangeStats = async () => {
+  const window = getCurrentStatsWindow()
+  const seq = ++rangeStatsRequestSeq
+  if (!window) {
+    rangeStats.value = {}
+    rangeStatsLoading.value = false
+    return
+  }
+
+  rangeStatsLoading.value = true
+  try {
+    const res = await getV2KeysUsageStatsApi(window)
+    if (seq !== rangeStatsRequestSeq) {
+      return
+    }
+    rangeStats.value = res.success && res.data ? res.data : {}
+  } catch (error) {
+    if (seq === rangeStatsRequestSeq) {
+      showToast(error.message || '加载区间统计失败', 'error')
+      rangeStats.value = {}
+    }
+  } finally {
+    if (seq === rangeStatsRequestSeq) {
+      rangeStatsLoading.value = false
+    }
+  }
+}
+
+const handleTimeRangeChange = async (value) => {
+  dateFilter.preset = value
+  if (value === 'custom') {
+    dateFilter.type = 'custom'
+    await loadRangeStats()
+    return
+  }
+  dateFilter.type = 'preset'
+  dateFilter.customStart = ''
+  dateFilter.customEnd = ''
+  dateFilter.customRange = null
+  await loadRangeStats()
+}
+
+const onCustomDateRangeChange = async (value) => {
+  dateFilter.customRange = value
+  if (Array.isArray(value) && value.length === 2) {
+    dateFilter.customStart = value[0]
+    dateFilter.customEnd = value[1]
+  } else {
+    dateFilter.customStart = ''
+    dateFilter.customEnd = ''
+  }
+  await loadRangeStats()
+}
+
 // 单条请求费用自适应展示（与管理员请求详情一致：>=1 两位，>=0.001 四位，否则六位）
 const formatCost = (n) => {
   const num = Number(n) || 0
@@ -911,7 +1080,7 @@ const loadKeys = async () => {
 }
 
 const refresh = async () => {
-  await Promise.all([loadAccount(), loadKeys()])
+  await Promise.all([loadAccount(), loadKeys(), loadRangeStats()])
 }
 
 const resetRevealState = () => {

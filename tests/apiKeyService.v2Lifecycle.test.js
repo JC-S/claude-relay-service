@@ -81,6 +81,9 @@ jest.mock('../src/services/serviceRatesService', () => ({
 jest.mock('../src/services/requestDetailService', () => ({
   captureRequestDetail: jest.fn()
 }))
+jest.mock('../src/services/apiKeyStatsService', () => ({
+  calculateKeyStats: jest.fn()
+}))
 jest.mock('../src/services/billingEventPublisher', () => ({
   publishBillingEvent: jest.fn()
 }))
@@ -97,6 +100,7 @@ jest.mock('../src/utils/requestDetailHelper', () => ({
 const bcrypt = require('bcryptjs')
 const redis = require('../src/models/redis')
 const logger = require('../src/utils/logger')
+const { calculateKeyStats } = require('../src/services/apiKeyStatsService')
 const apiKeyService = require('../src/services/apiKeyService')
 
 const PARENT_ID = 'parent-key-1'
@@ -325,6 +329,59 @@ describe('apiKeyService v2 lifecycle fixes', () => {
 
     expect(children).toEqual([])
     expect(fastSpy).not.toHaveBeenCalled()
+  })
+
+  // 8.1. v2 自助端区间统计只返回 rated-only 白名单字段，内部 real/window/upstream 字段不透出
+  test('getV2ChildrenUsageStats projects rated-only stats and fails soft per child', async () => {
+    mockActiveParent()
+    jest.spyOn(apiKeyService, '_getV2ChildKeys').mockResolvedValue([{ id: 'c1' }, { id: 'c2' }])
+    calculateKeyStats.mockImplementation((keyId) => {
+      if (keyId === 'c2') {
+        return Promise.reject(new Error('scan failed'))
+      }
+      return Promise.resolve({
+        requests: 3,
+        tokens: 70,
+        inputTokens: 20,
+        outputTokens: 30,
+        cacheCreateTokens: 10,
+        cacheReadTokens: 10,
+        cost: 1.25,
+        formattedCost: '$1.25',
+        realCost: 0.5,
+        currentWindowCost: 9,
+        claudeAccountId: 'should-not-leak'
+      })
+    })
+
+    const stats = await apiKeyService.getV2ChildrenUsageStats(PARENT_ID, { timeRange: '30days' })
+
+    expect(calculateKeyStats).toHaveBeenCalledWith('c1', '30days', undefined, undefined)
+    expect(calculateKeyStats).toHaveBeenCalledWith('c2', '30days', undefined, undefined)
+    expect(stats.c1).toEqual({
+      requests: 3,
+      tokens: 70,
+      inputTokens: 20,
+      outputTokens: 30,
+      cacheCreateTokens: 10,
+      cacheReadTokens: 10,
+      cost: 1.25,
+      formattedCost: '$1.25'
+    })
+    expect(stats.c1).not.toHaveProperty('realCost')
+    expect(stats.c1).not.toHaveProperty('currentWindowCost')
+    expect(stats.c1).not.toHaveProperty('claudeAccountId')
+    expect(stats.c2).toEqual({
+      requests: 0,
+      tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreateTokens: 0,
+      cacheReadTokens: 0,
+      cost: 0,
+      formattedCost: '$0.00'
+    })
+    expect(logger.error).toHaveBeenCalled()
   })
 
   // 8.5 🆕 getV2ChildrenForAdmin：管理端完整 key 形状（非 _toV2ChildView 最小化），

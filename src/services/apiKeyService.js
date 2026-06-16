@@ -6,6 +6,7 @@ const redis = require('../models/redis')
 const logger = require('../utils/logger')
 const serviceRatesService = require('./serviceRatesService')
 const requestDetailService = require('./requestDetailService')
+const { calculateKeyStats } = require('./apiKeyStatsService')
 const { isClaudeFamilyModel } = require('../utils/modelHelper')
 const { finalizeRequestDetailMeta } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('./requestBodyRuleService')
@@ -43,6 +44,23 @@ const ACCOUNT_CATEGORY_MAP = {
   gemini: 'gemini',
   'gemini-api': 'gemini',
   droid: 'droid'
+}
+
+function projectV2ChildUsageStats(stats) {
+  return {
+    requests: Number(stats?.requests) || 0,
+    tokens: Number(stats?.tokens) || 0,
+    inputTokens: Number(stats?.inputTokens) || 0,
+    outputTokens: Number(stats?.outputTokens) || 0,
+    cacheCreateTokens: Number(stats?.cacheCreateTokens) || 0,
+    cacheReadTokens: Number(stats?.cacheReadTokens) || 0,
+    cost: Number(stats?.cost) || 0,
+    formattedCost: stats?.formattedCost || '$0.00'
+  }
+}
+
+function makeEmptyV2ChildUsageStats() {
+  return projectV2ChildUsageStats(null)
 }
 
 /**
@@ -4001,6 +4019,38 @@ class ApiKeyService {
       .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
       .map((k) => this._toV2ChildView(k))
       .filter(Boolean)
+  }
+
+  // 📊 v2 自助端子 key 区间统计：只返回倍率后成本与 token/request 白名单字段。
+  async getV2ChildrenUsageStats(parentKeyId, options = {}) {
+    const parent = await redis.getApiKey(parentKeyId)
+    if (
+      !parent ||
+      Object.keys(parent).length === 0 ||
+      parent.isV2Parent !== 'true' ||
+      parent.isDeleted === 'true' ||
+      parent.isActive !== 'true'
+    ) {
+      throw new Error('Not an active v2 parent account')
+    }
+
+    const { timeRange = 'today', startDate, endDate } = options
+    const children = await this._getV2ChildKeys(parentKeyId, false)
+    const statsByKeyId = {}
+
+    await Promise.all(
+      children.map(async (child) => {
+        try {
+          const stats = await calculateKeyStats(child.id, timeRange, startDate, endDate)
+          statsByKeyId[child.id] = projectV2ChildUsageStats(stats)
+        } catch (error) {
+          logger.error(`❌ Failed to calculate v2 child usage stats for ${child.id}:`, error)
+          statsByKeyId[child.id] = makeEmptyV2ChildUsageStats()
+        }
+      })
+    )
+
+    return statsByKeyId
   }
 
   // 🛠️ 管理员视角的子 key 列表：完整 key 形状（与主列表行一致），不经 _toV2ChildView 最小化。

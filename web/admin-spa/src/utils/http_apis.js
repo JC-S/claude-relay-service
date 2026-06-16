@@ -132,6 +132,8 @@ export const getApiKeyV2ChildrenApi = (id) =>
   request({ url: `/admin/api-keys/${id}/v2-children`, method: 'GET' })
 export const getV2AccountApi = () => request({ url: '/admin/v2/account', method: 'GET' })
 export const getV2ApiKeysApi = (params) => request({ url: '/admin/v2/keys', method: 'GET', params })
+export const getV2KeysUsageStatsApi = (data) =>
+  request({ url: '/admin/v2/keys/usage-stats', method: 'POST', data })
 export const createV2ApiKeyApi = (data) => request({ url: '/admin/v2/keys', method: 'POST', data })
 export const updateV2ApiKeyApi = (id, data) =>
   request({ url: `/admin/v2/keys/${id}`, method: 'PUT', data })

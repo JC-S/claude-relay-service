@@ -8,6 +8,10 @@ const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
 const { authenticateV2Account } = require('../../middleware/auth')
 const { applyDisplayModelToRecord } = require('../../utils/modelVariantHelper')
+const {
+  validateStatsTimeRange,
+  ApiKeyStatsValidationError
+} = require('../../services/apiKeyStatsService')
 const logger = require('../../utils/logger')
 
 const router = express.Router()
@@ -88,6 +92,26 @@ router.get('/keys', async (req, res) => {
   } catch (error) {
     logger.error('❌ Failed to list v2 child keys:', error)
     return res.status(500).json({ error: 'Failed to load keys', message: error.message })
+  }
+})
+
+// 📊 v2 自助端子 key 区间统计（不接受客户端 keyIds，只统计当前父账号未删除子 key）
+router.post('/keys/usage-stats', async (req, res) => {
+  try {
+    const { timeRange = 'today', startDate, endDate } = req.body || {}
+    validateStatsTimeRange({ timeRange, startDate, endDate })
+    const stats = await apiKeyService.getV2ChildrenUsageStats(req.v2Account.parentKeyId, {
+      timeRange,
+      startDate,
+      endDate
+    })
+    return res.json({ success: true, data: stats })
+  } catch (error) {
+    if (error instanceof ApiKeyStatsValidationError) {
+      return res.status(400).json({ error: 'Invalid time range', message: error.message })
+    }
+    logger.error('❌ Failed to load v2 child key usage stats:', error)
+    return res.status(500).json({ error: 'Failed to load usage stats', message: error.message })
   }
 })
 
