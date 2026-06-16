@@ -674,13 +674,7 @@
                         <div class="flex flex-col gap-2">
                           <!-- 加载中状态 - 骨架屏（仅在有费用限制配置时显示） -->
                           <template
-                            v-if="
-                              isStatsLoading(key.id) &&
-                              (key.weeklyOpusCostLimit > 0 ||
-                                key.dailyCostLimit > 0 ||
-                                key.totalCostLimit > 0 ||
-                                (key.rateLimitWindow > 0 && key.rateLimitCost > 0))
-                            "
+                            v-if="isStatsLoading(key.id) && hasStatsDependentLimitDisplay(key)"
                           >
                             <div class="space-y-2">
                               <div
@@ -693,6 +687,26 @@
                           </template>
                           <!-- 已加载状态 -->
                           <template v-else>
+                            <!-- v2 父账号总额度：只展示额度数值，避免依赖统计聚合未上线时误显已用量 -->
+                            <div
+                              v-if="isV2ParentKey(key)"
+                              class="rounded-lg border border-purple-100 bg-purple-50/70 px-2 py-1.5 dark:border-purple-900/60 dark:bg-purple-900/20"
+                            >
+                              <div class="flex items-center justify-between gap-2">
+                                <span
+                                  class="flex items-center gap-1 text-[11px] font-medium text-purple-700 dark:text-purple-300"
+                                >
+                                  <i class="fas fa-wallet text-[10px]" />
+                                  账号总额度
+                                </span>
+                                <span
+                                  class="text-xs font-bold text-purple-800 dark:text-purple-200"
+                                >
+                                  {{ formatV2TotalBudget(key) }}
+                                </span>
+                              </div>
+                            </div>
+
                             <!-- Claude 周额度限制 - 独立显示 -->
                             <LimitProgressBar
                               v-if="key.weeklyOpusCostLimit > 0"
@@ -705,7 +719,7 @@
 
                             <!-- 每日费用限制进度条 -->
                             <LimitProgressBar
-                              v-if="key.dailyCostLimit > 0"
+                              v-if="!isV2ParentKey(key) && key.dailyCostLimit > 0"
                               :current="getCachedStats(key.id)?.dailyCost || 0"
                               label="每日限制"
                               :limit="key.dailyCostLimit"
@@ -715,7 +729,7 @@
 
                             <!-- 总费用限制进度条（无每日限制时展示） -->
                             <LimitProgressBar
-                              v-else-if="key.totalCostLimit > 0"
+                              v-else-if="!isV2ParentKey(key) && key.totalCostLimit > 0"
                               :current="getCachedStats(key.id)?.allTimeCost || 0"
                               label="总费用限制"
                               :limit="key.totalCostLimit"
@@ -728,8 +742,9 @@
                               v-else-if="
                                 key.rateLimitWindow > 0 &&
                                 key.rateLimitCost > 0 &&
-                                (!key.dailyCostLimit || key.dailyCostLimit === 0) &&
-                                (!key.totalCostLimit || key.totalCostLimit === 0)
+                                (isV2ParentKey(key) ||
+                                  ((!key.dailyCostLimit || key.dailyCostLimit === 0) &&
+                                    (!key.totalCostLimit || key.totalCostLimit === 0)))
                               "
                               class="space-y-1.5"
                             >
@@ -769,6 +784,7 @@
                             <!-- 如果没有任何限制 -->
                             <div
                               v-if="
+                                !isV2ParentKey(key) &&
                                 !(key.weeklyOpusCostLimit > 0) &&
                                 !(key.dailyCostLimit > 0) &&
                                 !(key.totalCostLimit > 0) &&
@@ -1588,14 +1604,7 @@
                   <!-- 限制进度条 -->
                   <div class="space-y-2">
                     <!-- 加载中状态 - 骨架屏（仅在有费用限制配置时显示） -->
-                    <template
-                      v-if="
-                        isStatsLoading(key.id) &&
-                        (key.dailyCostLimit > 0 ||
-                          key.totalCostLimit > 0 ||
-                          (key.rateLimitWindow > 0 && key.rateLimitCost > 0))
-                      "
-                    >
+                    <template v-if="isStatsLoading(key.id) && hasStatsDependentLimitDisplay(key)">
                       <div class="space-y-2">
                         <div
                           class="h-4 w-full animate-pulse rounded bg-gradient-to-r from-gray-200 via-gray-300 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700"
@@ -1607,9 +1616,37 @@
                     </template>
                     <!-- 已加载状态 -->
                     <template v-else>
+                      <!-- Claude 周额度限制 -->
+                      <LimitProgressBar
+                        v-if="key.weeklyOpusCostLimit > 0"
+                        :current="getCachedStats(key.id)?.weeklyOpusCost || 0"
+                        label="Claude 周限制"
+                        :limit="key.weeklyOpusCostLimit"
+                        type="opus"
+                        variant="compact"
+                      />
+
+                      <!-- v2 父账号总额度 -->
+                      <div
+                        v-if="isV2ParentKey(key)"
+                        class="rounded-lg border border-purple-100 bg-purple-50/70 px-3 py-2 dark:border-purple-900/60 dark:bg-purple-900/20"
+                      >
+                        <div class="flex items-center justify-between gap-2">
+                          <span
+                            class="flex items-center gap-1.5 text-xs font-medium text-purple-700 dark:text-purple-300"
+                          >
+                            <i class="fas fa-wallet text-[11px]" />
+                            账号总额度
+                          </span>
+                          <span class="text-sm font-bold text-purple-800 dark:text-purple-200">
+                            {{ formatV2TotalBudget(key) }}
+                          </span>
+                        </div>
+                      </div>
+
                       <!-- 每日费用限制 -->
                       <LimitProgressBar
-                        v-if="key.dailyCostLimit > 0"
+                        v-if="!isV2ParentKey(key) && key.dailyCostLimit > 0"
                         :current="getCachedStats(key.id)?.dailyCost || 0"
                         label="每日限制"
                         :limit="key.dailyCostLimit"
@@ -1619,7 +1656,7 @@
 
                       <!-- 总费用限制（无每日限制时展示） -->
                       <LimitProgressBar
-                        v-else-if="key.totalCostLimit > 0"
+                        v-else-if="!isV2ParentKey(key) && key.totalCostLimit > 0"
                         :current="getCachedStats(key.id)?.allTimeCost || 0"
                         label="总费用限制"
                         :limit="key.totalCostLimit"
@@ -1632,8 +1669,9 @@
                         v-else-if="
                           key.rateLimitWindow > 0 &&
                           key.rateLimitCost > 0 &&
-                          (!key.dailyCostLimit || key.dailyCostLimit === 0) &&
-                          (!key.totalCostLimit || key.totalCostLimit === 0)
+                          (isV2ParentKey(key) ||
+                            ((!key.dailyCostLimit || key.dailyCostLimit === 0) &&
+                              (!key.totalCostLimit || key.totalCostLimit === 0)))
                         "
                         class="space-y-2"
                       >
@@ -1672,7 +1710,13 @@
 
                       <!-- 无限制显示 -->
                       <div
-                        v-else
+                        v-if="
+                          !isV2ParentKey(key) &&
+                          !(key.weeklyOpusCostLimit > 0) &&
+                          !(key.dailyCostLimit > 0) &&
+                          !(key.totalCostLimit > 0) &&
+                          !(key.rateLimitWindow > 0 && key.rateLimitCost > 0)
+                        "
                         class="flex items-center justify-center gap-1.5 py-2 text-gray-500 dark:text-gray-400"
                       >
                         <i class="fas fa-infinity text-base" />
@@ -2974,6 +3018,46 @@ const getCachedStats = (keyId) => {
   const cached = statsCache.value.get(keyId)
   if (!isSameStatsWindow(cached, getCurrentStatsWindow())) return null
   return cached?.stats || null
+}
+
+const isV2ParentKey = (key) => key?.isV2Parent === true || key?.isV2Parent === 'true'
+
+const toPositiveNumber = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? number : 0
+}
+
+const hasStatsDependentLimitDisplay = (key) => {
+  const hasWeeklyLimit = toPositiveNumber(key?.weeklyOpusCostLimit) > 0
+  const hasWindowLimit =
+    toPositiveNumber(key?.rateLimitWindow) > 0 && toPositiveNumber(key?.rateLimitCost) > 0
+
+  if (isV2ParentKey(key)) {
+    return hasWeeklyLimit || hasWindowLimit
+  }
+
+  return (
+    hasWeeklyLimit ||
+    toPositiveNumber(key?.dailyCostLimit) > 0 ||
+    toPositiveNumber(key?.totalCostLimit) > 0 ||
+    hasWindowLimit
+  )
+}
+
+const formatLimitCurrency = (value) => {
+  const amount = toPositiveNumber(value)
+  if (amount <= 0) {
+    return '不限额'
+  }
+  const decimals = Number.isInteger(amount) ? 0 : 2
+  return `$${amount.toFixed(decimals)}`
+}
+
+const formatV2TotalBudget = (key) => formatLimitCurrency(key?.v2TotalBudget)
+
+const formatExportLimit = (value) => {
+  const amount = toPositiveNumber(value)
+  return amount > 0 ? formatLimitCurrency(amount) : '无限制'
 }
 
 // 检查是否正在加载统计
@@ -4849,14 +4933,10 @@ const exportToExcel = () => {
           key.rateLimitRequests === '0' || key.rateLimitRequests === 0
             ? '无限制'
             : key.rateLimitRequests || '',
-        '日费用限制($)':
-          key.dailyCostLimit === '0' || key.dailyCostLimit === 0
-            ? '无限制'
-            : `$${key.dailyCostLimit}` || '',
-        '总费用限制($)':
-          key.totalCostLimit === '0' || key.totalCostLimit === 0
-            ? '无限制'
-            : `$${key.totalCostLimit}` || '',
+        '日费用限制($)': isV2ParentKey(key) ? '不适用' : formatExportLimit(key.dailyCostLimit),
+        '总费用限制($)': isV2ParentKey(key)
+          ? formatExportLimit(key.v2TotalBudget)
+          : formatExportLimit(key.totalCostLimit),
 
         // 账户绑定
         Claude专属账户: key.claudeAccountId || '',

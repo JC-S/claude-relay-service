@@ -340,7 +340,27 @@
             </div>
           </div>
 
-          <div>
+          <div
+            v-if="isV2Parent"
+            class="rounded-xl border border-purple-200 bg-purple-50/80 p-3 text-sm text-purple-800 dark:border-purple-800/60 dark:bg-purple-900/20 dark:text-purple-200"
+          >
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex items-start gap-2">
+                <i class="fas fa-info-circle mt-0.5 text-purple-500 dark:text-purple-300" />
+                <span>v2 账号总额度请在「v2 管理」中设置</span>
+              </div>
+              <button
+                class="inline-flex items-center justify-center rounded-lg border border-purple-300 px-3 py-1.5 text-xs font-semibold text-purple-700 transition-colors hover:bg-purple-100 dark:border-purple-700 dark:text-purple-200 dark:hover:bg-purple-900/40"
+                type="button"
+                @click="emit('manage-v2', apiKey)"
+              >
+                <i class="fas fa-user-cog mr-1.5 text-xs" />
+                打开 v2 管理
+              </button>
+            </div>
+          </div>
+
+          <div v-if="!isV2Parent">
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
               >每日费用限制 (美元)</label
             >
@@ -389,7 +409,7 @@
             </div>
           </div>
 
-          <div>
+          <div v-if="!isV2Parent">
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
               >总费用限制 (美元)</label
             >
@@ -1271,6 +1291,9 @@ const accountsLoading = ref(false)
 const revealedApiKey = ref('')
 const showFullApiKey = ref(false)
 const revealingApiKey = ref(false)
+const isV2Parent = computed(
+  () => props.apiKey?.isV2Parent === true || props.apiKey?.isV2Parent === 'true'
+)
 
 const maskedApiKey = computed(() => {
   const key = revealedApiKey.value
@@ -1623,14 +1646,6 @@ const updateApiKey = async () => {
         form.concurrencyLimit !== '' && form.concurrencyLimit !== null
           ? parseInt(form.concurrencyLimit)
           : 0,
-      dailyCostLimit:
-        form.dailyCostLimit !== '' && form.dailyCostLimit !== null
-          ? parseFloat(form.dailyCostLimit)
-          : 0,
-      totalCostLimit:
-        form.totalCostLimit !== '' && form.totalCostLimit !== null
-          ? parseFloat(form.totalCostLimit)
-          : 0,
       weeklyOpusCostLimit:
         form.weeklyOpusCostLimit !== '' && form.weeklyOpusCostLimit !== null
           ? parseFloat(form.weeklyOpusCostLimit)
@@ -1647,6 +1662,17 @@ const updateApiKey = async () => {
       openaiResponsesPayloadRules: payloadRules,
       permissions: form.permissions,
       tags: form.tags
+    }
+
+    if (!isV2Parent.value) {
+      data.dailyCostLimit =
+        form.dailyCostLimit !== '' && form.dailyCostLimit !== null
+          ? parseFloat(form.dailyCostLimit)
+          : 0
+      data.totalCostLimit =
+        form.totalCostLimit !== '' && form.totalCostLimit !== null
+          ? parseFloat(form.totalCostLimit)
+          : 0
     }
 
     // 处理Claude账户绑定（区分OAuth和Console）

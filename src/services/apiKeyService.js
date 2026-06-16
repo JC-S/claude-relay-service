@@ -1841,9 +1841,17 @@ class ApiKeyService {
         'v2IpWhitelistOverride' // 🆕 v2 子 key 自定义白名单标记（唯一写入方为 updateV2Child）
       ]
       const updatedData = { ...keyData }
+      const isV2Parent = keyData.isV2Parent === 'true'
 
       for (const [field, value] of Object.entries(updates)) {
         if (allowedUpdates.includes(field)) {
+          if (isV2Parent && ['dailyCostLimit', 'totalCostLimit', 'v2TotalBudget'].includes(field)) {
+            logger.warn(
+              `⚠️ Ignoring ${field} update via generic API key edit for v2 parent ${keyId}`
+            )
+            continue
+          }
+
           // v2 子 key 专属字段：非子 key 即使被内部调用误传也不写入，避免普通 key 出现无意义字段
           if (field === 'v2IpWhitelistOverride' && !keyData.parentKeyId) {
             continue
@@ -3657,7 +3665,12 @@ class ApiKeyService {
     if (!Number.isFinite(budget) || budget < 0) {
       throw new Error('Total budget must be a non-negative number')
     }
-    await redis.client.hset(`apikey:${parentKeyId}`, 'v2TotalBudget', String(budget))
+    await redis.client.hset(`apikey:${parentKeyId}`, {
+      v2TotalBudget: String(budget),
+      totalCostLimit: '0',
+      dailyCostLimit: '0',
+      updatedAt: new Date().toISOString()
+    })
     logger.success(`💰 Updated v2 total budget for ${parentKeyId}: $${budget}`)
     return { success: true, v2TotalBudget: budget }
   }

@@ -146,7 +146,7 @@ const showPasswordReset = ref(false)
 const newPassword = ref('')
 const form = reactive({
   newEmail: props.apiKey?.v2Email || '',
-  totalBudget: props.apiKey?.v2TotalBudget || 0
+  totalBudget: props.apiKey?.v2TotalBudget ?? 0
 })
 
 const submit = async () => {

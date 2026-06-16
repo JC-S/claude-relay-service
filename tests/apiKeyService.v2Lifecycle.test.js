@@ -199,6 +199,58 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     })
   })
 
+  // 4.5. v2 总额度唯一权威字段：保存 v2TotalBudget 时清理父账号无效 daily/total 幽灵字段
+  test('updateV2TotalBudget updates the authoritative budget and clears parent ghost limits', async () => {
+    mockActiveParent({
+      dailyCostLimit: '12',
+      totalCostLimit: '8000',
+      weeklyOpusCostLimit: '500'
+    })
+
+    const result = await apiKeyService.updateV2TotalBudget(PARENT_ID, 12000)
+
+    expect(result).toEqual({ success: true, v2TotalBudget: 12000 })
+    expect(redis.client.hset).toHaveBeenCalledWith(`apikey:${PARENT_ID}`, {
+      v2TotalBudget: '12000',
+      totalCostLimit: '0',
+      dailyCostLimit: '0',
+      updatedAt: expect.stringMatching(ISO_RE)
+    })
+  })
+
+  // 4.6. 普通编辑入口不得改 v2 父账号的 daily/total/v2TotalBudget，但周 Opus 限制仍可继承生效
+  test('updateApiKey ignores v2 parent daily total and v2TotalBudget but preserves weekly updates', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: PARENT_ID,
+      apiKey: 'hashed-parent-key',
+      isV2Parent: 'true',
+      isActive: 'true',
+      isDeleted: 'false',
+      name: 'Parent',
+      dailyCostLimit: '12',
+      totalCostLimit: '8000',
+      v2TotalBudget: '12000',
+      weeklyOpusCostLimit: '500',
+      tags: '[]'
+    })
+
+    await apiKeyService.updateApiKey(PARENT_ID, {
+      dailyCostLimit: 100,
+      totalCostLimit: 9000,
+      v2TotalBudget: 15000,
+      weeklyOpusCostLimit: 600
+    })
+
+    const [keyId, storedKeyData, hashForMapping] = redis.setApiKey.mock.calls[0]
+    expect(keyId).toBe(PARENT_ID)
+    expect(hashForMapping).toBeNull()
+    expect(storedKeyData.dailyCostLimit).toBe('12')
+    expect(storedKeyData.totalCostLimit).toBe('8000')
+    expect(storedKeyData.v2TotalBudget).toBe('12000')
+    expect(storedKeyData.weeklyOpusCostLimit).toBe('600')
+    expect(redis.deleteApiKeyHash).toHaveBeenCalledWith('hashed-parent-key')
+  })
+
   // ── F4 ──────────────────────────────────────────────────────────────────────
 
   // 5. getAllApiKeysFast(_, keyIds)：跳过全库 SCAN 只批量加载指定 id；空数组直接 []
