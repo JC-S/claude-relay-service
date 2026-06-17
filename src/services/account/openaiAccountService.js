@@ -294,7 +294,7 @@ function isSubscriptionExpired(account) {
 }
 
 // 刷新账户的 access token（带分布式锁）
-async function refreshAccountToken(accountId) {
+async function refreshAccountToken(accountId, options = {}) {
   let lockAcquired = false
   let account = null
   let accountName = accountId
@@ -430,23 +430,25 @@ async function refreshAccountToken(accountId) {
   } catch (error) {
     logRefreshError(accountId, account?.name || accountName, 'openai', error.message)
 
-    // 发送 Webhook 通知（如果启用）
-    try {
-      const webhookNotifier = require('../../utils/webhookNotifier')
-      await webhookNotifier.sendAccountAnomalyNotification({
-        accountId,
-        accountName: account?.name || accountName,
-        platform: 'openai',
-        status: 'error',
-        errorCode: 'OPENAI_TOKEN_REFRESH_FAILED',
-        reason: `Token refresh failed: ${error.message}`,
-        timestamp: new Date().toISOString()
-      })
-      logger.info(
-        `📢 Webhook notification sent for OpenAI account ${account?.name || accountName} refresh failure`
-      )
-    } catch (webhookError) {
-      logger.error('Failed to send webhook notification:', webhookError)
+    if (!options.silent) {
+      // 发送 Webhook 通知（如果启用）
+      try {
+        const webhookNotifier = require('../../utils/webhookNotifier')
+        await webhookNotifier.sendAccountAnomalyNotification({
+          accountId,
+          accountName: account?.name || accountName,
+          platform: 'openai',
+          status: 'error',
+          errorCode: 'OPENAI_TOKEN_REFRESH_FAILED',
+          reason: `Token refresh failed: ${error.message}`,
+          timestamp: new Date().toISOString()
+        })
+        logger.info(
+          `📢 Webhook notification sent for OpenAI account ${account?.name || accountName} refresh failure`
+        )
+      } catch (webhookError) {
+        logger.error('Failed to send webhook notification:', webhookError)
+      }
     }
 
     throw error
@@ -1266,6 +1268,176 @@ async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
   await client.hset(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, updates)
 }
 
+function buildCodexUsageSnapshotFromWhamUsage(data, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const rateLimit = data?.rate_limit
+  if (!rateLimit || typeof rateLimit !== 'object') {
+    return null
+  }
+
+  const toFiniteNumber = (value) => {
+    if (value === undefined || value === null || value === '') {
+      return null
+    }
+    const num = Number(value)
+    return Number.isFinite(num) ? num : null
+  }
+
+  const resetAfterSeconds = (windowData) => {
+    const resetAt = toFiniteNumber(windowData?.reset_at)
+    if (resetAt === null) {
+      return null
+    }
+    return Math.max(0, Math.round(resetAt - nowSeconds))
+  }
+
+  const primaryWindow = rateLimit.primary_window || {}
+  const secondaryWindow = rateLimit.secondary_window || {}
+  const primaryUsedPercent = toFiniteNumber(primaryWindow.used_percent)
+  const secondaryUsedPercent = toFiniteNumber(secondaryWindow.used_percent)
+  const primaryResetAfterSeconds = resetAfterSeconds(primaryWindow)
+  const secondaryResetAfterSeconds = resetAfterSeconds(secondaryWindow)
+
+  const snapshot = {}
+
+  if (primaryUsedPercent !== null) {
+    snapshot.primaryUsedPercent = primaryUsedPercent
+  }
+  if (primaryResetAfterSeconds !== null) {
+    snapshot.primaryResetAfterSeconds = primaryResetAfterSeconds
+  }
+  if (secondaryUsedPercent !== null) {
+    snapshot.secondaryUsedPercent = secondaryUsedPercent
+  }
+  if (secondaryResetAfterSeconds !== null) {
+    snapshot.secondaryResetAfterSeconds = secondaryResetAfterSeconds
+  }
+
+  return Object.keys(snapshot).length > 0 ? snapshot : null
+}
+
+async function fetchCodexUsage(accountId, options = {}) {
+  const timeoutMs = options.timeoutMs || config.oauthUsageRefresh?.requestTimeoutMs || 30000
+
+  const getFreshAccount = async () => getAccount(accountId)
+
+  const refreshTokenSilently = async () => {
+    await refreshAccountToken(accountId, { silent: true })
+    return getFreshAccount()
+  }
+
+  try {
+    let account = await getFreshAccount()
+    if (!account) {
+      logger.warn(`⚠️ OpenAI Codex usage refresh skipped: account not found (${accountId})`)
+      return null
+    }
+
+    if (!account.accountId) {
+      logger.warn(
+        `⚠️ OpenAI Codex usage refresh skipped for ${account.name || accountId}: missing chatgpt account id`
+      )
+      return null
+    }
+
+    if (!account.accessToken) {
+      logger.warn(
+        `⚠️ OpenAI Codex usage refresh skipped for ${account.name || accountId}: missing access token`
+      )
+      return null
+    }
+
+    if (isTokenExpired(account)) {
+      if (!account.refreshToken) {
+        logger.warn(
+          `⚠️ OpenAI Codex usage refresh skipped for ${account.name || accountId}: token expired and no refresh token`
+        )
+        return null
+      }
+
+      try {
+        account = await refreshTokenSilently()
+      } catch (refreshError) {
+        logger.warn(
+          `⚠️ OpenAI Codex usage refresh token refresh failed for ${account.name || accountId}: ${refreshError.message}`
+        )
+        return null
+      }
+
+      if (!account?.accessToken) {
+        logger.warn(
+          `⚠️ OpenAI Codex usage refresh skipped for ${accountId}: refreshed account missing access token`
+        )
+        return null
+      }
+    }
+
+    const proxyAgent = ProxyHelper.createProxyAgent(account.proxy)
+
+    const requestUsage = async (currentAccount) => {
+      const accessToken = decrypt(currentAccount.accessToken)
+      const requestConfig = {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'chatgpt-account-id': currentAccount.accountId,
+          accept: '*/*',
+          host: 'chatgpt.com',
+          connection: 'close',
+          'user-agent': CODEX_TEST_USER_AGENT
+        },
+        timeout: timeoutMs,
+        validateStatus: () => true
+      }
+
+      if (proxyAgent) {
+        requestConfig.httpAgent = proxyAgent
+        requestConfig.httpsAgent = proxyAgent
+        requestConfig.proxy = false
+      }
+
+      return axios.get('https://chatgpt.com/backend-api/wham/usage', requestConfig)
+    }
+
+    let response = await requestUsage(account)
+
+    if (response.status === 401 && account.refreshToken) {
+      try {
+        account = await refreshTokenSilently()
+        if (!account?.accessToken) {
+          return null
+        }
+        response = await requestUsage(account)
+      } catch (refreshError) {
+        logger.warn(
+          `⚠️ OpenAI Codex usage refresh retry failed for ${account.name || accountId}: ${refreshError.message}`
+        )
+        return null
+      }
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      logger.warn(
+        `⚠️ OpenAI Codex usage refresh failed for ${account.name || accountId}: HTTP ${response.status}`
+      )
+      return null
+    }
+
+    const snapshot = buildCodexUsageSnapshotFromWhamUsage(response.data)
+    if (!snapshot) {
+      logger.warn(
+        `⚠️ OpenAI Codex usage refresh skipped for ${account.name || accountId}: empty usage snapshot`
+      )
+      return null
+    }
+
+    await updateCodexUsageSnapshot(accountId, snapshot)
+    logger.debug(`📊 Updated OpenAI Codex usage snapshot for account ${accountId}`)
+    return snapshot
+  } catch (error) {
+    logger.warn(`⚠️ OpenAI Codex usage refresh failed for ${accountId}: ${error.message}`)
+    return null
+  }
+}
+
 // 测试账户连通性（供定时测试调度器和管理路由共用）
 // 返回结构与 claudeRelayService.testAccountConnectionSync 对齐:
 //   success ? { success, message, latencyMs, model, timestamp }
@@ -1394,6 +1566,7 @@ module.exports = {
   updateAccountUsage,
   recordUsage, // 别名，指向updateAccountUsage
   updateCodexUsageSnapshot,
+  fetchCodexUsage,
   testAccountConnection,
   encrypt,
   decrypt,

@@ -709,6 +709,15 @@ class Application {
       `🚨 Rate limit cleanup service started (checking every ${cleanupIntervalMinutes} minutes)`
     )
 
+    // 📊 OAuth 账户用量后台兜底刷新
+    if (config.oauthUsageRefresh?.enabled !== false) {
+      const oauthUsageRefreshService = require('./services/oauthUsageRefreshService')
+      oauthUsageRefreshService.start(config.oauthUsageRefresh)
+      logger.info('📊 OAuth usage refresh service started')
+    } else {
+      logger.info('📊 OAuth usage refresh service disabled')
+    }
+
     // 🔢 启动并发计数自动清理任务（Phase 1 修复：解决并发泄漏问题）
     // 每分钟主动清理所有过期的并发项，不依赖请求触发
     setInterval(async () => {
@@ -863,6 +872,15 @@ class Application {
             logger.info('🚨 Rate limit cleanup service stopped')
           } catch (error) {
             logger.error('❌ Error stopping rate limit cleanup service:', error)
+          }
+
+          // 停止 OAuth 用量后台刷新服务
+          try {
+            const oauthUsageRefreshService = require('./services/oauthUsageRefreshService')
+            oauthUsageRefreshService.stop()
+            logger.info('📊 OAuth usage refresh service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping OAuth usage refresh service:', error)
           }
 
           // 停止用户消息队列清理服务

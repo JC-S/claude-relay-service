@@ -113,6 +113,25 @@ const config = {
     )
   },
 
+  // 📊 OAuth 账户额度/用量后台兜底刷新（Claude + OpenAI）
+  oauthUsageRefresh: {
+    enabled: process.env.OAUTH_USAGE_REFRESH_ENABLED !== 'false',
+    intervalMinutes:
+      parseInt(
+        process.env.OAUTH_USAGE_REFRESH_INTERVAL_MINUTES ||
+          process.env.OAUTH_USAGE_REFRESH_INTERVAL,
+        10
+      ) || 30,
+    maxStalenessMinutes:
+      parseInt(
+        process.env.OAUTH_USAGE_REFRESH_MAX_STALENESS_MINUTES ||
+          process.env.OAUTH_USAGE_MAX_STALENESS,
+        10
+      ) || 120,
+    batchSize: parseInt(process.env.OAUTH_USAGE_REFRESH_BATCH_SIZE, 10) || 5,
+    requestTimeoutMs: parseInt(process.env.OAUTH_USAGE_REFRESH_REQUEST_TIMEOUT_MS, 10) || 30000
+  },
+
   // ⏱️ 请求超时配置
   requestTimeout: parseInt(process.env.REQUEST_TIMEOUT) || 600000, // 默认 10 分钟
 
