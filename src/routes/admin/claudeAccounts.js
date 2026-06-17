@@ -555,7 +555,7 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
   try {
     const accounts = await redis.getAllClaudeAccounts()
     const now = Date.now()
-    const usageCacheTtlMs = 15 * 60 * 1000
+    const usageCacheTtlMs = 5 * 60 * 1000
 
     // 批量并发获取所有活跃 OAuth 账户的 Usage
     const usagePromises = accounts.map(async (account) => {
@@ -570,7 +570,7 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
         account.accessToken &&
         account.status === 'active'
       ) {
-        // 若快照在 15 分钟内更新，直接使用缓存避免频繁请求
+        // 若快照在 5 分钟内更新，直接使用缓存避免频繁请求
         const cachedUsage = claudeAccountService.buildClaudeUsageSnapshot(account)
         const lastUpdatedAt = account.claudeUsageUpdatedAt
           ? new Date(account.claudeUsageUpdatedAt).getTime()
