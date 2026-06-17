@@ -191,6 +191,11 @@ import {
 } from '@/utils/http_apis'
 import { showToast } from '@/utils/tools'
 
+// 哪些 base 模型在表格里追加一条「 (fast)」行,价格走 priority 字段。
+// 与 src/utils/modelVariantHelper.js 的 FAST_MODEL_SUFFIX 命名约定一致。
+const FAST_VARIANT_MODELS = ['gpt-5.4', 'gpt-5.5']
+const FAST_MODEL_SUFFIX = ' (fast)'
+
 // ========== 状态 ==========
 const loading = ref(false)
 const refreshing = ref(false)
@@ -217,18 +222,33 @@ const lastUpdated = computed(() => {
   return new Date(pricingStatus.value.lastUpdated).toLocaleString('zh-CN')
 })
 
-const allModels = computed(() =>
-  Object.entries(pricingData.value).map(([name, data]) => ({
-    name,
-    provider: detectProvider(name),
-    inputCost: (data.input_cost_per_token || 0) * 1e6,
-    outputCost: (data.output_cost_per_token || 0) * 1e6,
-    cacheCreateCost: (data.cache_creation_input_token_cost || 0) * 1e6,
-    cacheReadCost: (data.cache_read_input_token_cost || 0) * 1e6,
-    maxTokens: data.max_tokens || data.max_output_tokens || 0,
-    aliasOf: data.pricing_alias_of || ''
-  }))
-)
+const toRowFromPricing = (name, data, useField = (suffix) => suffix) => ({
+  name,
+  provider: detectProvider(name),
+  inputCost: (data[useField('input_cost_per_token')] || 0) * 1e6,
+  outputCost: (data[useField('output_cost_per_token')] || 0) * 1e6,
+  cacheCreateCost: (data[useField('cache_creation_input_token_cost')] || 0) * 1e6,
+  cacheReadCost: (data[useField('cache_read_input_token_cost')] || 0) * 1e6,
+  maxTokens: data.max_tokens || data.max_output_tokens || 0,
+  aliasOf: data.pricing_alias_of || ''
+})
+
+const allModels = computed(() => {
+  const rows = []
+  for (const [name, data] of Object.entries(pricingData.value)) {
+    rows.push(toRowFromPricing(name, data))
+
+    if (
+      FAST_VARIANT_MODELS.includes(name) &&
+      (data.input_cost_per_token_priority || data.output_cost_per_token_priority)
+    ) {
+      rows.push(
+        toRowFromPricing(`${name}${FAST_MODEL_SUFFIX}`, data, (field) => `${field}_priority`)
+      )
+    }
+  }
+  return rows
+})
 
 const filteredModels = computed(() => {
   let models = allModels.value
