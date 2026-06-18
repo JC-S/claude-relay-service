@@ -71,6 +71,15 @@ describe('oauthUsageRefreshService', () => {
         status: 'active',
         accessToken: 'encrypted-token',
         claudeUsageUpdatedAt: staleUpdatedAt
+      },
+      {
+        id: 'claude-stopped',
+        scopes: 'user:profile user:inference',
+        isActive: 'true',
+        status: 'active',
+        schedulable: 'false',
+        accessToken: 'encrypted-token',
+        claudeUsageUpdatedAt: staleUpdatedAt
       }
     ])
 
@@ -108,6 +117,16 @@ describe('oauthUsageRefreshService', () => {
         codexUsage: {
           updatedAt: staleUpdatedAt
         }
+      },
+      {
+        id: 'openai-stopped',
+        isActive: true,
+        schedulable: false,
+        hasRefreshToken: true,
+        accountId: 'chatgpt-account-stopped',
+        codexUsage: {
+          updatedAt: staleUpdatedAt
+        }
       }
     ])
     openaiAccountService.fetchCodexUsage.mockResolvedValue({
@@ -117,13 +136,13 @@ describe('oauthUsageRefreshService', () => {
     const result = await service.performRefresh()
 
     expect(result.claude).toMatchObject({
-      scanned: 3,
+      scanned: 4,
       stale: 1,
       refreshed: 1,
       failed: 0
     })
     expect(result.openai).toMatchObject({
-      scanned: 3,
+      scanned: 4,
       stale: 1,
       refreshed: 1,
       failed: 0
@@ -136,6 +155,11 @@ describe('oauthUsageRefreshService', () => {
     expect(openaiAccountService.fetchCodexUsage).toHaveBeenCalledWith('openai-stale', {
       timeoutMs: 12345
     })
+    expect(claudeAccountService.fetchOAuthUsage).not.toHaveBeenCalledWith('claude-stopped')
+    expect(openaiAccountService.fetchCodexUsage).not.toHaveBeenCalledWith(
+      'openai-stopped',
+      expect.any(Object)
+    )
   })
 
   test('single account refresh failures do not stop the whole run', async () => {

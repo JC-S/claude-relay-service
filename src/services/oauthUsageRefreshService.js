@@ -42,6 +42,10 @@ function isActiveOpenAIAccount(account) {
   return account.isActive === true || account.isActive === 'true'
 }
 
+function isAccountSchedulable(account) {
+  return account.schedulable !== false && account.schedulable !== 'false'
+}
+
 class OAuthUsageRefreshService {
   constructor() {
     this.refreshInterval = null
@@ -155,6 +159,7 @@ class OAuthUsageRefreshService {
         !isClaudeOAuthAccount(account) ||
         account.isActive !== 'true' ||
         account.status !== 'active' ||
+        !isAccountSchedulable(account) ||
         !account.accessToken
       ) {
         return false
@@ -194,7 +199,12 @@ class OAuthUsageRefreshService {
     const accounts = await openaiAccountService.getAllAccounts()
     const now = Date.now()
     const candidates = accounts.filter((account) => {
-      if (!isActiveOpenAIAccount(account) || !account.hasRefreshToken || !account.accountId) {
+      if (
+        !isActiveOpenAIAccount(account) ||
+        !isAccountSchedulable(account) ||
+        !account.hasRefreshToken ||
+        !account.accountId
+      ) {
         return false
       }
 
