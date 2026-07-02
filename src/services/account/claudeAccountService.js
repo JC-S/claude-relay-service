@@ -81,13 +81,14 @@ class ClaudeAccountService {
     this._decryptCache = new LRUCache(500)
 
     // 🧹 定期清理缓存（每10分钟）
-    setInterval(
+    const decryptCacheCleanupTimer = setInterval(
       () => {
         this._decryptCache.cleanup()
         logger.info('🧹 Claude decrypt cache cleanup completed', this._decryptCache.getStats())
       },
       10 * 60 * 1000
     )
+    decryptCacheCleanupTimer.unref?.()
   }
 
   // 🏢 创建Claude账户
@@ -1380,6 +1381,76 @@ class ClaudeAccountService {
     return Number.isFinite(num) ? num : null
   }
 
+  _getClaudeSpecialLimitLabel(type) {
+    const normalized = String(type || '').toLowerCase()
+    if (normalized === 'sonnet') {
+      return 'Sonnet'
+    }
+    if (normalized === 'opus') {
+      return 'Opus'
+    }
+    return 'Fable'
+  }
+
+  _buildClaudeUsageWindow(utilization, resetsAt, extra = {}) {
+    const now = Date.now()
+
+    return {
+      utilization,
+      resetsAt,
+      remainingSeconds: resetsAt
+        ? Math.max(0, Math.floor((new Date(resetsAt).getTime() - now) / 1000))
+        : null,
+      ...extra
+    }
+  }
+
+  _extractClaudeSevenDaySpecialLimitUsage(usageData) {
+    if (!usageData || typeof usageData !== 'object') {
+      return null
+    }
+
+    const directCandidates = [
+      { key: 'seven_day_fable', type: 'fable' },
+      { key: 'seven_day_fables', type: 'fable' },
+      { key: 'seven_day_fable_5', type: 'fable' },
+      { key: 'seven_day_sonnet', type: 'sonnet' },
+      { key: 'seven_day_opus', type: 'opus' }
+    ]
+
+    for (const candidate of directCandidates) {
+      const value = usageData[candidate.key]
+      if (value && typeof value === 'object') {
+        return { ...candidate, data: value }
+      }
+    }
+
+    const dynamicKey = Object.keys(usageData).find((key) => {
+      const normalized = key.toLowerCase()
+      return (
+        normalized.startsWith('seven_day') &&
+        (normalized.includes('fable') ||
+          normalized.includes('sonnet') ||
+          normalized.includes('opus')) &&
+        usageData[key] &&
+        typeof usageData[key] === 'object'
+      )
+    })
+
+    if (!dynamicKey) {
+      return null
+    }
+
+    const normalized = dynamicKey.toLowerCase()
+    const type = normalized.includes('sonnet')
+      ? 'sonnet'
+      : normalized.includes('opus')
+        ? 'opus'
+        : 'fable'
+
+    return { key: dynamicKey, type, data: usageData[dynamicKey] }
+  }
+
   _getClaudeOAuth429WindowKey(accountId) {
     return `${CLAUDE_OAUTH_429_WINDOW_KEY_PREFIX}:${accountId}`
   }
@@ -2180,11 +2251,13 @@ class ClaudeAccountService {
       const response = await axios.get('https://api.anthropic.com/api/oauth/usage', axiosConfig)
 
       if (response.status === 200 && response.data) {
+        const sevenDaySpecialUsage = this._extractClaudeSevenDaySpecialLimitUsage(response.data)
         logger.debug('✅ Successfully fetched OAuth usage data:', {
           accountId,
           fiveHour: response.data.five_hour?.utilization,
           sevenDay: response.data.seven_day?.utilization,
-          sevenDayOpus: response.data.seven_day_sonnet?.utilization
+          sevenDaySpecial: sevenDaySpecialUsage?.data?.utilization,
+          sevenDaySpecialType: sevenDaySpecialUsage?.type
         })
 
         return response.data
@@ -2218,42 +2291,43 @@ class ClaudeAccountService {
     const fiveHourResetsAt = accountData.claudeFiveHourResetsAt
     const sevenDayUtilization = this._toNumberOrNull(accountData.claudeSevenDayUtilization)
     const sevenDayResetsAt = accountData.claudeSevenDayResetsAt
-    const sevenDayOpusUtilization = this._toNumberOrNull(accountData.claudeSevenDayOpusUtilization)
-    const sevenDayOpusResetsAt = accountData.claudeSevenDayOpusResetsAt
+    const sevenDayFableUtilization = this._toNumberOrNull(
+      accountData.claudeSevenDayFableUtilization
+    )
+    const sevenDayFableResetsAt = accountData.claudeSevenDayFableResetsAt
+    const legacySevenDaySpecialUtilization = this._toNumberOrNull(
+      accountData.claudeSevenDayOpusUtilization
+    )
+    const legacySevenDaySpecialResetsAt = accountData.claudeSevenDayOpusResetsAt
 
     const hasFiveHourData = fiveHourUtilization !== null || fiveHourResetsAt
     const hasSevenDayData = sevenDayUtilization !== null || sevenDayResetsAt
-    const hasSevenDayOpusData = sevenDayOpusUtilization !== null || sevenDayOpusResetsAt
+    const hasSevenDayFableData = sevenDayFableUtilization !== null || sevenDayFableResetsAt
+    const hasLegacySevenDaySpecialData =
+      legacySevenDaySpecialUtilization !== null || legacySevenDaySpecialResetsAt
+    const hasSevenDaySpecialData = hasSevenDayFableData || hasLegacySevenDaySpecialData
 
-    if (!updatedAt && !hasFiveHourData && !hasSevenDayData && !hasSevenDayOpusData) {
+    if (!updatedAt && !hasFiveHourData && !hasSevenDayData && !hasSevenDaySpecialData) {
       return null
     }
 
-    const now = Date.now()
+    const specialLimitType = accountData.claudeSevenDaySpecialLimitType || 'fable'
+    const sevenDaySpecial = this._buildClaudeUsageWindow(
+      hasSevenDayFableData ? sevenDayFableUtilization : legacySevenDaySpecialUtilization,
+      hasSevenDayFableData ? sevenDayFableResetsAt : legacySevenDaySpecialResetsAt,
+      {
+        type: specialLimitType,
+        label: this._getClaudeSpecialLimitLabel(specialLimitType)
+      }
+    )
 
     return {
       updatedAt,
-      fiveHour: {
-        utilization: fiveHourUtilization,
-        resetsAt: fiveHourResetsAt,
-        remainingSeconds: fiveHourResetsAt
-          ? Math.max(0, Math.floor((new Date(fiveHourResetsAt).getTime() - now) / 1000))
-          : null
-      },
-      sevenDay: {
-        utilization: sevenDayUtilization,
-        resetsAt: sevenDayResetsAt,
-        remainingSeconds: sevenDayResetsAt
-          ? Math.max(0, Math.floor((new Date(sevenDayResetsAt).getTime() - now) / 1000))
-          : null
-      },
-      sevenDayOpus: {
-        utilization: sevenDayOpusUtilization,
-        resetsAt: sevenDayOpusResetsAt,
-        remainingSeconds: sevenDayOpusResetsAt
-          ? Math.max(0, Math.floor((new Date(sevenDayOpusResetsAt).getTime() - now) / 1000))
-          : null
-      }
+      fiveHour: this._buildClaudeUsageWindow(fiveHourUtilization, fiveHourResetsAt),
+      sevenDay: this._buildClaudeUsageWindow(sevenDayUtilization, sevenDayResetsAt),
+      sevenDaySpecial,
+      sevenDayFable: sevenDaySpecial,
+      sevenDayOpus: sevenDaySpecial
     }
   }
 
@@ -2285,14 +2359,17 @@ class ClaudeAccountService {
       }
     }
 
-    // 7天Opus窗口
-    if (usageData.seven_day_sonnet) {
-      if (usageData.seven_day_sonnet.utilization !== undefined) {
-        updates.claudeSevenDayOpusUtilization = String(usageData.seven_day_sonnet.utilization)
+    // 7天特殊模型窗口：新接口为 Fable，兼容旧接口的 Sonnet/Opus 字段
+    const sevenDaySpecialUsage = this._extractClaudeSevenDaySpecialLimitUsage(usageData)
+    if (sevenDaySpecialUsage) {
+      if (sevenDaySpecialUsage.data.utilization !== undefined) {
+        updates.claudeSevenDayFableUtilization = String(sevenDaySpecialUsage.data.utilization)
       }
-      if (usageData.seven_day_sonnet.resets_at) {
-        updates.claudeSevenDayOpusResetsAt = usageData.seven_day_sonnet.resets_at
+      if (sevenDaySpecialUsage.data.resets_at) {
+        updates.claudeSevenDayFableResetsAt = sevenDaySpecialUsage.data.resets_at
       }
+      updates.claudeSevenDaySpecialLimitType = sevenDaySpecialUsage.type
+      updates.claudeSevenDaySpecialLimitKey = sevenDaySpecialUsage.key
     }
 
     if (Object.keys(updates).length === 0) {

@@ -957,13 +957,13 @@
                           重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDay) }}
                         </div>
                       </div>
-                      <!-- 7天Opus窗口 -->
+                      <!-- 7天特殊模型窗口 -->
                       <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
                         <div class="flex items-center gap-2">
                           <span
                             class="inline-flex min-w-[32px] justify-center rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-medium text-purple-600 dark:bg-purple-500/20 dark:text-purple-300"
                           >
-                            sonnet
+                            {{ formatClaudeSpecialUsageLabel(account.claudeUsage) }}
                           </span>
                           <div class="flex-1">
                             <div class="flex items-center gap-2">
@@ -971,23 +971,34 @@
                                 <div
                                   :class="[
                                     'h-2 rounded-full transition-all duration-300',
-                                    getClaudeUsageBarClass(account.claudeUsage.sevenDayOpus)
+                                    getClaudeUsageBarClass(
+                                      getClaudeSpecialUsageWindow(account.claudeUsage)
+                                    )
                                   ]"
                                   :style="{
-                                    width: getClaudeUsageWidth(account.claudeUsage.sevenDayOpus)
+                                    width: getClaudeUsageWidth(
+                                      getClaudeSpecialUsageWindow(account.claudeUsage)
+                                    )
                                   }"
                                 />
                               </div>
                               <span
                                 class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
                               >
-                                {{ formatClaudeUsagePercent(account.claudeUsage.sevenDayOpus) }}
+                                {{
+                                  formatClaudeUsagePercent(
+                                    getClaudeSpecialUsageWindow(account.claudeUsage)
+                                  )
+                                }}
                               </span>
                             </div>
                           </div>
                         </div>
                         <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDayOpus) }}
+                          重置剩余
+                          {{
+                            formatClaudeRemaining(getClaudeSpecialUsageWindow(account.claudeUsage))
+                          }}
                         </div>
                       </div>
                     </div>
@@ -1657,13 +1668,13 @@
                     重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDay) }}
                   </div>
                 </div>
-                <!-- 7天Opus窗口 -->
+                <!-- 7天特殊模型窗口 -->
                 <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
                   <div class="flex items-center gap-2">
                     <span
                       class="inline-flex min-w-[32px] justify-center rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-medium text-purple-600 dark:bg-purple-500/20 dark:text-purple-300"
                     >
-                      Opus
+                      {{ formatClaudeSpecialUsageLabel(account.claudeUsage) }}
                     </span>
                     <div class="flex-1">
                       <div class="flex items-center gap-2">
@@ -1671,23 +1682,32 @@
                           <div
                             :class="[
                               'h-2 rounded-full transition-all duration-300',
-                              getClaudeUsageBarClass(account.claudeUsage.sevenDayOpus)
+                              getClaudeUsageBarClass(
+                                getClaudeSpecialUsageWindow(account.claudeUsage)
+                              )
                             ]"
                             :style="{
-                              width: getClaudeUsageWidth(account.claudeUsage.sevenDayOpus)
+                              width: getClaudeUsageWidth(
+                                getClaudeSpecialUsageWindow(account.claudeUsage)
+                              )
                             }"
                           />
                         </div>
                         <span
                           class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
                         >
-                          {{ formatClaudeUsagePercent(account.claudeUsage.sevenDayOpus) }}
+                          {{
+                            formatClaudeUsagePercent(
+                              getClaudeSpecialUsageWindow(account.claudeUsage)
+                            )
+                          }}
                         </span>
                       </div>
                     </div>
                   </div>
                   <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                    重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDayOpus) }}
+                    重置剩余
+                    {{ formatClaudeRemaining(getClaudeSpecialUsageWindow(account.claudeUsage)) }}
                   </div>
                 </div>
               </div>
@@ -4827,6 +4847,14 @@ const getSessionProgressBarClass = (status, account = null) => {
 // 判断 Claude 账户是否为 OAuth 授权
 const isClaudeOAuth = (account) => {
   return account.authType === 'oauth'
+}
+
+const getClaudeSpecialUsageWindow = (usage) => {
+  return usage?.sevenDayFable || usage?.sevenDaySpecial || usage?.sevenDayOpus || null
+}
+
+const formatClaudeSpecialUsageLabel = (usage) => {
+  return getClaudeSpecialUsageWindow(usage)?.label || 'Fable'
 }
 
 // 格式化 Claude 使用率百分比
