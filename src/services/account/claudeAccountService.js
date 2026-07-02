@@ -1425,6 +1425,45 @@ class ClaudeAccountService {
       }
     }
 
+    if (Array.isArray(usageData.limits)) {
+      const scopedLimit =
+        usageData.limits.find((limit) => {
+          const modelName = `${limit?.scope?.model?.display_name || ''} ${
+            limit?.scope?.model?.id || ''
+          }`.toLowerCase()
+          return limit?.kind === 'weekly_scoped' && modelName.includes('fable')
+        }) ||
+        usageData.limits.find((limit) => {
+          const modelName = `${limit?.scope?.model?.display_name || ''} ${
+            limit?.scope?.model?.id || ''
+          }`.toLowerCase()
+          return (
+            limit?.kind === 'weekly_scoped' &&
+            (modelName.includes('sonnet') || modelName.includes('opus'))
+          )
+        })
+
+      if (scopedLimit) {
+        const modelName = `${scopedLimit.scope?.model?.display_name || ''} ${
+          scopedLimit.scope?.model?.id || ''
+        }`.toLowerCase()
+        const type = modelName.includes('sonnet')
+          ? 'sonnet'
+          : modelName.includes('opus')
+            ? 'opus'
+            : 'fable'
+
+        return {
+          key: 'limits.weekly_scoped',
+          type,
+          data: {
+            utilization: scopedLimit.percent,
+            resets_at: scopedLimit.resets_at
+          }
+        }
+      }
+    }
+
     const dynamicKey = Object.keys(usageData).find((key) => {
       const normalized = key.toLowerCase()
       return (

@@ -110,6 +110,60 @@ describe('Claude OAuth usage snapshot', () => {
     })
   })
 
+  test('stores Fable quota from the new OAuth usage limits array', async () => {
+    const { service, getAccountData } = loadService()
+
+    await service.updateClaudeUsageSnapshot('acct_1', {
+      five_hour: {
+        utilization: 11,
+        resets_at: '2026-07-02T03:59:59.246272+00:00'
+      },
+      seven_day: {
+        utilization: 3,
+        resets_at: '2026-07-08T10:59:59.246299+00:00'
+      },
+      seven_day_sonnet: null,
+      seven_day_opus: null,
+      limits: [
+        {
+          kind: 'session',
+          group: 'session',
+          percent: 11,
+          resets_at: '2026-07-02T03:59:59.246272+00:00',
+          scope: null
+        },
+        {
+          kind: 'weekly_scoped',
+          group: 'weekly',
+          percent: 4,
+          resets_at: '2026-07-08T10:59:59.246653+00:00',
+          scope: {
+            model: {
+              id: null,
+              display_name: 'Fable'
+            },
+            surface: null
+          }
+        }
+      ]
+    })
+
+    const stored = getAccountData()
+    expect(stored).toMatchObject({
+      claudeSevenDayFableUtilization: '4',
+      claudeSevenDayFableResetsAt: '2026-07-08T10:59:59.246653+00:00',
+      claudeSevenDaySpecialLimitType: 'fable',
+      claudeSevenDaySpecialLimitKey: 'limits.weekly_scoped'
+    })
+
+    expect(service.buildClaudeUsageSnapshot(stored).sevenDayFable).toMatchObject({
+      utilization: 4,
+      resetsAt: '2026-07-08T10:59:59.246653+00:00',
+      type: 'fable',
+      label: 'Fable'
+    })
+  })
+
   test('reads existing legacy Redis fields as the current Fable quota window', () => {
     const { service } = loadService()
 

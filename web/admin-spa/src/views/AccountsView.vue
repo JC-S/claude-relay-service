@@ -958,10 +958,7 @@
                         </div>
                       </div>
                       <!-- 7天特殊模型窗口 -->
-                      <div
-                        v-if="hasClaudeSpecialUsageWindow(account.claudeUsage)"
-                        class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70"
-                      >
+                      <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
                         <div class="flex items-center gap-2">
                           <span
                             class="inline-flex min-w-[32px] justify-center rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-medium text-purple-600 dark:bg-purple-500/20 dark:text-purple-300"
@@ -1672,10 +1669,7 @@
                   </div>
                 </div>
                 <!-- 7天特殊模型窗口 -->
-                <div
-                  v-if="hasClaudeSpecialUsageWindow(account.claudeUsage)"
-                  class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70"
-                >
+                <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
                   <div class="flex items-center gap-2">
                     <span
                       class="inline-flex min-w-[32px] justify-center rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-medium text-purple-600 dark:bg-purple-500/20 dark:text-purple-300"
@@ -4857,13 +4851,6 @@ const isClaudeOAuth = (account) => {
 
 const getClaudeSpecialUsageWindow = (usage) => {
   return usage?.sevenDayFable || usage?.sevenDaySpecial || usage?.sevenDayOpus || null
-}
-
-const hasClaudeSpecialUsageWindow = (usage) => {
-  const window = getClaudeSpecialUsageWindow(usage)
-  if (!window) return false
-  const hasUtilization = window.utilization !== null && window.utilization !== undefined
-  return hasUtilization || !!window.resetsAt
 }
 
 const formatClaudeSpecialUsageLabel = (usage) => {
