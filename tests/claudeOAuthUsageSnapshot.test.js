@@ -126,4 +126,41 @@ describe('Claude OAuth usage snapshot', () => {
       label: 'Fable'
     })
   })
+
+  test('clears stale special quota fields when the latest usage response has none', async () => {
+    const { service, getAccountData } = loadService({
+      claudeSevenDayFableUtilization: '42',
+      claudeSevenDayFableResetsAt: '2026-07-09T00:00:00.000Z',
+      claudeSevenDaySpecialLimitType: 'fable',
+      claudeSevenDaySpecialLimitKey: 'seven_day_fable',
+      claudeSevenDayOpusUtilization: '77',
+      claudeSevenDayOpusResetsAt: '2026-07-08T00:00:00.000Z'
+    })
+
+    await service.updateClaudeUsageSnapshot('acct_1', {
+      five_hour: {
+        utilization: 8,
+        resets_at: '2026-07-02T04:00:00.000Z'
+      },
+      seven_day: {
+        utilization: 2,
+        resets_at: '2026-07-08T11:00:00.000Z'
+      }
+    })
+
+    const stored = getAccountData()
+    expect(stored).toMatchObject({
+      claudeSevenDayFableUtilization: '',
+      claudeSevenDayFableResetsAt: '',
+      claudeSevenDaySpecialLimitType: '',
+      claudeSevenDaySpecialLimitKey: '',
+      claudeSevenDayOpusUtilization: '',
+      claudeSevenDayOpusResetsAt: ''
+    })
+
+    const snapshot = service.buildClaudeUsageSnapshot(stored)
+    expect(snapshot.sevenDaySpecial).toBeNull()
+    expect(snapshot.sevenDayFable).toBeNull()
+    expect(snapshot.sevenDayOpus).toBeNull()
+  })
 })

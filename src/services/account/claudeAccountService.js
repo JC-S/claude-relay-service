@@ -2312,14 +2312,16 @@ class ClaudeAccountService {
     }
 
     const specialLimitType = accountData.claudeSevenDaySpecialLimitType || 'fable'
-    const sevenDaySpecial = this._buildClaudeUsageWindow(
-      hasSevenDayFableData ? sevenDayFableUtilization : legacySevenDaySpecialUtilization,
-      hasSevenDayFableData ? sevenDayFableResetsAt : legacySevenDaySpecialResetsAt,
-      {
-        type: specialLimitType,
-        label: this._getClaudeSpecialLimitLabel(specialLimitType)
-      }
-    )
+    const sevenDaySpecial = hasSevenDaySpecialData
+      ? this._buildClaudeUsageWindow(
+          hasSevenDayFableData ? sevenDayFableUtilization : legacySevenDaySpecialUtilization,
+          hasSevenDayFableData ? sevenDayFableResetsAt : legacySevenDaySpecialResetsAt,
+          {
+            type: specialLimitType,
+            label: this._getClaudeSpecialLimitLabel(specialLimitType)
+          }
+        )
+      : null
 
     return {
       updatedAt,
@@ -2370,6 +2372,13 @@ class ClaudeAccountService {
       }
       updates.claudeSevenDaySpecialLimitType = sevenDaySpecialUsage.type
       updates.claudeSevenDaySpecialLimitKey = sevenDaySpecialUsage.key
+    } else if (usageData.five_hour || usageData.seven_day) {
+      updates.claudeSevenDayFableUtilization = ''
+      updates.claudeSevenDayFableResetsAt = ''
+      updates.claudeSevenDaySpecialLimitType = ''
+      updates.claudeSevenDaySpecialLimitKey = ''
+      updates.claudeSevenDayOpusUtilization = ''
+      updates.claudeSevenDayOpusResetsAt = ''
     }
 
     if (Object.keys(updates).length === 0) {
