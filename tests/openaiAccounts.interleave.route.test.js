@@ -45,6 +45,7 @@ jest.mock('../src/utils/proxyHelper', () => ({
 
 jest.mock('../src/utils/openaiNicSelector', () => ({
   isAvailable: jest.fn(),
+  getEnabledLocalAddresses: jest.fn(),
   getCooldownSnapshot: jest.fn()
 }))
 
@@ -80,6 +81,7 @@ function mockCurrentAccount(overrides = {}) {
     proxy: null,
     interleaveNicEnabled: 'false',
     interleaveNicTtlHours: '24',
+    interleaveNicDisabledAddresses: [],
     ...overrides
   })
 }
@@ -91,13 +93,27 @@ describe('OpenAI account NIC interleave admin route validation', () => {
     jest.clearAllMocks()
     app = buildApp()
     openaiNicSelector.isAvailable.mockReturnValue(true)
+    openaiNicSelector.getEnabledLocalAddresses.mockReturnValue(['10.0.0.191', '10.0.0.184'])
     openaiNicSelector.getCooldownSnapshot.mockResolvedValue({
       configured: true,
       totalCount: 2,
+      enabledCount: 2,
       availableCount: 1,
       addresses: [
-        { localAddress: '10.0.0.191', status: 'cooldown', active: true, ttlSeconds: 120 },
-        { localAddress: '10.0.0.184', status: 'available', active: false, ttlSeconds: 0 }
+        {
+          localAddress: '10.0.0.191',
+          enabled: true,
+          status: 'cooldown',
+          active: true,
+          ttlSeconds: 120
+        },
+        {
+          localAddress: '10.0.0.184',
+          enabled: true,
+          status: 'available',
+          active: false,
+          ttlSeconds: 0
+        }
       ]
     })
     openaiAccountService.createAccount.mockImplementation(async (data) => ({
@@ -151,20 +167,40 @@ describe('OpenAI account NIC interleave admin route validation', () => {
   })
 
   test('POST accepts interleave when proxy is absent and server config is available', async () => {
-    const response = await request(app).post('/admin/openai-accounts').send({
-      name: 'OpenAI Account',
-      interleaveNicEnabled: true,
-      interleaveNicTtlHours: 12
-    })
+    const response = await request(app)
+      .post('/admin/openai-accounts')
+      .send({
+        name: 'OpenAI Account',
+        interleaveNicEnabled: true,
+        interleaveNicTtlHours: 12,
+        interleaveNicDisabledAddresses: ['10.0.0.184']
+      })
 
     expect(response.status).toBe(200)
     expect(openaiAccountService.createAccount).toHaveBeenCalledWith(
       expect.objectContaining({
         interleaveNicEnabled: true,
         interleaveNicTtlHours: 12,
+        interleaveNicDisabledAddresses: ['10.0.0.184'],
         proxy: null
       })
     )
+  })
+
+  test('POST rejects interleave when all local addresses are disabled', async () => {
+    openaiNicSelector.getEnabledLocalAddresses.mockReturnValue([])
+
+    const response = await request(app)
+      .post('/admin/openai-accounts')
+      .send({
+        name: 'OpenAI Account',
+        interleaveNicEnabled: true,
+        interleaveNicDisabledAddresses: ['10.0.0.191', '10.0.0.184']
+      })
+
+    expect(response.status).toBe(400)
+    expect(response.body.message).toContain('至少需要保留 1 个')
+    expect(openaiAccountService.createAccount).not.toHaveBeenCalled()
   })
 
   test('PUT rejects enabling interleave when the current account already has a valid proxy', async () => {
@@ -224,10 +260,25 @@ describe('OpenAI account NIC interleave admin route validation', () => {
 
     expect(response.status).toBe(200)
     expect(openaiAccountService.getAccount).toHaveBeenCalledWith('acct_1')
-    expect(openaiNicSelector.getCooldownSnapshot).toHaveBeenCalledWith({ accountId: 'acct_1' })
+    expect(openaiNicSelector.getCooldownSnapshot).toHaveBeenCalledWith({
+      accountId: 'acct_1',
+      disabledAddresses: []
+    })
     expect(response.body.data.addresses).toEqual([
-      { localAddress: '10.0.0.191', status: 'cooldown', active: true, ttlSeconds: 120 },
-      { localAddress: '10.0.0.184', status: 'available', active: false, ttlSeconds: 0 }
+      {
+        localAddress: '10.0.0.191',
+        enabled: true,
+        status: 'cooldown',
+        active: true,
+        ttlSeconds: 120
+      },
+      {
+        localAddress: '10.0.0.184',
+        enabled: true,
+        status: 'available',
+        active: false,
+        ttlSeconds: 0
+      }
     ])
   })
 

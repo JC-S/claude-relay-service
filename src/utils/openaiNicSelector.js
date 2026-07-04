@@ -29,6 +29,35 @@ function getConfiguredLocalAddresses() {
   )
 }
 
+function normalizeDisabledAddressList(value) {
+  if (value === undefined || value === null || value === '') {
+    return []
+  }
+
+  let addresses = value
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      addresses = Array.isArray(parsed) ? parsed : value.split(',')
+    } catch {
+      addresses = value.split(',')
+    }
+  }
+
+  if (!Array.isArray(addresses)) {
+    return []
+  }
+
+  return Array.from(
+    new Set(addresses.map((address) => String(address || '').trim()).filter(Boolean))
+  )
+}
+
+function getEnabledLocalAddresses(disabledAddresses) {
+  const disabledSet = new Set(normalizeDisabledAddressList(disabledAddresses))
+  return getConfiguredLocalAddresses().filter((address) => !disabledSet.has(address))
+}
+
 function isAvailable() {
   return getConfiguredLocalAddresses().length >= 2
 }
@@ -99,15 +128,19 @@ async function getSelectableAddresses(client, accountId, addresses) {
   return addresses
 }
 
-async function getCooldownSnapshot({ accountId } = {}) {
+async function getCooldownSnapshot({ accountId, disabledAddresses } = {}) {
   const addresses = getConfiguredLocalAddresses()
+  const disabledSet = new Set(normalizeDisabledAddressList(disabledAddresses))
+  const enabledCount = addresses.filter((address) => !disabledSet.has(address)).length
   const baseSnapshot = {
     configured: addresses.length >= 2,
     totalCount: addresses.length,
-    availableCount: addresses.length,
+    enabledCount,
+    availableCount: enabledCount,
     addresses: addresses.map((address) => ({
       localAddress: address,
-      status: 'available',
+      enabled: !disabledSet.has(address),
+      status: disabledSet.has(address) ? 'disabled' : 'available',
       active: false,
       ttlSeconds: 0,
       expiresAt: null
@@ -130,22 +163,27 @@ async function getCooldownSnapshot({ accountId } = {}) {
     const now = Date.now()
     const cooldownStates = await getCooldownStates(client, accountId, addresses)
     const cooldownAddresses = addresses.map((address) => {
+      const enabled = !disabledSet.has(address)
       const state = cooldownStates.get(address) || { active: false, ttl: 0 }
       const ttlSeconds = Math.max(0, Number(state.ttl) || 0)
+      const active = enabled && Boolean(state.active)
 
       return {
         localAddress: address,
-        status: state.active ? 'cooldown' : 'available',
-        active: Boolean(state.active),
-        ttlSeconds,
-        expiresAt: state.active ? new Date(now + ttlSeconds * 1000).toISOString() : null
+        enabled,
+        status: !enabled ? 'disabled' : active ? 'cooldown' : 'available',
+        active,
+        ttlSeconds: active ? ttlSeconds : 0,
+        expiresAt: active ? new Date(now + ttlSeconds * 1000).toISOString() : null
       }
     })
 
     return {
       configured: addresses.length >= 2,
       totalCount: addresses.length,
-      availableCount: cooldownAddresses.filter((address) => !address.active).length,
+      enabledCount: cooldownAddresses.filter((address) => address.enabled).length,
+      availableCount: cooldownAddresses.filter((address) => address.enabled && !address.active)
+        .length,
       addresses: cooldownAddresses,
       redisAvailable: true
     }
@@ -159,9 +197,10 @@ async function getCooldownSnapshot({ accountId } = {}) {
   }
 }
 
-async function chooseLocalAddress({ accountId, sessionHash, ttlHours } = {}) {
-  const addresses = getConfiguredLocalAddresses()
-  if (addresses.length < 2 || !accountId) {
+async function chooseLocalAddress({ accountId, sessionHash, ttlHours, disabledAddresses } = {}) {
+  const configuredAddresses = getConfiguredLocalAddresses()
+  const addresses = getEnabledLocalAddresses(disabledAddresses)
+  if (configuredAddresses.length < 2 || addresses.length < 1 || !accountId) {
     return null
   }
 
@@ -186,7 +225,7 @@ async function chooseLocalAddress({ accountId, sessionHash, ttlHours } = {}) {
       return boundAddress
     }
 
-    if (boundAddress && addresses.includes(boundAddress)) {
+    if (boundAddress && configuredAddresses.includes(boundAddress)) {
       await client.del(bindingKey)
     }
 
@@ -211,16 +250,21 @@ async function chooseLocalAddress({ accountId, sessionHash, ttlHours } = {}) {
   }
 }
 
-async function markCooldown({ accountId, localAddress, cooldownSeconds } = {}) {
-  const addresses = getConfiguredLocalAddresses()
+async function markCooldown({ accountId, localAddress, cooldownSeconds, disabledAddresses } = {}) {
+  const configuredAddresses = getConfiguredLocalAddresses()
+  const addresses = getEnabledLocalAddresses(disabledAddresses)
   const normalizedAddress = String(localAddress || '').trim()
 
-  if (addresses.length < 2 || !accountId || !normalizedAddress) {
+  if (configuredAddresses.length < 2 || addresses.length < 1 || !accountId || !normalizedAddress) {
     return { marked: false, reason: 'not_available' }
   }
 
-  if (!addresses.includes(normalizedAddress)) {
+  if (!configuredAddresses.includes(normalizedAddress)) {
     return { marked: false, reason: 'unknown_address' }
+  }
+
+  if (!addresses.includes(normalizedAddress)) {
+    return { marked: false, reason: 'disabled_address' }
   }
 
   const client = redis.getClient()
@@ -286,6 +330,8 @@ async function clearBinding({ accountId, sessionHash } = {}) {
 
 module.exports = {
   getConfiguredLocalAddresses,
+  getEnabledLocalAddresses,
+  normalizeDisabledAddressList,
   isAvailable,
   normalizeTtlHours,
   normalizeCooldownSeconds,

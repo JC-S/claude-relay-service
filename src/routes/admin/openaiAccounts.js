@@ -72,7 +72,7 @@ function validateInterleaveNicTtl(value) {
   return { valid: true, value: parsed }
 }
 
-function validateOpenAIInterleaveState({ enabled, ttlHours, proxy }) {
+function validateOpenAIInterleaveState({ enabled, ttlHours, proxy, disabledAddresses }) {
   const ttlValidation = validateInterleaveNicTtl(ttlHours)
   if (!ttlValidation.valid) {
     return 'OpenAI 多网卡出口会话绑定时间必须是 1-72 的整数小时'
@@ -88,6 +88,10 @@ function validateOpenAIInterleaveState({ enabled, ttlHours, proxy }) {
 
   if (!openaiNicSelector.isAvailable()) {
     return '服务端未配置至少 2 个 OpenAI 本地出口 IP，无法启用多网卡出口'
+  }
+
+  if (openaiNicSelector.getEnabledLocalAddresses(disabledAddresses).length < 1) {
+    return 'OpenAI 多网卡出口至少需要保留 1 个启用的本地出口 IP'
   }
 
   return null
@@ -452,6 +456,7 @@ router.post('/', authenticateAdmin, async (req, res) => {
       priority,
       interleaveNicEnabled,
       interleaveNicTtlHours,
+      interleaveNicDisabledAddresses,
       needsImmediateRefresh, // 是否需要立即刷新
       requireRefreshSuccess // 是否必须刷新成功才能创建
     } = req.body
@@ -467,7 +472,8 @@ router.post('/', authenticateAdmin, async (req, res) => {
     const interleaveValidationError = validateOpenAIInterleaveState({
       enabled: interleaveEnabled,
       ttlHours: interleaveNicTtlHours,
-      proxy
+      proxy,
+      disabledAddresses: interleaveNicDisabledAddresses
     })
     if (interleaveValidationError) {
       return res.status(400).json({
@@ -492,6 +498,7 @@ router.post('/', authenticateAdmin, async (req, res) => {
         interleaveNicTtlHours === undefined || interleaveNicTtlHours === null
           ? 24
           : interleaveNicTtlHours,
+      interleaveNicDisabledAddresses,
       isActive: true,
       schedulable: true
     }
@@ -628,7 +635,10 @@ router.get('/:id/nic-cooldowns', authenticateAdmin, async (req, res) => {
       })
     }
 
-    const cooldownSnapshot = await openaiNicSelector.getCooldownSnapshot({ accountId: id })
+    const cooldownSnapshot = await openaiNicSelector.getCooldownSnapshot({
+      accountId: id,
+      disabledAddresses: account.interleaveNicDisabledAddresses
+    })
 
     return res.json({
       success: true,
@@ -688,13 +698,20 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     const effectiveInterleaveTtlHours = hasOwn(mappedUpdates, 'interleaveNicTtlHours')
       ? mappedUpdates.interleaveNicTtlHours
       : currentAccount.interleaveNicTtlHours
+    const effectiveInterleaveNicDisabledAddresses = hasOwn(
+      mappedUpdates,
+      'interleaveNicDisabledAddresses'
+    )
+      ? mappedUpdates.interleaveNicDisabledAddresses
+      : currentAccount.interleaveNicDisabledAddresses
     const effectiveProxy = hasOwn(mappedUpdates, 'proxy')
       ? mappedUpdates.proxy
       : currentAccount.proxy
     const interleaveValidationError = validateOpenAIInterleaveState({
       enabled: effectiveInterleaveEnabled,
       ttlHours: effectiveInterleaveTtlHours,
-      proxy: effectiveProxy
+      proxy: effectiveProxy,
+      disabledAddresses: effectiveInterleaveNicDisabledAddresses
     })
     if (interleaveValidationError) {
       return res.status(400).json({

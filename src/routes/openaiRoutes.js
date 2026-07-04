@@ -257,7 +257,8 @@ async function handleOpenAINicCooldownOnRateLimit({
 
   const cooldownResult = await openaiNicSelector.markCooldown({
     accountId,
-    localAddress: selectedLocalAddress
+    localAddress: selectedLocalAddress,
+    disabledAddresses: account.interleaveNicDisabledAddresses
   })
   const historyContext = {
     model: req?.body?.model || null,
@@ -1190,7 +1191,8 @@ const handleResponses = async (req, res) => {
       const localAddress = await openaiNicSelector.chooseLocalAddress({
         accountId,
         sessionHash,
-        ttlHours: account.interleaveNicTtlHours
+        ttlHours: account.interleaveNicTtlHours,
+        disabledAddresses: account.interleaveNicDisabledAddresses
       })
 
       if (localAddress) {
@@ -1249,7 +1251,11 @@ const handleResponses = async (req, res) => {
     let nicRateLimitRetryCount = 0
     const maxNicRateLimitRetries =
       !proxyAgent && isInterleaveNicEnabled(account)
-        ? Math.max(0, openaiNicSelector.getConfiguredLocalAddresses().length - 1)
+        ? Math.max(
+            0,
+            openaiNicSelector.getEnabledLocalAddresses(account.interleaveNicDisabledAddresses)
+              .length - 1
+          )
         : 0
 
     while (upstream.status === 429) {

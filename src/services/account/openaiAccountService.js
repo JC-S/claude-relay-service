@@ -69,6 +69,34 @@ function normalizeInterleaveNicTtlHours(value) {
   return String(Math.min(Math.max(parsed, 1), 72))
 }
 
+function parseInterleaveNicDisabledAddresses(value) {
+  if (value === undefined || value === null || value === '') {
+    return []
+  }
+
+  let addresses = value
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      addresses = Array.isArray(parsed) ? parsed : value.split(',')
+    } catch {
+      addresses = value.split(',')
+    }
+  }
+
+  if (!Array.isArray(addresses)) {
+    return []
+  }
+
+  return Array.from(
+    new Set(addresses.map((address) => String(address || '').trim()).filter(Boolean))
+  )
+}
+
+function normalizeInterleaveNicDisabledAddresses(value) {
+  return JSON.stringify(parseInterleaveNicDisabledAddresses(value))
+}
+
 function computeResetMeta(updatedAt, resetAfterSeconds) {
   if (!updatedAt || resetAfterSeconds === null || resetAfterSeconds === undefined) {
     return {
@@ -532,6 +560,9 @@ async function createAccount(accountData) {
         : 'false',
     interleaveNicEnabled: normalizeBooleanString(accountData.interleaveNicEnabled, false),
     interleaveNicTtlHours: normalizeInterleaveNicTtlHours(accountData.interleaveNicTtlHours),
+    interleaveNicDisabledAddresses: normalizeInterleaveNicDisabledAddresses(
+      accountData.interleaveNicDisabledAddresses
+    ),
     lastRefresh: now,
     createdAt: now,
     updatedAt: now
@@ -586,6 +617,10 @@ async function getAccount(accountId) {
       accountData.openaiOauth = null
     }
   }
+
+  accountData.interleaveNicDisabledAddresses = parseInterleaveNicDisabledAddresses(
+    accountData.interleaveNicDisabledAddresses
+  )
 
   // 解析代理配置
   if (accountData.proxy && typeof accountData.proxy === 'string') {
@@ -655,6 +690,12 @@ async function updateAccount(accountId, updates) {
 
   if (updates.interleaveNicTtlHours !== undefined) {
     updates.interleaveNicTtlHours = normalizeInterleaveNicTtlHours(updates.interleaveNicTtlHours)
+  }
+
+  if (updates.interleaveNicDisabledAddresses !== undefined) {
+    updates.interleaveNicDisabledAddresses = normalizeInterleaveNicDisabledAddresses(
+      updates.interleaveNicDisabledAddresses
+    )
   }
 
   // 更新账户类型时处理共享账户集合
@@ -771,6 +812,10 @@ async function getAllAccounts() {
           accountData.proxy = null
         }
       }
+
+      accountData.interleaveNicDisabledAddresses = parseInterleaveNicDisabledAddresses(
+        accountData.interleaveNicDisabledAddresses
+      )
 
       const tokenExpiresAt = accountData.expiresAt || null
       const subscriptionExpiresAt =

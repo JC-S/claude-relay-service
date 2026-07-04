@@ -4118,14 +4118,25 @@
                 <span class="truncate font-mono text-gray-700 dark:text-gray-200">
                   {{ nic.localAddress }}
                 </span>
-                <span
-                  :class="[
-                    'inline-flex shrink-0 items-center rounded-full px-2 py-0.5 font-medium',
-                    getOpenAINicCooldownClass(nic)
-                  ]"
-                >
-                  {{ formatOpenAINicCooldownStatus(nic) }}
-                </span>
+                <div class="flex shrink-0 items-center gap-3">
+                  <span
+                    :class="[
+                      'inline-flex items-center rounded-full px-2 py-0.5 font-medium',
+                      getOpenAINicCooldownClass(nic)
+                    ]"
+                  >
+                    {{ formatOpenAINicCooldownStatus(nic) }}
+                  </span>
+                  <label class="inline-flex items-center gap-1.5 text-gray-600 dark:text-gray-300">
+                    <input
+                      :checked="isOpenAINicAddressEnabled(nic)"
+                      class="h-3.5 w-3.5 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                      type="checkbox"
+                      @change="setOpenAINicAddressEnabled(nic.localAddress, $event)"
+                    />
+                    <span>启用</span>
+                  </label>
+                </div>
               </div>
             </div>
           </div>
@@ -4478,6 +4489,30 @@ const clampOpenAINicTtlHours = (value) => {
   return Math.min(Math.max(parsed, 1), 72)
 }
 
+const normalizeOpenAINicDisabledAddresses = (value) => {
+  if (!value) {
+    return []
+  }
+
+  let addresses = value
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      addresses = Array.isArray(parsed) ? parsed : value.split(',')
+    } catch {
+      addresses = value.split(',')
+    }
+  }
+
+  if (!Array.isArray(addresses)) {
+    return []
+  }
+
+  return Array.from(
+    new Set(addresses.map((address) => String(address || '').trim()).filter(Boolean))
+  )
+}
+
 // 表单数据
 const form = ref({
   platform: props.account?.platform || 'claude',
@@ -4537,6 +4572,9 @@ const form = ref({
   disableAutoProtection: toFormBoolean(props.account?.disableAutoProtection),
   interleaveNicEnabled: toFormBoolean(props.account?.interleaveNicEnabled),
   interleaveNicTtlHours: clampOpenAINicTtlHours(props.account?.interleaveNicTtlHours),
+  interleaveNicDisabledAddresses: normalizeOpenAINicDisabledAddresses(
+    props.account?.interleaveNicDisabledAddresses
+  ),
   disableTempUnavailable: toFormBoolean(props.account?.disableTempUnavailable),
   tempUnavailable503TtlSeconds: toFormCooldownOverrideValue(
     props.account?.tempUnavailable503TtlSeconds
@@ -4585,13 +4623,30 @@ const form = ref({
 const proxyConfigured = computed(() => form.value.proxy?.enabled === true)
 const buildOpenAINicInterleavePayload = () => ({
   interleaveNicEnabled: !!form.value.interleaveNicEnabled,
-  interleaveNicTtlHours: clampOpenAINicTtlHours(form.value.interleaveNicTtlHours)
+  interleaveNicTtlHours: clampOpenAINicTtlHours(form.value.interleaveNicTtlHours),
+  interleaveNicDisabledAddresses: normalizeOpenAINicDisabledAddresses(
+    form.value.interleaveNicDisabledAddresses
+  )
 })
 const openAINicCooldownStatus = ref(null)
 
+const openAINicDisabledAddressSet = computed(
+  () => new Set(normalizeOpenAINicDisabledAddresses(form.value.interleaveNicDisabledAddresses))
+)
+
 const openAINicCooldownRows = computed(() => {
   const rows = openAINicCooldownStatus.value?.addresses
-  return Array.isArray(rows) ? rows : []
+  if (!Array.isArray(rows)) {
+    return []
+  }
+  return rows.map((row) => {
+    const localAddress = String(row?.localAddress || '').trim()
+    const enabled = localAddress ? !openAINicDisabledAddressSet.value.has(localAddress) : false
+    return {
+      ...row,
+      enabled
+    }
+  })
 })
 
 const shouldShowOpenAINicCooldownStatus = computed(
@@ -4603,6 +4658,60 @@ const shouldShowOpenAINicCooldownStatus = computed(
 )
 
 const isOpenAINicCoolingDown = (nic) => nic?.status === 'cooldown' || nic?.active === true
+
+const isOpenAINicAddressEnabled = (nic) => nic?.enabled !== false
+
+const getOpenAINicEnabledCount = () =>
+  openAINicCooldownRows.value.filter((nic) => isOpenAINicAddressEnabled(nic)).length
+
+const validateOpenAINicEnabledSelection = () => {
+  if (
+    form.value.platform !== 'openai' ||
+    !form.value.interleaveNicEnabled ||
+    openAINicCooldownRows.value.length === 0
+  ) {
+    return true
+  }
+
+  if (getOpenAINicEnabledCount() < 1) {
+    showToast('OpenAI 多网卡出口至少需要保留 1 个启用的本地出口 IP', 'error')
+    return false
+  }
+
+  return true
+}
+
+const setOpenAINicAddressEnabled = (localAddress, eventOrEnabled) => {
+  const address = String(localAddress || '').trim()
+  if (!address) {
+    return
+  }
+  const eventTarget = eventOrEnabled?.target || null
+  const enabled =
+    typeof eventOrEnabled === 'boolean' ? eventOrEnabled : Boolean(eventTarget?.checked)
+
+  const disabledSet = new Set(
+    normalizeOpenAINicDisabledAddresses(form.value.interleaveNicDisabledAddresses)
+  )
+
+  if (enabled) {
+    disabledSet.delete(address)
+  } else {
+    const enabledCount = openAINicCooldownRows.value.filter(
+      (nic) => nic.localAddress !== address && isOpenAINicAddressEnabled(nic)
+    ).length
+    if (form.value.interleaveNicEnabled && enabledCount < 1) {
+      if (eventTarget) {
+        eventTarget.checked = true
+      }
+      showToast('OpenAI 多网卡出口至少需要保留 1 个启用的本地出口 IP', 'error')
+      return
+    }
+    disabledSet.add(address)
+  }
+
+  form.value.interleaveNicDisabledAddresses = Array.from(disabledSet)
+}
 
 const formatOpenAINicCooldownRemaining = (ttlSeconds) => {
   const totalSeconds = Math.max(0, Math.ceil(Number(ttlSeconds) || 0))
@@ -4622,6 +4731,9 @@ const formatOpenAINicCooldownRemaining = (ttlSeconds) => {
 }
 
 const formatOpenAINicCooldownStatus = (nic) => {
+  if (!isOpenAINicAddressEnabled(nic)) {
+    return '已关闭'
+  }
   if (!isOpenAINicCoolingDown(nic)) {
     return '可用'
   }
@@ -4629,6 +4741,9 @@ const formatOpenAINicCooldownStatus = (nic) => {
 }
 
 const getOpenAINicCooldownClass = (nic) => {
+  if (!isOpenAINicAddressEnabled(nic)) {
+    return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  }
   if (!isOpenAINicCoolingDown(nic)) {
     return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
   }
@@ -5723,6 +5838,10 @@ const createAccount = async () => {
     return
   }
 
+  if (!validateOpenAINicEnabledSelection()) {
+    return
+  }
+
   loading.value = true
   try {
     const proxyPayload = buildProxyPayload(form.value.proxy)
@@ -6027,6 +6146,10 @@ const updateAccount = async () => {
         return
       }
     }
+  }
+
+  if (!validateOpenAINicEnabledSelection()) {
+    return
   }
 
   loading.value = true
@@ -6857,6 +6980,9 @@ watch(
         disableAutoProtection: toFormBoolean(newAccount.disableAutoProtection),
         interleaveNicEnabled: toFormBoolean(newAccount.interleaveNicEnabled),
         interleaveNicTtlHours: clampOpenAINicTtlHours(newAccount.interleaveNicTtlHours),
+        interleaveNicDisabledAddresses: normalizeOpenAINicDisabledAddresses(
+          newAccount.interleaveNicDisabledAddresses
+        ),
         disableTempUnavailable: toFormBoolean(newAccount.disableTempUnavailable),
         tempUnavailable503TtlSeconds: toFormCooldownOverrideValue(
           newAccount.tempUnavailable503TtlSeconds

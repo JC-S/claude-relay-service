@@ -230,6 +230,43 @@ describe('openaiNicSelector', () => {
     expect(redisClient.store.get('openai:nic_binding:acct_1:stale_hash')).toBe('10.0.0.191')
   })
 
+  test('does not select manually disabled local addresses', async () => {
+    const redisClient = createRedisMock()
+    redisClient.store.set('openai:nic_binding:acct_1:disabled_hash', '10.0.0.191')
+    const { selector } = loadSelector({
+      addresses: ['10.0.0.191', '10.0.0.184'],
+      redisClient
+    })
+
+    await expect(
+      selector.chooseLocalAddress({
+        accountId: 'acct_1',
+        sessionHash: 'disabled_hash',
+        disabledAddresses: ['10.0.0.191']
+      })
+    ).resolves.toBe('10.0.0.184')
+    expect(redisClient.store.get('openai:nic_binding:acct_1:disabled_hash')).toBe('10.0.0.184')
+  })
+
+  test('does not cooldown the last manually enabled local address', async () => {
+    const { selector } = loadSelector({
+      addresses: ['10.0.0.191', '10.0.0.184']
+    })
+
+    await expect(
+      selector.markCooldown({
+        accountId: 'acct_1',
+        localAddress: '10.0.0.191',
+        disabledAddresses: ['10.0.0.184']
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        marked: false,
+        reason: 'last_available'
+      })
+    )
+  })
+
   test('reports per-address cooldown snapshot', async () => {
     const { selector } = loadSelector({
       addresses: ['10.0.0.191', '10.0.0.184']
@@ -252,19 +289,52 @@ describe('openaiNicSelector', () => {
     await expect(selector.getCooldownSnapshot({ accountId: 'acct_1' })).resolves.toMatchObject({
       configured: true,
       totalCount: 2,
+      enabledCount: 2,
       availableCount: 1,
       addresses: [
         {
           localAddress: '10.0.0.191',
+          enabled: true,
           status: 'cooldown',
           active: true,
           ttlSeconds: 120
         },
         {
           localAddress: '10.0.0.184',
+          enabled: true,
           status: 'available',
           active: false,
           ttlSeconds: 0
+        }
+      ]
+    })
+  })
+
+  test('reports manually disabled addresses in cooldown snapshot', async () => {
+    const { selector } = loadSelector({
+      addresses: ['10.0.0.191', '10.0.0.184']
+    })
+
+    await expect(
+      selector.getCooldownSnapshot({
+        accountId: 'acct_1',
+        disabledAddresses: ['10.0.0.184']
+      })
+    ).resolves.toMatchObject({
+      configured: true,
+      totalCount: 2,
+      enabledCount: 1,
+      availableCount: 1,
+      addresses: [
+        {
+          localAddress: '10.0.0.191',
+          enabled: true,
+          status: 'available'
+        },
+        {
+          localAddress: '10.0.0.184',
+          enabled: false,
+          status: 'disabled'
         }
       ]
     })

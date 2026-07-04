@@ -100,7 +100,8 @@ jest.mock('../src/utils/openaiNicSelector', () => ({
   chooseLocalAddress: jest.fn(),
   clearBinding: jest.fn(),
   markCooldown: jest.fn(),
-  getConfiguredLocalAddresses: jest.fn()
+  getConfiguredLocalAddresses: jest.fn(),
+  getEnabledLocalAddresses: jest.fn()
 }))
 
 jest.mock('../src/utils/upstreamErrorHelper', () => ({
@@ -212,6 +213,7 @@ describe('openaiRoutes NIC interleave', () => {
       remainingAddresses: 1
     })
     openaiNicSelector.getConfiguredLocalAddresses.mockReturnValue(['10.0.0.191', '10.0.0.184'])
+    openaiNicSelector.getEnabledLocalAddresses.mockReturnValue(['10.0.0.191', '10.0.0.184'])
     getHttpsAgentForLocalAddress.mockReturnValue({
       options: {
         localAddress: '10.0.0.191'
@@ -228,12 +230,38 @@ describe('openaiRoutes NIC interleave', () => {
     expect(openaiNicSelector.chooseLocalAddress).toHaveBeenCalledWith({
       accountId: 'openai-1',
       sessionHash: createHash('nic-session'),
-      ttlHours: '12'
+      ttlHours: '12',
+      disabledAddresses: undefined
     })
     expect(getHttpsAgentForLocalAddress).toHaveBeenCalledWith('10.0.0.191', { stream: false })
     expect(req.upstreamNicIp).toBe('10.0.0.191')
     expect(axios.post.mock.calls[0][2].httpsAgent.options.localAddress).toBe('10.0.0.191')
     expect(axios.post.mock.calls[0][2].proxy).toBe(false)
+  })
+
+  test('passes manually disabled local addresses to the NIC selector', async () => {
+    setupOpenAIAccount({
+      interleaveNicDisabledAddresses: ['10.0.0.191']
+    })
+    openaiNicSelector.chooseLocalAddress.mockResolvedValue('10.0.0.184')
+    getHttpsAgentForLocalAddress.mockReturnValue({
+      options: {
+        localAddress: '10.0.0.184'
+      }
+    })
+    axios.post.mockResolvedValue(createSuccessResponse())
+
+    const req = createReq()
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(openaiNicSelector.chooseLocalAddress).toHaveBeenCalledWith({
+      accountId: 'openai-1',
+      sessionHash: createHash('nic-session'),
+      ttlHours: '12',
+      disabledAddresses: ['10.0.0.191']
+    })
+    expect(getHttpsAgentForLocalAddress).toHaveBeenCalledWith('10.0.0.184', { stream: false })
+    expect(req.upstreamNicIp).toBe('10.0.0.184')
   })
 
   test('clears binding and retries once with default route on local-address bind errors', async () => {
@@ -295,7 +323,8 @@ describe('openaiRoutes NIC interleave', () => {
 
     expect(openaiNicSelector.markCooldown).toHaveBeenCalledWith({
       accountId: 'openai-1',
-      localAddress: '10.0.0.191'
+      localAddress: '10.0.0.191',
+      disabledAddresses: undefined
     })
     expect(upstreamErrorHelper.recordErrorHistory).toHaveBeenCalledWith(
       'openai-1',
