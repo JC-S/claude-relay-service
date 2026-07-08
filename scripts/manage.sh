@@ -31,6 +31,7 @@ PUBLIC_IP_CACHE_FILE="/tmp/.crs_public_ip_cache"
 PUBLIC_IP_CACHE_DURATION=3600  # 1小时缓存
 ROUTEBASE_RECAL_DIR="/home/ubuntu/tools/routebase_manage"
 ROUTEBASE_RECAL_SCRIPT="$ROUTEBASE_RECAL_DIR/recal.sh"
+SYSTEMD_SERVICE_NAME="claude-relay-service.service"
 
 # 打印带颜色的消息
 print_info() {
@@ -75,6 +76,10 @@ detect_os() {
 # 检查命令是否存在
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+systemd_service_exists() {
+    command_exists systemctl && systemctl show "$SYSTEMD_SERVICE_NAME" >/dev/null 2>&1
 }
 
 # 检查端口是否被占用
@@ -854,6 +859,16 @@ start_service() {
         print_error "服务未安装，请先运行: $0 install"
         return 1
     fi
+
+    if systemd_service_exists; then
+        print_info "使用 systemd 启动服务..."
+        if sudo systemctl start "$SYSTEMD_SERVICE_NAME"; then
+            show_status
+            return 0
+        fi
+        print_error "systemd 启动失败，请查看: sudo journalctl -u $SYSTEMD_SERVICE_NAME -n 50"
+        return 1
+    fi
     
     print_info "启动服务..."
     
@@ -935,6 +950,15 @@ start_service_direct() {
 # 停止服务
 stop_service() {
     print_info "停止服务..."
+
+    if systemd_service_exists; then
+        if sudo systemctl stop "$SYSTEMD_SERVICE_NAME"; then
+            print_success "服务已通过 systemd 停止"
+            return 0
+        fi
+        print_error "systemd 停止失败，请查看: sudo journalctl -u $SYSTEMD_SERVICE_NAME -n 50"
+        return 1
+    fi
     
     # 尝试使用pm2停止
     if command_exists pm2 && [ -n "$APP_DIR" ] && [ -d "$APP_DIR" ]; then
@@ -1013,6 +1037,16 @@ run_routebase_recalibration() {
 
 restart_service() {
     print_info "重启服务..."
+
+    if systemd_service_exists; then
+        if sudo systemctl restart "$SYSTEMD_SERVICE_NAME"; then
+            show_status
+            run_routebase_recalibration
+            return 0
+        fi
+        print_error "systemd 重启失败，请查看: sudo journalctl -u $SYSTEMD_SERVICE_NAME -n 50"
+        return 1
+    fi
     
     # 停止服务并检查结果
     if ! stop_service; then
@@ -1326,6 +1360,22 @@ switch_branch() {
 # 显示状态
 show_status() {
     echo -e "\n${BLUE}=== Claude Relay Service 状态 ===${NC}"
+
+    if systemd_service_exists; then
+        local active_state=$(systemctl is-active "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true)
+        local enabled_state=$(systemctl is-enabled "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true)
+        local restart_policy=$(systemctl show "$SYSTEMD_SERVICE_NAME" -p Restart --value 2>/dev/null)
+        local restart_delay=$(systemctl show "$SYSTEMD_SERVICE_NAME" -p RestartUSec --value 2>/dev/null)
+
+        echo "管理方式: systemd ($SYSTEMD_SERVICE_NAME)"
+        if [ "$active_state" = "active" ]; then
+            echo -e "systemd 状态: ${GREEN}active${NC}"
+        else
+            echo -e "systemd 状态: ${RED}${active_state:-unknown}${NC}"
+        fi
+        echo "开机自启: ${enabled_state:-unknown}"
+        echo "自动恢复: ${restart_policy:-unknown} / ${restart_delay:-unknown}"
+    fi
     
     # 获取实际端口
     local actual_port="$APP_PORT"

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawn, exec } = require('child_process')
+const { spawn, exec, spawnSync, execFileSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const process = require('process')
@@ -9,6 +9,7 @@ const PID_FILE = path.join(__dirname, '..', 'claude-relay-service.pid')
 const LOG_FILE = path.join(__dirname, '..', 'logs', 'service.log')
 const ERROR_LOG_FILE = path.join(__dirname, '..', 'logs', 'service-error.log')
 const APP_FILE = path.join(__dirname, '..', 'src', 'app.js')
+const SYSTEMD_SERVICE_NAME = 'claude-relay-service.service'
 
 class ServiceManager {
   constructor() {
@@ -43,6 +44,36 @@ class ServiceManager {
     }
   }
 
+  systemdServiceExists() {
+    const result = spawnSync('systemctl', ['show', SYSTEMD_SERVICE_NAME], { stdio: 'ignore' })
+    return result.status === 0
+  }
+
+  runSystemctl(action) {
+    const result = spawnSync('sudo', ['systemctl', action, SYSTEMD_SERVICE_NAME], {
+      stdio: 'inherit'
+    })
+    return result.status === 0
+  }
+
+  getSystemdValue(property) {
+    try {
+      return execFileSync('systemctl', ['show', SYSTEMD_SERVICE_NAME, '-p', property, '--value'], {
+        encoding: 'utf8'
+      }).trim()
+    } catch (error) {
+      return ''
+    }
+  }
+
+  getCommandOutput(command, args) {
+    try {
+      return execFileSync(command, args, { encoding: 'utf8' }).trim()
+    } catch (error) {
+      return ''
+    }
+  }
+
   writePid(pid) {
     try {
       fs.writeFileSync(PID_FILE, pid.toString())
@@ -64,6 +95,17 @@ class ServiceManager {
   }
 
   getStatus() {
+    if (this.systemdServiceExists()) {
+      const activeState = this.getCommandOutput('systemctl', ['is-active', SYSTEMD_SERVICE_NAME])
+      const pid = parseInt(this.getSystemdValue('MainPID'))
+      return {
+        running: activeState === 'active' && pid > 0,
+        pid: pid > 0 ? pid : null,
+        systemd: true,
+        activeState
+      }
+    }
+
     const pid = this.getPid()
     if (pid && this.isProcessRunning(pid)) {
       return { running: true, pid }
@@ -72,6 +114,17 @@ class ServiceManager {
   }
 
   start(daemon = false) {
+    if (this.systemdServiceExists()) {
+      console.log(`🚀 使用 systemd 启动 ${SYSTEMD_SERVICE_NAME}...`)
+      if (!this.runSystemctl('start')) {
+        console.error(
+          `❌ systemd 启动失败，请查看: sudo journalctl -u ${SYSTEMD_SERVICE_NAME} -n 50`
+        )
+        return false
+      }
+      return this.status()
+    }
+
     const status = this.getStatus()
     if (status.running) {
       console.log(`⚠️  服务已在运行中 (PID: ${status.pid})`)
@@ -136,6 +189,19 @@ class ServiceManager {
   }
 
   stop() {
+    if (this.systemdServiceExists()) {
+      console.log(`🛑 使用 systemd 停止 ${SYSTEMD_SERVICE_NAME}...`)
+      if (!this.runSystemctl('stop')) {
+        console.error(
+          `❌ systemd 停止失败，请查看: sudo journalctl -u ${SYSTEMD_SERVICE_NAME} -n 50`
+        )
+        return false
+      }
+      this.removePidFile()
+      console.log('✅ 服务已停止')
+      return true
+    }
+
     const status = this.getStatus()
     if (!status.running) {
       console.log('⚠️  服务未在运行')
@@ -184,6 +250,17 @@ class ServiceManager {
   }
 
   restart(daemon = false) {
+    if (this.systemdServiceExists()) {
+      console.log(`🔄 使用 systemd 重启 ${SYSTEMD_SERVICE_NAME}...`)
+      if (!this.runSystemctl('restart')) {
+        console.error(
+          `❌ systemd 重启失败，请查看: sudo journalctl -u ${SYSTEMD_SERVICE_NAME} -n 50`
+        )
+        return false
+      }
+      return this.status()
+    }
+
     console.log('🔄 重启服务...')
     this.stop()
     // 等待停止完成
@@ -198,6 +275,18 @@ class ServiceManager {
     const status = this.getStatus()
     if (status.running) {
       console.log(`✅ 服务正在运行 (PID: ${status.pid})`)
+
+      if (status.systemd) {
+        const enabledState = this.getCommandOutput('systemctl', [
+          'is-enabled',
+          SYSTEMD_SERVICE_NAME
+        ])
+        const restartPolicy = this.getSystemdValue('Restart')
+        const restartDelay = this.getSystemdValue('RestartUSec')
+        console.log(`管理方式: systemd (${SYSTEMD_SERVICE_NAME})`)
+        console.log(`开机自启: ${enabledState || 'unknown'}`)
+        console.log(`自动恢复: ${restartPolicy || 'unknown'} / ${restartDelay || 'unknown'}`)
+      }
 
       // 显示进程信息
       exec(`ps -p ${status.pid} -o pid,ppid,pcpu,pmem,etime,cmd --no-headers`, (error, stdout) => {

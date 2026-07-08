@@ -1,0 +1,25 @@
+[Unit]
+Description=Claude Relay Service
+Documentation=https://github.com/Wei-Shaw/claude-relay-service
+Wants=network-online.target
+After=network-online.target redis-server.service redis.service
+
+[Service]
+Type=simple
+User=shenjc
+Group=shenjc
+WorkingDirectory=/home/ubuntu/tools/claude-relay-service/app
+Environment=NODE_ENV=production
+Environment=PORT=6000
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v24.13.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/ubuntu/.nvm/versions/node/v24.13.1/bin/node /home/ubuntu/tools/claude-relay-service/app/src/app.js
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+LimitNOFILE=65535
+StandardOutput=append:/home/ubuntu/tools/claude-relay-service/app/logs/service.log
+StandardError=append:/home/ubuntu/tools/claude-relay-service/app/logs/service-error.log
+
+[Install]
+WantedBy=multi-user.target
