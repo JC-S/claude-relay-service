@@ -83,7 +83,7 @@ const props = defineProps({
   type: {
     type: String,
     required: true,
-    validator: (value) => ['daily', 'opus', 'window', 'total'].includes(value)
+    validator: (value) => ['daily', 'opus', 'fable', 'window', 'total'].includes(value)
   },
   variant: {
     type: String,
@@ -134,6 +134,8 @@ const containerClass = computed(() => {
       return 'border-emerald-200/80 bg-white/80 shadow-[0_10px_24px_rgba(16,185,129,0.18)] group-hover:shadow-[0_14px_30px_rgba(16,185,129,0.22)] dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:shadow-[0_12px_28px_rgba(0,0,0,0.45)]'
     case 'opus':
       return 'border-violet-200/80 bg-white/80 shadow-[0_10px_24px_rgba(139,92,246,0.18)] group-hover:shadow-[0_14px_30px_rgba(139,92,246,0.22)] dark:border-violet-500/40 dark:bg-violet-950/40 dark:shadow-[0_12px_28px_rgba(0,0,0,0.45)]'
+    case 'fable':
+      return 'border-orange-200/80 bg-white/80 shadow-[0_10px_24px_rgba(249,115,22,0.18)] group-hover:shadow-[0_14px_30px_rgba(249,115,22,0.22)] dark:border-orange-500/40 dark:bg-orange-950/40 dark:shadow-[0_12px_28px_rgba(0,0,0,0.45)]'
     case 'window':
       return 'border-sky-200/80 bg-white/80 shadow-[0_10px_24px_rgba(56,189,248,0.18)] group-hover:shadow-[0_14px_30px_rgba(56,189,248,0.22)] dark:border-sky-500/40 dark:bg-sky-950/40 dark:shadow-[0_12px_28px_rgba(0,0,0,0.45)]'
     case 'total':
@@ -150,6 +152,8 @@ const backgroundClass = computed(() => {
       return 'bg-gradient-to-r from-emerald-50 via-green-50 to-emerald-100 dark:from-emerald-900/40 dark:via-emerald-900/20 dark:to-emerald-800/30'
     case 'opus':
       return 'bg-gradient-to-r from-violet-50 via-violet-100 to-fuchsia-100 dark:from-violet-900/40 dark:via-violet-900/20 dark:to-fuchsia-900/30'
+    case 'fable':
+      return 'bg-gradient-to-r from-orange-50 via-amber-50 to-yellow-100 dark:from-orange-900/40 dark:via-orange-900/20 dark:to-amber-900/30'
     case 'window':
       return 'bg-gradient-to-r from-sky-50 via-sky-100 to-cyan-100 dark:from-sky-900/40 dark:via-sky-900/20 dark:to-cyan-900/30'
     case 'total':
@@ -180,6 +184,16 @@ const progressBarClass = computed(() => {
       return 'bg-gradient-to-r from-amber-400 via-orange-400 to-amber-500 dark:from-amber-400 dark:via-orange-400 dark:to-amber-500'
     } else {
       return 'bg-gradient-to-r from-violet-400 via-purple-500 to-fuchsia-500 dark:from-violet-400 dark:via-purple-500 dark:to-fuchsia-500'
+    }
+  }
+
+  if (props.type === 'fable') {
+    if (p >= 90) {
+      return 'bg-gradient-to-r from-rose-500 via-red-500 to-rose-600 dark:from-rose-500 dark:via-red-500 dark:to-rose-600'
+    } else if (p >= 70) {
+      return 'bg-gradient-to-r from-amber-400 via-orange-400 to-amber-500 dark:from-amber-400 dark:via-orange-400 dark:to-amber-500'
+    } else {
+      return 'bg-gradient-to-r from-orange-400 via-amber-500 to-yellow-500 dark:from-orange-400 dark:via-amber-500 dark:to-yellow-500'
     }
   }
 
@@ -221,6 +235,8 @@ const compactBarClass = computed(() => {
       return 'bg-emerald-500 dark:bg-emerald-400'
     case 'opus':
       return 'bg-violet-500 dark:bg-violet-400'
+    case 'fable':
+      return 'bg-orange-500 dark:bg-orange-400'
     case 'window':
       return 'bg-sky-500 dark:bg-sky-400'
     case 'total':
@@ -245,6 +261,8 @@ const compactLabelClass = computed(() => {
       return 'text-emerald-600 dark:text-emerald-300'
     case 'opus':
       return 'text-violet-600 dark:text-violet-300'
+    case 'fable':
+      return 'text-orange-600 dark:text-orange-300'
     case 'window':
       return 'text-sky-600 dark:text-sky-300'
     case 'total':
@@ -272,6 +290,9 @@ const iconClass = computed(() => {
       case 'opus':
         colorClass = 'text-purple-700 dark:text-purple-400'
         break
+      case 'fable':
+        colorClass = 'text-orange-700 dark:text-orange-400'
+        break
       case 'window':
         colorClass = 'text-blue-700 dark:text-blue-400'
         break
@@ -287,6 +308,9 @@ const iconClass = computed(() => {
       break
     case 'opus':
       iconName = 'fas fa-gem'
+      break
+    case 'fable':
+      iconName = 'fas fa-fire'
       break
     case 'window':
       iconName = 'fas fa-clock'
@@ -316,6 +340,8 @@ const labelTextClass = computed(() => {
         return 'text-gray-900 dark:text-gray-100'
       case 'opus':
         return 'text-purple-900 dark:text-purple-100'
+      case 'fable':
+        return 'text-orange-900 dark:text-orange-100'
       case 'window':
         return 'text-blue-900 dark:text-blue-100'
       case 'total':
@@ -346,6 +372,8 @@ const currentValueClass = computed(() => {
           return 'text-green-800 dark:text-green-200'
         case 'opus':
           return 'text-purple-800 dark:text-purple-200'
+        case 'fable':
+          return 'text-orange-800 dark:text-orange-200'
         case 'window':
           return 'text-blue-800 dark:text-blue-200'
         case 'total':

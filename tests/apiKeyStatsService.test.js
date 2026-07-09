@@ -7,7 +7,9 @@ jest.mock('../src/models/redis', () => ({
   getV2ParentLedgerCostStats: jest.fn(),
   getDailyCost: jest.fn(),
   getWeeklyOpusCost: jest.fn(),
-  getV2ParentWeeklyOpusCost: jest.fn()
+  getWeeklyFableCost: jest.fn(),
+  getV2ParentWeeklyOpusCost: jest.fn(),
+  getV2ParentWeeklyFableCost: jest.fn()
 }))
 
 jest.mock('../src/utils/costCalculator', () => ({
@@ -69,8 +71,11 @@ describe('apiKeyStatsService', () => {
       isV2Parent: 'false',
       dailyCostLimit: '0',
       weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '0',
       rateLimitWindow: '0'
     })
+    redis.getWeeklyFableCost.mockResolvedValue(0)
+    redis.getV2ParentWeeklyFableCost.mockResolvedValue(0)
   })
 
   function addDaily(date, { requests, inputTokens, outputTokens, ratedCostMicro }) {
@@ -149,6 +154,63 @@ describe('apiKeyStatsService', () => {
     )
     expect(custom.requests).toBe(3)
     expect(custom.cost).toBe(3)
+  })
+
+  test('returns weeklyFableCost when Fable weekly limit is enabled', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      isV2Parent: 'false',
+      dailyCostLimit: '0',
+      weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '100',
+      weeklyResetDay: '3',
+      weeklyResetHour: '10',
+      rateLimitWindow: '0'
+    })
+    redis.getWeeklyFableCost.mockResolvedValue(12.34)
+
+    const stats = await calculateKeyStats('key-1', 'today')
+
+    expect(redis.getWeeklyFableCost).toHaveBeenCalledWith('key-1', 3, 10)
+    expect(stats.weeklyFableCost).toBe(12.34)
+  })
+
+  test('v2 child stats use parent Fable weekly limit config and child counter', async () => {
+    redis.getApiKey.mockImplementation(async (id) => {
+      if (id === 'child-1') {
+        return {
+          id: 'child-1',
+          parentKeyId: 'parent-1',
+          isV2Parent: 'false',
+          dailyCostLimit: '0',
+          weeklyOpusCostLimit: '0',
+          weeklyFableCostLimit: '0',
+          weeklyResetDay: '1',
+          weeklyResetHour: '0',
+          rateLimitWindow: '0'
+        }
+      }
+      if (id === 'parent-1') {
+        return {
+          id: 'parent-1',
+          isV2Parent: 'true',
+          isActive: 'true',
+          isDeleted: 'false',
+          weeklyOpusCostLimit: '0',
+          weeklyFableCostLimit: '200',
+          weeklyResetDay: '5',
+          weeklyResetHour: '6'
+        }
+      }
+      return null
+    })
+    redis.getWeeklyFableCost.mockResolvedValue(56.78)
+
+    const stats = await calculateKeyStats('child-1', 'today')
+
+    expect(redis.getWeeklyFableCost).toHaveBeenCalledWith('child-1', 5, 6)
+    expect(redis.getV2ParentWeeklyFableCost).not.toHaveBeenCalled()
+    expect(stats.weeklyFableCost).toBe(56.78)
   })
 
   test('validates supported time ranges and custom ranges', () => {

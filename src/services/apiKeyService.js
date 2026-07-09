@@ -7,7 +7,7 @@ const logger = require('../utils/logger')
 const serviceRatesService = require('./serviceRatesService')
 const requestDetailService = require('./requestDetailService')
 const { calculateKeyStats } = require('./apiKeyStatsService')
-const { isClaudeFamilyModel } = require('../utils/modelHelper')
+const { isClaudeFamilyModel, isClaudeFableModel } = require('../utils/modelHelper')
 const { finalizeRequestDetailMeta } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('./requestBodyRuleService')
 const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
@@ -210,6 +210,7 @@ const V2_INHERIT_CONFIG_FIELDS = [
   'rateLimitRequests',
   'rateLimitCost',
   'weeklyOpusCostLimit',
+  'weeklyFableCostLimit',
   'weeklyResetDay',
   'weeklyResetHour',
   'serviceRates',
@@ -242,7 +243,11 @@ const V2_ADMIN_INTEGER_INHERIT_FIELDS = new Set([
   'weeklyResetHour'
 ])
 
-const V2_ADMIN_FLOAT_INHERIT_FIELDS = new Set(['rateLimitCost', 'weeklyOpusCostLimit'])
+const V2_ADMIN_FLOAT_INHERIT_FIELDS = new Set([
+  'rateLimitCost',
+  'weeklyOpusCostLimit',
+  'weeklyFableCostLimit'
+])
 
 const V2_ADMIN_ARRAY_INHERIT_FIELDS = new Set(['restrictedModels', 'allowedClients'])
 
@@ -380,6 +385,7 @@ class ApiKeyService {
       dailyCostLimit = 0,
       totalCostLimit = 0,
       weeklyOpusCostLimit = 0,
+      weeklyFableCostLimit = 0,
       tags = [],
       activationDays = 0, // 新增：激活后有效天数（0表示不使用此功能）
       activationUnit = 'days', // 新增：激活时间单位 'hours' 或 'days'
@@ -441,6 +447,7 @@ class ApiKeyService {
       dailyCostLimit: String(dailyCostLimit || 0),
       totalCostLimit: String(totalCostLimit || 0),
       weeklyOpusCostLimit: String(weeklyOpusCostLimit || 0),
+      weeklyFableCostLimit: String(weeklyFableCostLimit || 0),
       tags: JSON.stringify(tags || []),
       activationDays: String(activationDays || 0), // 新增：激活后有效天数
       activationUnit: activationUnit || 'days', // 新增：激活时间单位
@@ -537,6 +544,7 @@ class ApiKeyService {
       dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
       totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
       weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
+      weeklyFableCostLimit: parseFloat(keyData.weeklyFableCostLimit || 0),
       tags: JSON.parse(keyData.tags || '[]'),
       activationDays: parseInt(keyData.activationDays || 0),
       activationUnit: keyData.activationUnit || 'days',
@@ -705,6 +713,7 @@ class ApiKeyService {
       const dailyCostLimit = parseFloat(keyData.dailyCostLimit || 0)
       const totalCostLimit = parseFloat(keyData.totalCostLimit || 0)
       const weeklyOpusCostLimit = parseFloat(keyData.weeklyOpusCostLimit || 0)
+      const weeklyFableCostLimit = parseFloat(keyData.weeklyFableCostLimit || 0)
 
       const costQueries = []
       if (dailyCostLimit > 0) {
@@ -720,6 +729,16 @@ class ApiKeyService {
           redis
             .getWeeklyOpusCost(keyData.id, resetDay, resetHour)
             .then((v) => ({ weeklyOpusCost: v || 0 }))
+        )
+      }
+      if (weeklyFableCostLimit > 0) {
+        const resetDay = parseInt(keyData.weeklyResetDay || 1)
+        const resetHour = parseInt(keyData.weeklyResetHour || 0)
+        costQueries.push(
+          (keyData.parentKeyId
+            ? redis.getV2ParentWeeklyFableCost(keyData.parentKeyId, resetDay, resetHour)
+            : redis.getWeeklyFableCost(keyData.id, resetDay, resetHour)
+          ).then((v) => ({ weeklyFableCost: v || 0 }))
         )
       }
 
@@ -820,9 +839,11 @@ class ApiKeyService {
           dailyCostLimit,
           totalCostLimit,
           weeklyOpusCostLimit,
+          weeklyFableCostLimit,
           dailyCost: costData.dailyCost || 0,
           totalCost: costData.totalCost || 0,
           weeklyOpusCost: costData.weeklyOpusCost || 0,
+          weeklyFableCost: costData.weeklyFableCost || 0,
           weeklyResetDay: parseInt(keyData.weeklyResetDay || 1),
           weeklyResetHour: parseInt(keyData.weeklyResetHour || 0),
           tags,
@@ -1008,12 +1029,19 @@ class ApiKeyService {
           dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
           totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
           weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
+          weeklyFableCostLimit: parseFloat(keyData.weeklyFableCostLimit || 0),
           weeklyResetDay: parseInt(keyData.weeklyResetDay || 1),
           weeklyResetHour: parseInt(keyData.weeklyResetHour || 0),
           dailyCost: dailyCost || 0,
           totalCost: costStats?.total || 0,
           weeklyOpusCost:
             (await redis.getWeeklyOpusCost(
+              keyData.id,
+              parseInt(keyData.weeklyResetDay || 1),
+              parseInt(keyData.weeklyResetHour || 0)
+            )) || 0,
+          weeklyFableCost:
+            (await redis.getWeeklyFableCost(
               keyData.id,
               parseInt(keyData.weeklyResetDay || 1),
               parseInt(keyData.weeklyResetHour || 0)
@@ -1329,6 +1357,7 @@ class ApiKeyService {
         key.dailyCostLimit = parseFloat(key.dailyCostLimit || 0)
         key.totalCostLimit = parseFloat(key.totalCostLimit || 0)
         key.weeklyOpusCostLimit = parseFloat(key.weeklyOpusCostLimit || 0)
+        key.weeklyFableCostLimit = parseFloat(key.weeklyFableCostLimit || 0)
         key.dailyCost = isV2ParentKey
           ? v2Ledger.daily || 0
           : (await redis.getDailyCost(key.id)) || 0
@@ -1339,6 +1368,17 @@ class ApiKeyService {
               parseInt(key.weeklyResetHour || 0)
             )) || 0
           : (await redis.getWeeklyOpusCost(
+              key.id,
+              parseInt(key.weeklyResetDay || 1),
+              parseInt(key.weeklyResetHour || 0)
+            )) || 0
+        key.weeklyFableCost = isV2ParentKey
+          ? (await redis.getV2ParentWeeklyFableCost(
+              key.id,
+              parseInt(key.weeklyResetDay || 1),
+              parseInt(key.weeklyResetHour || 0)
+            )) || 0
+          : (await redis.getWeeklyFableCost(
               key.id,
               parseInt(key.weeklyResetDay || 1),
               parseInt(key.weeklyResetHour || 0)
@@ -1579,6 +1619,7 @@ class ApiKeyService {
         key.totalCost = stats.costStats?.total || 0
         key.dailyCost = stats.dailyCost || 0
         key.weeklyOpusCost = stats.weeklyOpusCost || 0
+        key.weeklyFableCost = 0
 
         // 并发
         key.currentConcurrency = stats.concurrency || 0
@@ -1592,6 +1633,15 @@ class ApiKeyService {
         key.dailyCostLimit = parseFloat(key.dailyCostLimit) || 0
         key.totalCostLimit = parseFloat(key.totalCostLimit) || 0
         key.weeklyOpusCostLimit = parseFloat(key.weeklyOpusCostLimit) || 0
+        key.weeklyFableCostLimit = parseFloat(key.weeklyFableCostLimit) || 0
+        if (key.weeklyFableCostLimit > 0) {
+          key.weeklyFableCost =
+            (await redis.getWeeklyFableCost(
+              key.id,
+              parseInt(key.weeklyResetDay || 1),
+              parseInt(key.weeklyResetHour || 0)
+            )) || 0
+        }
         key.activationDays = parseInt(key.activationDays) || 0
         key.isActive = key.isActive === 'true' || key.isActive === true
         key.enableModelRestriction =
@@ -1729,10 +1779,11 @@ class ApiKeyService {
         v2Parents.map(async (key) => {
           const resetDay = parseInt(key.weeklyResetDay || 1)
           const resetHour = parseInt(key.weeklyResetHour || 0)
-          const [usage, ledger, weeklyOpusCost] = await Promise.all([
+          const [usage, ledger, weeklyOpusCost, weeklyFableCost] = await Promise.all([
             redis.getV2ParentUsageStats(key.id),
             redis.getV2ParentLedgerCostStats(key.id, { timeRange: 'all' }),
-            redis.getV2ParentWeeklyOpusCost(key.id, resetDay, resetHour)
+            redis.getV2ParentWeeklyOpusCost(key.id, resetDay, resetHour),
+            redis.getV2ParentWeeklyFableCost(key.id, resetDay, resetHour)
           ])
           key.usage = usage
           key.usage.total = key.usage.total || {}
@@ -1741,6 +1792,7 @@ class ApiKeyService {
           key.totalCost = ledger.total
           key.dailyCost = ledger.daily || 0
           key.weeklyOpusCost = weeklyOpusCost || 0
+          key.weeklyFableCost = weeklyFableCost || 0
         })
       )
 
@@ -1841,6 +1893,7 @@ class ApiKeyService {
         'dailyCostLimit',
         'totalCostLimit',
         'weeklyOpusCostLimit',
+        'weeklyFableCostLimit',
         'tags',
         'userId', // 新增：用户ID（所有者变更）
         'userUsername', // 新增：用户名（所有者变更）
@@ -2423,6 +2476,9 @@ class ApiKeyService {
 
       // 记录 Opus 周费用（倍率成本和真实成本）
       await redis.incrementWeeklyOpusCost(keyId, ratedCost, realCost, resetDay, resetHour)
+      if (isClaudeFableModel(model)) {
+        await redis.incrementWeeklyFableCost(keyId, ratedCost, realCost, resetDay, resetHour)
+      }
       logger.database(
         `💰 Recorded Opus weekly cost for ${keyId}: rated=$${ratedCost.toFixed(6)}, real=$${realCost.toFixed(6)}, model: ${model}`
       )
@@ -3039,6 +3095,10 @@ class ApiKeyService {
         permissions: normalizePermissions(keyData.permissions),
         dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
         totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
+        weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
+        weeklyFableCostLimit: parseFloat(keyData.weeklyFableCostLimit || 0),
+        weeklyResetDay: parseInt(keyData.weeklyResetDay || 1),
+        weeklyResetHour: parseInt(keyData.weeklyResetHour || 0),
         // 所有平台账户绑定字段
         claudeAccountId: keyData.claudeAccountId,
         claudeConsoleAccountId: keyData.claudeConsoleAccountId,

@@ -696,6 +696,14 @@
                               type="opus"
                               variant="compact"
                             />
+                            <LimitProgressBar
+                              v-if="key.weeklyFableCostLimit > 0"
+                              :current="getCachedStats(key.id)?.weeklyFableCost || 0"
+                              label="Fable 周限制"
+                              :limit="key.weeklyFableCostLimit"
+                              type="fable"
+                              variant="compact"
+                            />
 
                             <!-- v2 父账号总费用限制 -->
                             <LimitProgressBar
@@ -776,6 +784,7 @@
                               v-if="
                                 !isV2ParentKey(key) &&
                                 !(key.weeklyOpusCostLimit > 0) &&
+                                !(key.weeklyFableCostLimit > 0) &&
                                 !(key.dailyCostLimit > 0) &&
                                 !(key.totalCostLimit > 0) &&
                                 !(key.rateLimitWindow > 0 && key.rateLimitCost > 0)
@@ -1615,6 +1624,14 @@
                         type="opus"
                         variant="compact"
                       />
+                      <LimitProgressBar
+                        v-if="key.weeklyFableCostLimit > 0"
+                        :current="getCachedStats(key.id)?.weeklyFableCost || 0"
+                        label="Fable 周限制"
+                        :limit="key.weeklyFableCostLimit"
+                        type="fable"
+                        variant="compact"
+                      />
 
                       <!-- v2 父账号总费用限制 -->
                       <LimitProgressBar
@@ -1695,6 +1712,7 @@
                         v-if="
                           !isV2ParentKey(key) &&
                           !(key.weeklyOpusCostLimit > 0) &&
+                          !(key.weeklyFableCostLimit > 0) &&
                           !(key.dailyCostLimit > 0) &&
                           !(key.totalCostLimit > 0) &&
                           !(key.rateLimitWindow > 0 && key.rateLimitCost > 0)
@@ -3011,15 +3029,22 @@ const toPositiveNumber = (value) => {
 
 const hasStatsDependentLimitDisplay = (key) => {
   const hasWeeklyLimit = toPositiveNumber(key?.weeklyOpusCostLimit) > 0
+  const hasFableWeeklyLimit = toPositiveNumber(key?.weeklyFableCostLimit) > 0
   const hasWindowLimit =
     toPositiveNumber(key?.rateLimitWindow) > 0 && toPositiveNumber(key?.rateLimitCost) > 0
 
   if (isV2ParentKey(key)) {
-    return hasWeeklyLimit || hasWindowLimit || toPositiveNumber(key?.v2TotalBudget) > 0
+    return (
+      hasWeeklyLimit ||
+      hasFableWeeklyLimit ||
+      hasWindowLimit ||
+      toPositiveNumber(key?.v2TotalBudget) > 0
+    )
   }
 
   return (
     hasWeeklyLimit ||
+    hasFableWeeklyLimit ||
     toPositiveNumber(key?.dailyCostLimit) > 0 ||
     toPositiveNumber(key?.totalCostLimit) > 0 ||
     hasWindowLimit
@@ -4684,6 +4709,7 @@ const showUsageDetails = (apiKey) => {
     ...apiKey,
     dailyCost: cachedStats?.dailyCost ?? apiKey.dailyCost ?? 0,
     weeklyOpusCost: cachedStats?.weeklyOpusCost ?? apiKey.weeklyOpusCost ?? 0,
+    weeklyFableCost: cachedStats?.weeklyFableCost ?? apiKey.weeklyFableCost ?? 0,
     currentWindowCost: cachedStats?.currentWindowCost ?? apiKey.currentWindowCost ?? 0,
     currentWindowRequests: cachedStats?.currentWindowRequests ?? apiKey.currentWindowRequests ?? 0,
     currentWindowTokens: cachedStats?.currentWindowTokens ?? apiKey.currentWindowTokens ?? 0,

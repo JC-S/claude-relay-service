@@ -46,6 +46,9 @@ jest.mock('../src/models/redis', () => ({
   batchGetApiKeyStats: jest.fn(),
   findApiKeyByHash: jest.fn(), // validateApiKey 端到端用
   getV2ParentTotalCost: jest.fn(), // validateApiKey 子 key 总账信息用
+  getV2ParentWeeklyOpusCost: jest.fn(),
+  getV2ParentWeeklyFableCost: jest.fn(),
+  getWeeklyFableCost: jest.fn(),
   setV2ParentTotalCost: jest.fn(),
   deleteV2ParentTotalCost: jest.fn(),
   getCostStats: jest.fn(),
@@ -91,7 +94,8 @@ jest.mock('../src/utils/costCalculator', () => ({
   calculateCost: jest.fn()
 }))
 jest.mock('../src/utils/modelHelper', () => ({
-  isClaudeFamilyModel: jest.fn(() => false)
+  isClaudeFamilyModel: jest.fn(() => false),
+  isClaudeFableModel: jest.fn(() => false)
 }))
 jest.mock('../src/utils/requestDetailHelper', () => ({
   finalizeRequestDetailMeta: jest.fn((value) => value)
@@ -124,6 +128,9 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     redis.setV2ParentTotalCost.mockResolvedValue()
     redis.deleteV2ParentTotalCost.mockResolvedValue()
     redis.getCostStats.mockResolvedValue({ total: 0 })
+    redis.getV2ParentWeeklyOpusCost.mockResolvedValue(0)
+    redis.getV2ParentWeeklyFableCost.mockResolvedValue(0)
+    redis.getWeeklyFableCost.mockResolvedValue(0)
     redis.client.hset.mockResolvedValue()
   })
 
@@ -1077,6 +1084,26 @@ describe('apiKeyService v2 IP whitelist', () => {
       expect(result.keyData.claudeAccountId).toBe('acct-parent')
       expect(result.keyData.permissions).toEqual(['claude'])
       expect(result.keyData.ipWhitelist).toEqual(['9.9.9.9'])
+    })
+
+    test('uses v2 parent aggregate Fable weekly cost for inherited Fable limit', async () => {
+      redis.getV2ParentWeeklyFableCost.mockResolvedValue(88.5)
+      mockChildAndParent(
+        {},
+        {
+          weeklyFableCostLimit: '100',
+          weeklyResetDay: '4',
+          weeklyResetHour: '9'
+        }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(redis.getV2ParentWeeklyFableCost).toHaveBeenCalledWith(PARENT_ID, 4, 9)
+      expect(redis.getWeeklyFableCost).not.toHaveBeenCalled()
+      expect(result.keyData.weeklyFableCostLimit).toBe(100)
+      expect(result.keyData.weeklyFableCost).toBe(88.5)
     })
   })
 

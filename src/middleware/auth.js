@@ -9,7 +9,7 @@ const ClientValidator = require('../validators/clientValidator')
 const ClaudeCodeValidator = require('../validators/clients/claudeCodeValidator')
 const claudeRelayConfigService = require('../services/claudeRelayConfigService')
 const { calculateWaitTimeStats } = require('../utils/statsHelper')
-const { isClaudeFamilyModel } = require('../utils/modelHelper')
+const { isClaudeFamilyModel, isClaudeFableModel } = require('../utils/modelHelper')
 const { getRequestIp, isIpAllowed } = require('../utils/ipWhitelistHelper')
 const {
   CACHE_KEY: CLAUDE_CODE_UA_CACHE_KEY,
@@ -1343,12 +1343,10 @@ const authenticateApiKey = async (req, res, next) => {
     }
 
     // 检查 Claude 周费用限制
+    const requestBody = req.body || {}
+    const model = requestBody.model || ''
     const weeklyOpusCostLimit = validation.keyData.weeklyOpusCostLimit || 0
     if (weeklyOpusCostLimit > 0) {
-      // 从请求中获取模型信息
-      const requestBody = req.body || {}
-      const model = requestBody.model || ''
-
       // 判断是否为 Claude 模型
       if (isClaudeFamilyModel(model)) {
         const weeklyOpusCost = validation.keyData.weeklyOpusCost || 0
@@ -1385,6 +1383,41 @@ const authenticateApiKey = async (req, res, next) => {
           }), current: $${weeklyOpusCost.toFixed(2)}/$${weeklyOpusCostLimit}`
         )
       }
+    }
+
+    // 检查 Claude Fable 周费用限制
+    const weeklyFableCostLimit = validation.keyData.weeklyFableCostLimit || 0
+    if (weeklyFableCostLimit > 0 && isClaudeFableModel(model)) {
+      const weeklyFableCost = validation.keyData.weeklyFableCost || 0
+
+      if (weeklyFableCost >= weeklyFableCostLimit) {
+        logger.security(
+          `💰 Weekly Claude Fable cost limit exceeded for key: ${validation.keyData.id} (${
+            validation.keyData.name
+          }), cost: $${weeklyFableCost.toFixed(2)}/$${weeklyFableCostLimit}`
+        )
+
+        const resetDay = validation.keyData.weeklyResetDay || 1
+        const resetHour = validation.keyData.weeklyResetHour || 0
+        const resetDate = redis.getNextResetTime(resetDay, resetHour)
+
+        return res.status(402).json({
+          error: {
+            type: 'insufficient_quota',
+            message: `已达到 Claude Fable 模型周费用限制 ($${weeklyFableCostLimit})`,
+            code: 'weekly_fable_cost_limit_exceeded'
+          },
+          currentCost: weeklyFableCost,
+          costLimit: weeklyFableCostLimit,
+          resetAt: resetDate.toISOString()
+        })
+      }
+
+      logger.api(
+        `💰 Claude Fable weekly cost usage for key: ${validation.keyData.id} (${
+          validation.keyData.name
+        }), current: $${weeklyFableCost.toFixed(2)}/$${weeklyFableCostLimit}`
+      )
     }
 
     // 将验证信息添加到请求对象（只包含必要信息）

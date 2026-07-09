@@ -504,8 +504,57 @@
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 设置 Claude 模型的周费用限制，仅对 Claude 模型请求生效，0 或留空表示无限制
               </p>
+              <div class="space-y-3 pt-2">
+                <label class="block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  >Claude Fable 周费用限制 (美元)</label
+                >
+                <div class="flex gap-2">
+                  <button
+                    class="rounded-lg bg-gray-100 px-3 py-1 text-sm font-medium hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                    type="button"
+                    @click="form.weeklyFableCostLimit = '100'"
+                  >
+                    $100
+                  </button>
+                  <button
+                    class="rounded-lg bg-gray-100 px-3 py-1 text-sm font-medium hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                    type="button"
+                    @click="form.weeklyFableCostLimit = '500'"
+                  >
+                    $500
+                  </button>
+                  <button
+                    class="rounded-lg bg-gray-100 px-3 py-1 text-sm font-medium hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                    type="button"
+                    @click="form.weeklyFableCostLimit = '1000'"
+                  >
+                    $1000
+                  </button>
+                  <button
+                    class="rounded-lg bg-gray-100 px-3 py-1 text-sm font-medium hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                    type="button"
+                    @click="form.weeklyFableCostLimit = ''"
+                  >
+                    自定义
+                  </button>
+                </div>
+                <input
+                  v-model="form.weeklyFableCostLimit"
+                  class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
+                  min="0"
+                  placeholder="0 表示无限制"
+                  step="0.01"
+                  type="number"
+                />
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  仅对 claude-fable-5 / claude-fable-5[1m] 生效，0 或留空表示无限制
+                </p>
+              </div>
               <div
-                v-if="form.weeklyOpusCostLimit && Number(form.weeklyOpusCostLimit) > 0"
+                v-if="
+                  (form.weeklyOpusCostLimit && Number(form.weeklyOpusCostLimit) > 0) ||
+                  (form.weeklyFableCostLimit && Number(form.weeklyFableCostLimit) > 0)
+                "
                 class="mt-3 flex gap-3"
               >
                 <div class="flex-1">
@@ -1442,6 +1491,7 @@ const form = reactive({
   dailyCostLimit: '',
   totalCostLimit: '',
   weeklyOpusCostLimit: '',
+  weeklyFableCostLimit: '',
   weeklyResetDay: 1,
   weeklyResetHour: 0,
   permissions: [], // 数组格式，空数组表示全部服务
@@ -1649,6 +1699,10 @@ const updateApiKey = async () => {
       weeklyOpusCostLimit:
         form.weeklyOpusCostLimit !== '' && form.weeklyOpusCostLimit !== null
           ? parseFloat(form.weeklyOpusCostLimit)
+          : 0,
+      weeklyFableCostLimit:
+        form.weeklyFableCostLimit !== '' && form.weeklyFableCostLimit !== null
+          ? parseFloat(form.weeklyFableCostLimit)
           : 0,
       weeklyResetDay: form.weeklyResetDay,
       weeklyResetHour: form.weeklyResetHour,
@@ -2002,6 +2056,7 @@ onMounted(async () => {
   form.dailyCostLimit = props.apiKey.dailyCostLimit || ''
   form.totalCostLimit = props.apiKey.totalCostLimit || ''
   form.weeklyOpusCostLimit = props.apiKey.weeklyOpusCostLimit || ''
+  form.weeklyFableCostLimit = props.apiKey.weeklyFableCostLimit || ''
   form.weeklyResetDay = props.apiKey.weeklyResetDay || 1
   form.weeklyResetHour = props.apiKey.weeklyResetHour || 0
   // 处理权限数据，兼容旧格式（字符串）和新格式（数组）

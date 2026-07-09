@@ -1102,6 +1102,7 @@ router.post('/api-keys/batch-stats', authenticateAdmin, async (req, res) => {
             formattedCost: '$0.00',
             dailyCost: 0,
             weeklyOpusCost: 0,
+            weeklyFableCost: 0,
             currentWindowCost: 0,
             currentWindowRequests: 0,
             currentWindowTokens: 0,
@@ -1261,6 +1262,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       dailyCostLimit,
       totalCostLimit,
       weeklyOpusCostLimit,
+      weeklyFableCostLimit,
       tags,
       activationDays, // 新增：激活后有效天数
       activationUnit, // 新增：激活时间单位 (hours/days)
@@ -1377,6 +1379,15 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       (Number.isNaN(Number(totalCostLimit)) || Number(totalCostLimit) < 0)
     ) {
       return res.status(400).json({ error: 'Total cost limit must be a non-negative number' })
+    }
+
+    if (
+      weeklyFableCostLimit !== undefined &&
+      weeklyFableCostLimit !== null &&
+      weeklyFableCostLimit !== '' &&
+      (Number.isNaN(Number(weeklyFableCostLimit)) || Number(weeklyFableCostLimit) < 0)
+    ) {
+      return res.status(400).json({ error: 'Weekly Fable cost limit must be a non-negative number' })
     }
 
     // 验证激活相关字段
@@ -1516,6 +1527,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       dailyCostLimit,
       totalCostLimit,
       weeklyOpusCostLimit,
+      weeklyFableCostLimit,
       tags,
       activationDays,
       activationUnit,
@@ -1735,6 +1747,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       dailyCostLimit,
       totalCostLimit,
       weeklyOpusCostLimit,
+      weeklyFableCostLimit,
       tags,
       activationDays,
       activationUnit,
@@ -1788,6 +1801,15 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
 
     if (enableIpWhitelist === true && batchIpWhitelistValidation.entries.length === 0) {
       return res.status(400).json({ error: 'IP whitelist cannot be empty when enabled' })
+    }
+
+    if (
+      weeklyFableCostLimit !== undefined &&
+      weeklyFableCostLimit !== null &&
+      weeklyFableCostLimit !== '' &&
+      (Number.isNaN(Number(weeklyFableCostLimit)) || Number(weeklyFableCostLimit) < 0)
+    ) {
+      return res.status(400).json({ error: 'Weekly Fable cost limit must be a non-negative number' })
     }
 
     if (
@@ -1845,6 +1867,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           dailyCostLimit,
           totalCostLimit,
           weeklyOpusCostLimit,
+          weeklyFableCostLimit,
           tags,
           activationDays,
           activationUnit,
@@ -2027,6 +2050,13 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         if (updates.weeklyOpusCostLimit !== undefined) {
           finalUpdates.weeklyOpusCostLimit = updates.weeklyOpusCostLimit
         }
+        if (updates.weeklyFableCostLimit !== undefined) {
+          const fableCostLimit = Number(updates.weeklyFableCostLimit)
+          if (Number.isNaN(fableCostLimit) || fableCostLimit < 0) {
+            throw new Error('Weekly Fable cost limit must be a non-negative number')
+          }
+          finalUpdates.weeklyFableCostLimit = fableCostLimit
+        }
         if (updates.permissions !== undefined) {
           finalUpdates.permissions = updates.permissions
         }
@@ -2207,6 +2237,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       dailyCostLimit,
       totalCostLimit,
       weeklyOpusCostLimit,
+      weeklyFableCostLimit,
       tags,
       ownerId, // 新增：所有者ID字段
       serviceRates, // API Key 级别服务倍率
@@ -2412,6 +2443,20 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
           .json({ error: 'Weekly Opus cost limit must be a non-negative number' })
       }
       updates.weeklyOpusCostLimit = costLimit
+    }
+
+    if (
+      weeklyFableCostLimit !== undefined &&
+      weeklyFableCostLimit !== null &&
+      weeklyFableCostLimit !== ''
+    ) {
+      const costLimit = Number(weeklyFableCostLimit)
+      if (isNaN(costLimit) || costLimit < 0) {
+        return res
+          .status(400)
+          .json({ error: 'Weekly Fable cost limit must be a non-negative number' })
+      }
+      updates.weeklyFableCostLimit = costLimit
     }
 
     // 处理标签

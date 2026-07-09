@@ -28,6 +28,7 @@ jest.mock('../src/models/redis', () => ({
   incrementAccountUsage: jest.fn(),
   incrementV2ParentTotalCost: jest.fn(),
   incrementWeeklyOpusCost: jest.fn(),
+  incrementWeeklyFableCost: jest.fn(),
   addUsageRecord: jest.fn()
 }))
 
@@ -65,7 +66,8 @@ jest.mock('../src/utils/costCalculator', () => ({
 }))
 // isClaudeFamilyModel → false 让 recordOpusCost 直接 return，隔离无关分支
 jest.mock('../src/utils/modelHelper', () => ({
-  isClaudeFamilyModel: jest.fn(() => false)
+  isClaudeFamilyModel: jest.fn(() => false),
+  isClaudeFableModel: jest.fn(() => false)
 }))
 jest.mock('../src/utils/requestDetailHelper', () => ({
   finalizeRequestDetailMeta: jest.fn((value) => value)
@@ -76,6 +78,7 @@ const serviceRatesService = require('../src/services/serviceRatesService')
 const requestDetailService = require('../src/services/requestDetailService')
 const billingEventPublisher = require('../src/services/billingEventPublisher')
 const CostCalculator = require('../src/utils/costCalculator')
+const modelHelper = require('../src/utils/modelHelper')
 const apiKeyService = require('../src/services/apiKeyService')
 
 const CHILD_ID = 'child-key-1'
@@ -113,11 +116,28 @@ describe('apiKeyService v2 billing', () => {
     redis.incrementAccountUsage.mockResolvedValue()
     redis.incrementV2ParentTotalCost.mockResolvedValue()
     redis.incrementWeeklyOpusCost.mockResolvedValue()
+    redis.incrementWeeklyFableCost.mockResolvedValue()
     redis.addUsageRecord.mockResolvedValue()
     serviceRatesService.getService.mockReturnValue(SERVICE)
     serviceRatesService.getServiceRate.mockResolvedValue(2)
     requestDetailService.captureRequestDetail.mockResolvedValue({ captured: true })
     billingEventPublisher.publishBillingEvent.mockResolvedValue()
+  })
+
+  test('recordOpusCost records Fable weekly counter for claude-fable-5', async () => {
+    modelHelper.isClaudeFamilyModel.mockReturnValueOnce(true)
+    modelHelper.isClaudeFableModel.mockReturnValueOnce(true)
+
+    await apiKeyService.recordOpusCost(
+      CHILD_ID,
+      1.25,
+      0.75,
+      'claude-fable-5[1m]',
+      'claude-official'
+    )
+
+    expect(redis.incrementWeeklyOpusCost).toHaveBeenCalledWith(CHILD_ID, 1.25, 0.75, 1, 0)
+    expect(redis.incrementWeeklyFableCost).toHaveBeenCalledWith(CHILD_ID, 1.25, 0.75, 1, 0)
   })
 
   // 1. 子 key 计费使用父账号倍率（而非子自身倍率）

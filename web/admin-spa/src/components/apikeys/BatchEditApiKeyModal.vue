@@ -248,8 +248,27 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               设置 Claude 模型的周费用限制，仅对 Claude 模型请求生效
             </p>
+            <div class="mt-3">
+              <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                Claude Fable 周费用限制 (美元)
+              </label>
+              <input
+                v-model="form.weeklyFableCostLimit"
+                class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                min="0"
+                placeholder="不修改 (0 表示无限制)"
+                step="0.01"
+                type="number"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                仅对 claude-fable-5 / claude-fable-5[1m] 生效
+              </p>
+            </div>
             <div
-              v-if="form.weeklyOpusCostLimit && Number(form.weeklyOpusCostLimit) > 0"
+              v-if="
+                (form.weeklyOpusCostLimit && Number(form.weeklyOpusCostLimit) > 0) ||
+                (form.weeklyFableCostLimit && Number(form.weeklyFableCostLimit) > 0)
+              "
               class="mt-2 flex gap-3"
             >
               <div class="flex-1">
@@ -548,6 +567,7 @@ const form = reactive({
   dailyCostLimit: '',
   totalCostLimit: '',
   weeklyOpusCostLimit: '', // 新增Claude周费用限制
+  weeklyFableCostLimit: '',
   weeklyResetDay: '',
   weeklyResetHour: '',
   permissions: '', // 空字符串表示不修改
@@ -775,6 +795,9 @@ const batchUpdateApiKeys = async () => {
     }
     if (form.weeklyOpusCostLimit !== '' && form.weeklyOpusCostLimit !== null) {
       updates.weeklyOpusCostLimit = parseFloat(form.weeklyOpusCostLimit)
+    }
+    if (form.weeklyFableCostLimit !== '' && form.weeklyFableCostLimit !== null) {
+      updates.weeklyFableCostLimit = parseFloat(form.weeklyFableCostLimit)
     }
     if (form.weeklyResetDay !== '' && form.weeklyResetDay !== null) {
       updates.weeklyResetDay = Number(form.weeklyResetDay)

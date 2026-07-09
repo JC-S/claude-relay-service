@@ -43,6 +43,7 @@ const PERIOD_CUSTOM = redis.getPeriodString(3, 10, FIXED_NOW)
 
 // 周费用：父 2 + child1 10 + child2(软删，仍在集合) 5 = 17
 const WEEKLY_SUM = 2 + 10 + 5
+const FABLE_WEEKLY_SUM = 1 + 4 + 2
 // 用量聚合期望值（见下方 defaultKv）
 const TOTAL_REQUESTS = 2 + 10 + 5 // 17
 const TOTAL_ALLTOKENS = 100 + 1100 + 500 // 1700
@@ -61,6 +62,9 @@ function defaultKv() {
     [`usage:opus:weekly:parent1:${PERIOD}`]: 2,
     [`usage:opus:weekly:child1:${PERIOD}`]: 10,
     [`usage:opus:weekly:child2:${PERIOD}`]: 5,
+    [`usage:fable:weekly:parent1:${PERIOD}`]: 1,
+    [`usage:fable:weekly:child1:${PERIOD}`]: 4,
+    [`usage:fable:weekly:child2:${PERIOD}`]: 2,
     // 用量 total（父自身保留升级前少量；子为主力）
     'usage:parent1': {
       totalRequests: '2',
@@ -227,6 +231,46 @@ describe('redis.getV2ParentWeeklyOpusCost', () => {
     redis.client = makeClient({ pipelineThrows: true })
     const cost = await redis.getV2ParentWeeklyOpusCost(PARENT_ID, 1, 0)
     expect(cost).toBeCloseTo(2, 6) // 仅父自身
+    expect(logger.warn).toHaveBeenCalled()
+  })
+})
+
+describe('redis.getV2ParentWeeklyFableCost', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    jest.setSystemTime(FIXED_NOW)
+    redis.client = makeClient()
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+    jest.clearAllMocks()
+    redis.client = null
+  })
+
+  test('聚合父 + 两个子（含软删）的本周期 Fable 周费用之和', async () => {
+    const cost = await redis.getV2ParentWeeklyFableCost(PARENT_ID, 1, 0)
+    expect(cost).toBeCloseTo(FABLE_WEEKLY_SUM, 6)
+    expect(redis.client.smembers).toHaveBeenCalledWith('v2:children:parent1')
+  })
+
+  test('读取 usage:fable:weekly 且 period 串是 YYYY-MM-DDThh', async () => {
+    await redis.getV2ParentWeeklyFableCost(PARENT_ID, 1, 0)
+    const keys = redis.client._pipelineKeys
+    expect(keys).toEqual([
+      `usage:fable:weekly:parent1:${PERIOD}`,
+      `usage:fable:weekly:child1:${PERIOD}`,
+      `usage:fable:weekly:child2:${PERIOD}`
+    ])
+    for (const k of keys) {
+      expect(k).toMatch(/usage:fable:weekly:.+:\d{4}-\d{2}-\d{2}T\d{2}$/)
+      expect(k).not.toMatch(/\d{4}-W\d{2}$/)
+    }
+  })
+
+  test('fail-soft：pipeline 异常时回退父账号自身 Fable 周费用 + logger.warn', async () => {
+    redis.client = makeClient({ pipelineThrows: true })
+    const cost = await redis.getV2ParentWeeklyFableCost(PARENT_ID, 1, 0)
+    expect(cost).toBeCloseTo(1, 6)
     expect(logger.warn).toHaveBeenCalled()
   })
 })

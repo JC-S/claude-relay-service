@@ -17,9 +17,11 @@ jest.mock('../src/models/redis', () => ({
   getCostStats: jest.fn(),
   getUsageStats: jest.fn(),
   getWeeklyOpusCost: jest.fn(),
+  getWeeklyFableCost: jest.fn(),
   incrementTokenUsage: jest.fn(),
   incrementDailyCost: jest.fn(),
   incrementAccountUsage: jest.fn(),
+  incrementWeeklyFableCost: jest.fn(),
   addUsageRecord: jest.fn()
 }))
 
@@ -54,7 +56,8 @@ jest.mock('../src/utils/costCalculator', () => ({
   calculateCost: jest.fn()
 }))
 jest.mock('../src/utils/modelHelper', () => ({
-  isClaudeFamilyModel: jest.fn(() => false)
+  isClaudeFamilyModel: jest.fn(() => false),
+  isClaudeFableModel: jest.fn(() => false)
 }))
 jest.mock('../src/utils/requestDetailHelper', () => ({
   finalizeRequestDetailMeta: jest.fn((value) => value)
@@ -79,6 +82,8 @@ describe('apiKeyService openai responses config', () => {
     redis.incrementTokenUsage.mockResolvedValue()
     redis.incrementDailyCost.mockResolvedValue()
     redis.incrementAccountUsage.mockResolvedValue()
+    redis.incrementWeeklyFableCost.mockResolvedValue()
+    redis.getWeeklyFableCost.mockResolvedValue(0)
     redis.addUsageRecord.mockResolvedValue()
     serviceRatesService.getService.mockReturnValue('claude')
     serviceRatesService.getServiceRate.mockResolvedValue(1)

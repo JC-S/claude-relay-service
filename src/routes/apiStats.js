@@ -403,6 +403,7 @@ router.post('/api/user-stats', async (req, res) => {
         dailyCostLimit: parseFloat(keyData.dailyCostLimit) || 0,
         totalCostLimit: parseFloat(keyData.totalCostLimit) || 0,
         weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit) || 0,
+        weeklyFableCostLimit: parseFloat(keyData.weeklyFableCostLimit) || 0,
         weeklyResetDay: parseInt(keyData.weeklyResetDay) || 1,
         weeklyResetHour: parseInt(keyData.weeklyResetHour) || 0,
         dailyCost: dailyCost || 0,
@@ -466,6 +467,7 @@ router.post('/api/user-stats', async (req, res) => {
     const weeklyResetDay = parseInt(fullKeyData.weeklyResetDay ?? 1) || 1
     const weeklyResetHour = parseInt(fullKeyData.weeklyResetHour ?? 0) || 0
     const weeklyOpusCostLimit = parseFloat(fullKeyData.weeklyOpusCostLimit ?? 0) || 0
+    const weeklyFableCostLimit = parseFloat(fullKeyData.weeklyFableCostLimit ?? 0) || 0
 
     // 🔧 FIX: 使用 allTimeCost 而不是扫描月度键
     // 计算总费用 - 优先使用持久化的总费用计数器
@@ -741,6 +743,7 @@ router.post('/api/user-stats', async (req, res) => {
         dailyCostLimit: fullKeyData.dailyCostLimit || 0,
         totalCostLimit: fullKeyData.totalCostLimit || 0,
         weeklyOpusCostLimit, // Opus 周费用限制
+        weeklyFableCostLimit,
         weeklyResetDay, // 周费用重置日 (1-7)
         weeklyResetHour, // 周费用重置时 (0-23)
         // 当前使用量
@@ -751,6 +754,8 @@ router.post('/api/user-stats', async (req, res) => {
         currentTotalCost: totalCost,
         weeklyOpusCost:
           (await redis.getWeeklyOpusCost(keyId, weeklyResetDay, weeklyResetHour)) || 0, // 当前 Opus 周费用
+        weeklyFableCost:
+          (await redis.getWeeklyFableCost(keyId, weeklyResetDay, weeklyResetHour)) || 0,
         // 时间窗口信息
         windowStartTime,
         windowEndTime,

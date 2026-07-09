@@ -2,7 +2,7 @@ const redis = require('../models/redis')
 const logger = require('../utils/logger')
 const pricingService = require('./pricingService')
 const serviceRatesService = require('./serviceRatesService')
-const { isClaudeFamilyModel } = require('../utils/modelHelper')
+const { isClaudeFamilyModel, isClaudeFableModel } = require('../utils/modelHelper')
 
 function pad2(n) {
   return String(n).padStart(2, '0')
@@ -56,6 +56,10 @@ class WeeklyClaudeCostInitService {
     return `usage:opus:weekly:${keyId}:${periodString}`
   }
 
+  _buildWeeklyFableKey(keyId, periodString) {
+    return `usage:fable:weekly:${keyId}:${periodString}`
+  }
+
   /**
    * 启动回填：从"按日/按模型"统计中反算 Claude 模型费用，
    * 根据每个 API Key 的 weeklyResetDay/weeklyResetHour 计算周期，
@@ -79,7 +83,7 @@ class WeeklyClaudeCostInitService {
     }
 
     const todayStr = redis.getDateStringInTimezone()
-    const doneKey = `init:weekly_opus_cost:${todayStr}:done`
+    const doneKey = `init:weekly_claude_cost:v2:${todayStr}:done`
 
     try {
       const alreadyDone = await client.get(doneKey)
@@ -91,7 +95,7 @@ class WeeklyClaudeCostInitService {
       // 尽力而为：读取失败不阻断启动回填流程。
     }
 
-    const lockKey = `lock:init:weekly_opus_cost:${todayStr}`
+    const lockKey = `lock:init:weekly_claude_cost:v2:${todayStr}`
     const lockValue = `${process.pid}:${Date.now()}`
     const lockTtlMs = 15 * 60 * 1000
 
@@ -130,8 +134,10 @@ class WeeklyClaudeCostInitService {
 
       // 收集每个 key 每天的费用: Map<keyId, Map<dateStr, ratedCost>>
       const costByKeyDate = new Map()
+      const fableCostByKeyDate = new Map()
       let scannedKeys = 0
       let matchedClaudeKeys = 0
+      let matchedFableKeys = 0
 
       for (const dateStr of dates) {
         let cursor = '0'
@@ -207,7 +213,11 @@ class WeeklyClaudeCostInitService {
             }
 
             const keyData = keyDataCache.get(entry.keyId)
-            const accountType = inferAccountType(keyData)
+            const configKeyData =
+              keyData?.parentKeyId && keyDataCache.get(keyData.parentKeyId)
+                ? keyDataCache.get(keyData.parentKeyId)
+                : keyData
+            const accountType = inferAccountType(configKeyData)
 
             if (!accountType || !OPUS_ACCOUNT_TYPES.includes(accountType)) {
               continue
@@ -223,7 +233,7 @@ class WeeklyClaudeCostInitService {
 
             let keyRates = {}
             try {
-              keyRates = JSON.parse(keyData?.serviceRates || '{}')
+              keyRates = JSON.parse(configKeyData?.serviceRates || '{}')
             } catch (e) {
               keyRates = {}
             }
@@ -236,6 +246,15 @@ class WeeklyClaudeCostInitService {
             }
             const dateMap = costByKeyDate.get(entry.keyId)
             dateMap.set(entry.dateStr, (dateMap.get(entry.dateStr) || 0) + ratedCost)
+
+            if (isClaudeFableModel(entry.model)) {
+              matchedFableKeys++
+              if (!fableCostByKeyDate.has(entry.keyId)) {
+                fableCostByKeyDate.set(entry.keyId, new Map())
+              }
+              const fableDateMap = fableCostByKeyDate.get(entry.keyId)
+              fableDateMap.set(entry.dateStr, (fableDateMap.get(entry.dateStr) || 0) + ratedCost)
+            }
           }
         } while (cursor !== '0')
       }
@@ -243,13 +262,18 @@ class WeeklyClaudeCostInitService {
       // 为每个 API Key 按其重置配置计算当前周期费用
       const ttlSeconds = 14 * 24 * 3600
       let filledCount = 0
+      let fableFilledCount = 0
       for (let i = 0; i < keyIds.length; i += batchSize) {
         const batch = keyIds.slice(i, i + batchSize)
         const pipeline = client.pipeline()
         for (const keyId of batch) {
           const keyData = keyDataCache.get(keyId)
-          const resetDay = parseInt(keyData?.weeklyResetDay || 1)
-          const resetHour = parseInt(keyData?.weeklyResetHour || 0)
+          const resetConfigSource =
+            keyData?.parentKeyId && keyDataCache.get(keyData.parentKeyId)
+              ? keyDataCache.get(keyData.parentKeyId)
+              : keyData
+          const resetDay = parseInt(resetConfigSource?.weeklyResetDay || 1)
+          const resetHour = parseInt(resetConfigSource?.weeklyResetHour || 0)
 
           // 获取当前周期的起始日期
           const periodStart = redis.getPeriodStartDate(resetDay, resetHour)
@@ -258,7 +282,9 @@ class WeeklyClaudeCostInitService {
 
           // 汇总该 key 在当前周期内的费用
           const dateMap = costByKeyDate.get(keyId)
+          const fableDateMap = fableCostByKeyDate.get(keyId)
           let periodCost = 0
+          let periodFableCost = 0
           if (dateMap) {
             for (const [dateStr, cost] of dateMap) {
               if (dateStr >= periodStartDateStr) {
@@ -266,14 +292,27 @@ class WeeklyClaudeCostInitService {
               }
             }
           }
+          if (fableDateMap) {
+            for (const [dateStr, cost] of fableDateMap) {
+              if (dateStr >= periodStartDateStr) {
+                periodFableCost += cost
+              }
+            }
+          }
 
           if (periodCost > 0) {
             filledCount++
           }
+          if (periodFableCost > 0) {
+            fableFilledCount++
+          }
 
           const weeklyKey = this._buildWeeklyOpusKey(keyId, periodString)
+          const weeklyFableKey = this._buildWeeklyFableKey(keyId, periodString)
           pipeline.set(weeklyKey, String(periodCost))
           pipeline.expire(weeklyKey, ttlSeconds)
+          pipeline.set(weeklyFableKey, String(periodFableCost))
+          pipeline.expire(weeklyFableKey, ttlSeconds)
         }
         await pipeline.exec()
       }
@@ -283,7 +322,7 @@ class WeeklyClaudeCostInitService {
 
       const durationMs = Date.now() - startedAt
       logger.info(
-        `✅ Claude 周费用回填完成（${todayStr}）：keys=${keyIds.length}, scanned=${scannedKeys}, matchedClaude=${matchedClaudeKeys}, filled=${filledCount}（${durationMs}ms）`
+        `✅ Claude 周费用回填完成（${todayStr}）：keys=${keyIds.length}, scanned=${scannedKeys}, matchedClaude=${matchedClaudeKeys}, matchedFable=${matchedFableKeys}, filled=${filledCount}, fableFilled=${fableFilledCount}（${durationMs}ms）`
       )
 
       return {
@@ -292,7 +331,9 @@ class WeeklyClaudeCostInitService {
         keyCount: keyIds.length,
         scannedKeys,
         matchedClaudeKeys,
+        matchedFableKeys,
         filledKeys: filledCount,
+        fableFilledKeys: fableFilledCount,
         durationMs
       }
     } catch (error) {
@@ -328,15 +369,24 @@ class WeeklyClaudeCostInitService {
         return { success: false, reason: 'key_not_found' }
       }
 
-      const resetDay = parseInt(keyData.weeklyResetDay || 1)
-      const resetHour = parseInt(keyData.weeklyResetHour || 0)
+      let configKeyData = keyData
+      if (keyData.parentKeyId) {
+        const parentData = await redis.getApiKey(keyData.parentKeyId)
+        if (parentData && Object.keys(parentData).length > 0) {
+          configKeyData = parentData
+        }
+      }
 
-      const accountType = inferAccountType(keyData)
+      const resetDay = parseInt(configKeyData.weeklyResetDay || 1)
+      const resetHour = parseInt(configKeyData.weeklyResetHour || 0)
+
+      const accountType = inferAccountType(configKeyData)
       if (!accountType || !OPUS_ACCOUNT_TYPES.includes(accountType)) {
         // 非 Claude 账户，写入 0 即可
         const periodString = redis.getPeriodString(resetDay, resetHour)
         await redis.setWeeklyOpusCost(keyId, 0, periodString)
-        return { success: true, cost: 0, reason: 'non_claude_account' }
+        await redis.setWeeklyFableCost(keyId, 0, periodString)
+        return { success: true, cost: 0, fableCost: 0, reason: 'non_claude_account' }
       }
 
       const periodStart = redis.getPeriodStartDate(resetDay, resetHour)
@@ -347,6 +397,7 @@ class WeeklyClaudeCostInitService {
       const dates = this._getLast7DaysInTimezone()
       const globalRateCache = new Map()
       let totalCost = 0
+      let fableCost = 0
 
       for (const dateStr of dates) {
         if (dateStr < periodStartDateStr) {
@@ -430,22 +481,27 @@ class WeeklyClaudeCostInitService {
 
             let keyRates = {}
             try {
-              keyRates = JSON.parse(keyData.serviceRates || '{}')
+              keyRates = JSON.parse(configKeyData.serviceRates || '{}')
             } catch (e) {
               keyRates = {}
             }
             const keyRate = keyRates[service] ?? 1.0
-            totalCost += realCost * globalRate * keyRate
+            const ratedCost = realCost * globalRate * keyRate
+            totalCost += ratedCost
+            if (isClaudeFableModel(model)) {
+              fableCost += ratedCost
+            }
           }
         } while (cursor !== '0')
       }
 
       await redis.setWeeklyOpusCost(keyId, totalCost, periodString)
+      await redis.setWeeklyFableCost(keyId, fableCost, periodString)
       logger.info(
-        `💰 单 Key 回填完成 (${keyId})：period=${periodString}, cost=$${totalCost.toFixed(6)}`
+        `💰 单 Key 回填完成 (${keyId})：period=${periodString}, cost=$${totalCost.toFixed(6)}, fable=$${fableCost.toFixed(6)}`
       )
 
-      return { success: true, cost: totalCost, periodString }
+      return { success: true, cost: totalCost, fableCost, periodString }
     } catch (error) {
       logger.error(`❌ 单 Key 回填失败 (${keyId})：`, error)
       return { success: false, error: error.message }

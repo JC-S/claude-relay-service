@@ -199,6 +199,38 @@
           </p>
         </div>
 
+        <!-- Claude Fable 周费用限制 -->
+        <div v-if="statsData.limits.weeklyFableCostLimit > 0">
+          <div class="mb-2 flex items-center justify-between">
+            <span class="text-sm font-medium text-gray-600 dark:text-gray-400 md:text-base"
+              >Claude Fable 周费用限制</span
+            >
+            <span class="text-xs text-gray-500 dark:text-gray-400 md:text-sm">
+              ${{ Number(statsData.limits.weeklyFableCost || 0).toFixed(4) }} / ${{
+                statsData.limits.weeklyFableCostLimit.toFixed(2)
+              }}
+            </span>
+          </div>
+          <div class="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+            <div
+              class="h-2 rounded-full transition-all duration-300"
+              :class="getFableWeeklyCostProgressColor()"
+              :style="{ width: getFableWeeklyCostProgress() + '%' }"
+            />
+          </div>
+          <p
+            v-if="statsData.limits.weeklyResetDay"
+            class="mt-1 text-xs text-gray-400 dark:text-gray-500"
+          >
+            每{{
+              ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'][
+                statsData.limits.weeklyResetDay || 1
+              ]
+            }}
+            {{ String(statsData.limits.weeklyResetHour || 0).padStart(2, '0') }}:00 (UTC+8) 重置
+          </p>
+        </div>
+
         <!-- 时间窗口限制 -->
         <div
           v-if="
@@ -595,6 +627,25 @@ const getOpusWeeklyCostProgressColor = () => {
   if (progress >= 100) return 'bg-red-500'
   if (progress >= 80) return 'bg-yellow-500'
   return 'bg-indigo-500' // 使用紫色表示Opus模型
+}
+
+const getFableWeeklyCostProgress = () => {
+  if (
+    !statsData.value.limits.weeklyFableCostLimit ||
+    statsData.value.limits.weeklyFableCostLimit === 0
+  )
+    return 0
+  const percentage =
+    ((statsData.value.limits.weeklyFableCost || 0) / statsData.value.limits.weeklyFableCostLimit) *
+    100
+  return Math.min(percentage, 100)
+}
+
+const getFableWeeklyCostProgressColor = () => {
+  const progress = getFableWeeklyCostProgress()
+  if (progress >= 100) return 'bg-red-500'
+  if (progress >= 80) return 'bg-yellow-500'
+  return 'bg-orange-500'
 }
 
 // 格式化数字

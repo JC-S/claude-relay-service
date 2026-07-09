@@ -107,7 +107,8 @@ const claudeRelayConfigService = require('../src/services/claudeRelayConfigServi
 const unifiedClaudeScheduler = require('../src/services/scheduler/unifiedClaudeScheduler')
 const {
   EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE,
-  isExportControlledClaudeModel
+  isExportControlledClaudeModel,
+  isClaudeFableModel
 } = require('../src/utils/modelHelper')
 
 function buildApp() {
@@ -165,6 +166,11 @@ describe('export-controlled Claude model block', () => {
     expect(isExportControlledClaudeModel('claude-fable-5[1m]')).toBe(true)
     expect(isExportControlledClaudeModel('ccr,CLAUDE-FABLE-5[1m]')).toBe(true)
     expect(isExportControlledClaudeModel('claude-opus-4-7')).toBe(false)
+    expect(isClaudeFableModel('claude-fable-5')).toBe(true)
+    expect(isClaudeFableModel('claude-fable-5[1m]')).toBe(true)
+    expect(isClaudeFableModel('ccr,CLAUDE-FABLE-5[1m]')).toBe(true)
+    expect(isClaudeFableModel('claude-opus-4-7')).toBe(false)
+    expect(isClaudeFableModel('fable')).toBe(false)
   })
 
   test('blocks Anthropic messages requests before scheduler or relay', async () => {

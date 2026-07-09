@@ -65,6 +65,7 @@ async function calculateKeyStats(keyId, timeRange = 'all', startDate, endDate) {
 
   // v2 父账号必须先展开 source key id，否则只会扫父账号自身 usage，漏掉子 key。
   let apiKey = null
+  let inheritedWeeklyLimitConfig = null
   let isV2Parent = false
   let sourceKeyIds = [keyId]
   try {
@@ -72,6 +73,17 @@ async function calculateKeyStats(keyId, timeRange = 'all', startDate, endDate) {
     isV2Parent = apiKey?.isV2Parent === 'true'
     if (isV2Parent) {
       sourceKeyIds = await redis.getV2ParentSourceKeyIds(keyId)
+    } else if (apiKey?.parentKeyId) {
+      const parentData = await redis.getApiKey(apiKey.parentKeyId)
+      if (
+        parentData &&
+        Object.keys(parentData).length > 0 &&
+        parentData.isV2Parent === 'true' &&
+        parentData.isActive === 'true' &&
+        parentData.isDeleted !== 'true'
+      ) {
+        inheritedWeeklyLimitConfig = parentData
+      }
     }
   } catch (error) {
     logger.warn(`⚠️ 判定 v2 父账号失败 (key: ${keyId}):`, error.message)
@@ -133,6 +145,7 @@ async function calculateKeyStats(keyId, timeRange = 'all', startDate, endDate) {
   // 获取实时限制数据（窗口数据不受时间范围筛选影响，始终获取当前窗口状态）
   let dailyCost = 0
   let weeklyOpusCost = 0 // 字段名沿用 weeklyOpusCost*，语义为"Claude 周费用"
+  let weeklyFableCost = 0
   let currentWindowCost = 0
   let currentWindowRequests = 0 // 当前窗口请求次数
   let currentWindowTokens = 0 // 当前窗口 Token 使用量
@@ -146,7 +159,9 @@ async function calculateKeyStats(keyId, timeRange = 'all', startDate, endDate) {
     // apiKey 已在函数开头读取（用于 v2 判定与 source id 收集），此处复用，避免二次读取
     const rateLimitWindow = parseInt(apiKey?.rateLimitWindow) || 0
     const dailyCostLimit = parseFloat(apiKey?.dailyCostLimit) || 0
-    const weeklyOpusCostLimit = parseFloat(apiKey?.weeklyOpusCostLimit) || 0
+    const weeklyLimitConfig = inheritedWeeklyLimitConfig || apiKey
+    const weeklyOpusCostLimit = parseFloat(weeklyLimitConfig?.weeklyOpusCostLimit) || 0
+    const weeklyFableCostLimit = parseFloat(weeklyLimitConfig?.weeklyFableCostLimit) || 0
 
     // 只在启用了每日费用限制时查询
     if (dailyCostLimit > 0) {
@@ -170,12 +185,20 @@ async function calculateKeyStats(keyId, timeRange = 'all', startDate, endDate) {
 
     // 只在启用了 Claude 周费用限制时查询（字段名沿用 weeklyOpusCostLimit）
     if (weeklyOpusCostLimit > 0) {
-      const resetDay = parseInt(apiKey?.weeklyResetDay || 1)
-      const resetHour = parseInt(apiKey?.weeklyResetHour || 0)
+      const resetDay = parseInt(weeklyLimitConfig?.weeklyResetDay || 1)
+      const resetHour = parseInt(weeklyLimitConfig?.weeklyResetHour || 0)
       // v2 父账号周费用读侧聚合父 + 所有子；普通 key 维持原口径
       weeklyOpusCost = isV2Parent
         ? await redis.getV2ParentWeeklyOpusCost(keyId, resetDay, resetHour)
         : await redis.getWeeklyOpusCost(keyId, resetDay, resetHour)
+    }
+
+    if (weeklyFableCostLimit > 0) {
+      const resetDay = parseInt(weeklyLimitConfig?.weeklyResetDay || 1)
+      const resetHour = parseInt(weeklyLimitConfig?.weeklyResetHour || 0)
+      weeklyFableCost = isV2Parent
+        ? await redis.getV2ParentWeeklyFableCost(keyId, resetDay, resetHour)
+        : await redis.getWeeklyFableCost(keyId, resetDay, resetHour)
     }
 
     // 只在启用了窗口限制时查询窗口数据
@@ -217,6 +240,7 @@ async function calculateKeyStats(keyId, timeRange = 'all', startDate, endDate) {
   const limitData = {
     dailyCost,
     weeklyOpusCost,
+    weeklyFableCost,
     currentWindowCost,
     currentWindowRequests,
     currentWindowTokens,

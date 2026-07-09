@@ -2111,6 +2111,52 @@ class RedisClient {
     await this.client.expire(weeklyKey, 14 * 24 * 3600)
   }
 
+  // 💰 获取本周 Fable 费用（支持自定义重置周期）
+  async getWeeklyFableCost(keyId, resetDay = 1, resetHour = 0) {
+    const periodStr = getPeriodString(resetDay, resetHour)
+    const costKey = `usage:fable:weekly:${keyId}:${periodStr}`
+    const cost = await this.client.get(costKey)
+    const result = parseFloat(cost || 0)
+    logger.debug(
+      `💰 Getting weekly Fable cost for ${keyId}, period: ${periodStr}, key: ${costKey}, value: ${cost}, result: ${result}`
+    )
+    return result
+  }
+
+  // 💰 增加本周 Fable 费用（支持倍率成本和真实成本，支持自定义重置周期）
+  async incrementWeeklyFableCost(keyId, amount, realAmount = null, resetDay = 1, resetHour = 0) {
+    const periodStr = getPeriodString(resetDay, resetHour)
+    const weeklyKey = `usage:fable:weekly:${keyId}:${periodStr}`
+    const totalKey = `usage:fable:total:${keyId}`
+    const realWeeklyKey = `usage:fable:real:weekly:${keyId}:${periodStr}`
+    const realTotalKey = `usage:fable:real:total:${keyId}`
+    const actualRealAmount = realAmount !== null ? realAmount : amount
+
+    logger.debug(
+      `💰 Incrementing weekly Fable cost for ${keyId}, period: ${periodStr}, rated: $${amount}, real: $${actualRealAmount}`
+    )
+
+    const pipeline = this.client.pipeline()
+    pipeline.incrbyfloat(weeklyKey, amount)
+    pipeline.incrbyfloat(totalKey, amount)
+    pipeline.incrbyfloat(realWeeklyKey, actualRealAmount)
+    pipeline.incrbyfloat(realTotalKey, actualRealAmount)
+    pipeline.expire(weeklyKey, 14 * 24 * 3600)
+    pipeline.expire(realWeeklyKey, 14 * 24 * 3600)
+
+    const results = await pipeline.exec()
+    logger.debug(`💰 Fable cost incremented successfully, new weekly total: $${results[0][1]}`)
+  }
+
+  // 💰 覆盖设置本周 Fable 费用（用于启动回填/迁移，支持自定义周期标识）
+  async setWeeklyFableCost(keyId, amount, periodString = null, resetDay = 1, resetHour = 0) {
+    const currentPeriod = periodString || getPeriodString(resetDay, resetHour)
+    const weeklyKey = `usage:fable:weekly:${keyId}:${currentPeriod}`
+
+    await this.client.set(weeklyKey, String(amount || 0))
+    await this.client.expire(weeklyKey, 14 * 24 * 3600)
+  }
+
   _buildUsageFromModelStats(modelUsage, fieldPrefix = '') {
     const fieldName = (name) =>
       fieldPrefix ? `${fieldPrefix}${name.charAt(0).toUpperCase()}${name.slice(1)}` : name
@@ -3293,6 +3339,31 @@ class RedisClient {
         `⚠️ getV2ParentWeeklyOpusCost 聚合失败 (parent: ${parentKeyId}): ${error.message}`
       )
       return await this.getWeeklyOpusCost(parentKeyId, resetDay, resetHour)
+    }
+  }
+
+  // 💰 v2 父账号本周期 Fable 周费用：读时聚合父 + 所有子(含软删)的 usage:fable:weekly 计数
+  async getV2ParentWeeklyFableCost(parentKeyId, resetDay = 1, resetHour = 0) {
+    const periodStr = getPeriodString(resetDay, resetHour)
+    try {
+      const ids = await this.getV2ParentSourceKeyIds(parentKeyId)
+      const pipeline = this.client.pipeline()
+      for (const id of ids) {
+        pipeline.get(`usage:fable:weekly:${id}:${periodStr}`)
+      }
+      const results = await pipeline.exec()
+      let sum = 0
+      for (const [err, value] of results) {
+        if (!err) {
+          sum += parseFloat(value || 0)
+        }
+      }
+      return sum
+    } catch (error) {
+      logger.warn(
+        `⚠️ getV2ParentWeeklyFableCost 聚合失败 (parent: ${parentKeyId}): ${error.message}`
+      )
+      return await this.getWeeklyFableCost(parentKeyId, resetDay, resetHour)
     }
   }
 

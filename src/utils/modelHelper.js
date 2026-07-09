@@ -11,6 +11,7 @@ const SUPPORTED_VENDOR_PREFIXES = ['ccr']
 const EXPORT_CONTROLLED_CLAUDE_MODELS = new Set(['claude-fable-5', 'claude-fable-5[1m]'])
 const EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE =
   'claude-fable-5 is currently banned by export controls. Please wait for further policy updates.'
+const CLAUDE_FABLE_MODELS = new Set(['claude-fable-5', 'claude-fable-5[1m]'])
 
 /**
  * Parse vendor-prefixed model string
@@ -79,6 +80,15 @@ function isExportControlledClaudeModel(modelStr) {
   }
 
   return EXPORT_CONTROLLED_CLAUDE_MODELS.has(effectiveModel.trim().toLowerCase())
+}
+
+function isClaudeFableModel(modelStr) {
+  const effectiveModel = getEffectiveModel(modelStr)
+  if (!effectiveModel || typeof effectiveModel !== 'string') {
+    return false
+  }
+
+  return CLAUDE_FABLE_MODELS.has(effectiveModel.trim().toLowerCase())
 }
 
 /**
@@ -250,6 +260,7 @@ module.exports = {
   getVendorType,
   isOpus45OrNewer,
   isClaudeFamilyModel,
+  isClaudeFableModel,
   isExportControlledClaudeModel,
   EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE
 }
