@@ -29,8 +29,6 @@ REDIS_PASSWORD=""
 APP_PORT=""
 PUBLIC_IP_CACHE_FILE="/tmp/.crs_public_ip_cache"
 PUBLIC_IP_CACHE_DURATION=3600  # 1小时缓存
-ROUTEBASE_RECAL_DIR="/home/ubuntu/tools/routebase_manage"
-ROUTEBASE_RECAL_SCRIPT="$ROUTEBASE_RECAL_DIR/recal.sh"
 SYSTEMD_SERVICE_NAME="claude-relay-service.service"
 
 # 打印带颜色的消息
@@ -1001,47 +999,12 @@ stop_service() {
     print_success "服务已停止"
 }
 
-# 重启服务
-run_routebase_recalibration() {
-    if [ ! -x "$ROUTEBASE_RECAL_SCRIPT" ]; then
-        print_warning "Claude 周额度自动校准: 失败"
-        return 0
-    fi
-
-    local output=""
-    local exit_code=0
-    local changed_count=""
-
-    output=$(
-        cd "$ROUTEBASE_RECAL_DIR" && ./recal.sh 2>&1
-    )
-    exit_code=$?
-
-    if [ $exit_code -ne 0 ]; then
-        print_warning "Claude 周额度自动校准: 失败"
-        return 0
-    fi
-
-    changed_count=$(
-        printf '%s\n' "$output" \
-            | sed -n 's/^检测到变更:[[:space:]]*\([0-9][0-9]*\).*$/\1/p' \
-            | head -n 1
-    )
-
-    if [ -n "$changed_count" ] && [ "$changed_count" -gt 0 ] 2>/dev/null; then
-        print_success "Claude 周额度自动校准: 是"
-    else
-        print_info "Claude 周额度自动校准: 否"
-    fi
-}
-
 restart_service() {
     print_info "重启服务..."
 
     if systemd_service_exists; then
         if sudo systemctl restart "$SYSTEMD_SERVICE_NAME"; then
             show_status
-            run_routebase_recalibration
             return 0
         fi
         print_error "systemd 重启失败，请查看: sudo journalctl -u $SYSTEMD_SERVICE_NAME -n 50"
@@ -1064,7 +1027,6 @@ restart_service() {
         if ! pgrep -f "node.*src/app.js" > /dev/null; then
             # 进程确实已停止，可以启动
             if start_service; then
-                run_routebase_recalibration
                 return 0
             fi
         fi

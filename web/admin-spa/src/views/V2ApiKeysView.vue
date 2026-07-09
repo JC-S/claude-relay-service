@@ -32,6 +32,44 @@
           </div>
         </div>
       </div>
+      <div class="mt-5 border-t border-gray-200/70 pt-4 dark:border-gray-700/70">
+        <div class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p class="text-sm font-bold text-gray-900 dark:text-gray-100">Claude 周限额</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400">Fable 费用同时计入 Claude 周限制</p>
+          </div>
+          <p class="text-xs font-medium text-gray-500 dark:text-gray-400">
+            <i class="fas fa-rotate-right mr-1 text-gray-400 dark:text-gray-500" />
+            {{ weeklyResetText }}
+          </p>
+        </div>
+        <div class="grid gap-3 lg:grid-cols-2">
+          <div
+            v-for="item in weeklyQuotaItems"
+            :key="item.key"
+            class="rounded-xl border p-3"
+            :class="weeklyQuotaCardClass(item)"
+          >
+            <div class="flex items-center justify-between gap-3 text-xs font-medium">
+              <div class="flex items-center gap-1.5" :class="weeklyQuotaLabelClass(item)">
+                <i :class="['text-xs', item.icon]" />
+                <span>{{ item.label }}</span>
+              </div>
+              <span class="shrink-0 tabular-nums text-gray-700 dark:text-gray-200">
+                {{ fmtWeeklyCost(item.current) }} /
+                {{ item.limit > 0 ? fmtWeeklyCost(item.limit) : '不限额' }}
+              </span>
+            </div>
+            <div class="mt-2 h-2 overflow-hidden rounded-full bg-gray-200/85 dark:bg-gray-700/70">
+              <div
+                class="h-full rounded-full transition-all duration-500 ease-out"
+                :class="weeklyQuotaBarClass(item)"
+                :style="{ width: weeklyQuotaProgress(item) + '%' }"
+              ></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 操作栏 -->
@@ -850,7 +888,20 @@ import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import CustomDropdown from '@/components/common/CustomDropdown.vue'
 
 const loading = ref(true)
-const account = ref({ v2Email: '', v2TotalBudget: 0, used: 0, remaining: 0, unlimited: true })
+const defaultAccount = () => ({
+  v2Email: '',
+  v2TotalBudget: 0,
+  used: 0,
+  remaining: 0,
+  unlimited: true,
+  weeklyOpusCostLimit: 0,
+  weeklyOpusCost: 0,
+  weeklyFableCostLimit: 0,
+  weeklyFableCost: 0,
+  weeklyResetDay: 1,
+  weeklyResetHour: 0
+})
+const account = ref(defaultAccount())
 const keys = ref([])
 const rangeStats = ref({})
 const rangeStatsLoading = ref(false)
@@ -958,6 +1009,77 @@ const handleCancelConfirm = () => {
 }
 
 const fmtCost = (n) => `$${Number(n || 0).toFixed(4)}`
+const fmtWeeklyCost = (n) => `$${Number(n || 0).toFixed(2)}`
+
+const toFiniteNumber = (value, fallback = 0) => {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+const weeklyResetText = computed(() => {
+  const dayLabels = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日']
+  const day = Math.min(Math.max(parseInt(account.value.weeklyResetDay || 1, 10), 1), 7)
+  const hour = Math.min(Math.max(parseInt(account.value.weeklyResetHour || 0, 10), 0), 23)
+  return `每${dayLabels[day]} ${String(hour).padStart(2, '0')}:00 (UTC+8) 重置`
+})
+
+const weeklyQuotaItems = computed(() => [
+  {
+    key: 'claude',
+    label: 'Claude 周限制',
+    icon: 'fas fa-gem',
+    type: 'opus',
+    current: toFiniteNumber(account.value.weeklyOpusCost),
+    limit: toFiniteNumber(account.value.weeklyOpusCostLimit)
+  },
+  {
+    key: 'fable',
+    label: 'Fable 周限制',
+    icon: 'fas fa-fire',
+    type: 'fable',
+    current: toFiniteNumber(account.value.weeklyFableCost),
+    limit: toFiniteNumber(account.value.weeklyFableCostLimit)
+  }
+])
+
+const weeklyQuotaProgress = (item) => {
+  const limit = toFiniteNumber(item?.limit)
+  if (limit <= 0) {
+    return 0
+  }
+  return Math.min((toFiniteNumber(item?.current) / limit) * 100, 100)
+}
+
+const weeklyQuotaCardClass = (item) =>
+  item?.type === 'fable'
+    ? 'border-orange-200/70 bg-orange-50/60 dark:border-orange-500/30 dark:bg-orange-950/20'
+    : 'border-violet-200/70 bg-violet-50/60 dark:border-violet-500/30 dark:bg-violet-950/20'
+
+const weeklyQuotaLabelClass = (item) => {
+  const progress = weeklyQuotaProgress(item)
+  if (progress >= 95) {
+    return 'text-rose-600 dark:text-rose-300'
+  }
+  if (progress >= 80) {
+    return 'text-amber-600 dark:text-amber-300'
+  }
+  return item?.type === 'fable'
+    ? 'text-orange-600 dark:text-orange-300'
+    : 'text-violet-600 dark:text-violet-300'
+}
+
+const weeklyQuotaBarClass = (item) => {
+  const progress = weeklyQuotaProgress(item)
+  if (progress >= 95) {
+    return 'bg-rose-500 dark:bg-rose-400'
+  }
+  if (progress >= 80) {
+    return 'bg-amber-400 dark:bg-amber-300'
+  }
+  return item?.type === 'fable'
+    ? 'bg-orange-500 dark:bg-orange-400'
+    : 'bg-violet-500 dark:bg-violet-400'
+}
 
 const getCurrentStatsWindow = () => {
   if (dateFilter.type === 'custom') {
@@ -1060,7 +1182,7 @@ const loadAccount = async () => {
   try {
     const res = await getV2AccountApi()
     if (res.success && res.data) {
-      account.value = res.data
+      account.value = { ...defaultAccount(), ...res.data }
     }
   } catch (error) {
     showToast('加载账号信息失败', 'error')

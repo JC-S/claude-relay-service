@@ -3849,7 +3849,15 @@ class ApiKeyService {
       throw new Error('Not a v2 parent account')
     }
     const budget = parseFloat(keyData.v2TotalBudget || 0)
-    const used = await redis.getV2ParentTotalCost(parentKeyId)
+    const weeklyResetDay = parseInt(keyData.weeklyResetDay || 1) || 1
+    const weeklyResetHour = parseInt(keyData.weeklyResetHour || 0) || 0
+    const weeklyOpusCostLimit = parseFloat(keyData.weeklyOpusCostLimit || 0)
+    const weeklyFableCostLimit = parseFloat(keyData.weeklyFableCostLimit || 0)
+    const [used, weeklyOpusCost, weeklyFableCost] = await Promise.all([
+      redis.getV2ParentTotalCost(parentKeyId),
+      redis.getV2ParentWeeklyOpusCost(parentKeyId, weeklyResetDay, weeklyResetHour),
+      redis.getV2ParentWeeklyFableCost(parentKeyId, weeklyResetDay, weeklyResetHour)
+    ])
     const unlimited = !(budget > 0)
     return {
       v2Email: keyData.v2Email || '',
@@ -3857,7 +3865,13 @@ class ApiKeyService {
       v2TotalBudget: budget,
       used,
       remaining: unlimited ? null : Math.max(0, budget - used),
-      unlimited
+      unlimited,
+      weeklyOpusCostLimit,
+      weeklyOpusCost,
+      weeklyFableCostLimit,
+      weeklyFableCost,
+      weeklyResetDay,
+      weeklyResetHour
     }
   }
 
