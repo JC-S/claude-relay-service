@@ -51,6 +51,9 @@ class PricingService {
       },
       'gpt-5.5': {
         priorityMultiplier: 2.5
+      },
+      'gpt-5.6': {
+        setSupportsServiceTier: true
       }
     }
 
@@ -74,26 +77,28 @@ class PricingService {
         continue
       }
 
+      if (override.setSupportsServiceTier === true) {
+        pricing.supports_service_tier = true
+      }
+
       const multiplier = override.priorityMultiplier
-      if (!Number.isFinite(multiplier) || multiplier <= 0) {
-        continue
-      }
-
-      const priorityFields = {
-        input_cost_per_token_priority: 'input_cost_per_token',
-        output_cost_per_token_priority: 'output_cost_per_token',
-        cache_read_input_token_cost_priority: 'cache_read_input_token_cost',
-        cache_creation_input_token_cost_priority: 'cache_creation_input_token_cost'
-      }
-
-      for (const [priorityField, baseField] of Object.entries(priorityFields)) {
-        const basePrice = pricing[baseField]
-        if (typeof basePrice === 'number' && Number.isFinite(basePrice)) {
-          pricing[priorityField] = basePrice * multiplier
+      if (Number.isFinite(multiplier) && multiplier > 0) {
+        const priorityFields = {
+          input_cost_per_token_priority: 'input_cost_per_token',
+          output_cost_per_token_priority: 'output_cost_per_token',
+          cache_read_input_token_cost_priority: 'cache_read_input_token_cost',
+          cache_creation_input_token_cost_priority: 'cache_creation_input_token_cost'
         }
-      }
 
-      pricing.supports_service_tier = true
+        for (const [priorityField, baseField] of Object.entries(priorityFields)) {
+          const basePrice = pricing[baseField]
+          if (typeof basePrice === 'number' && Number.isFinite(basePrice)) {
+            pricing[priorityField] = basePrice * multiplier
+          }
+        }
+
+        pricing.supports_service_tier = true
+      }
     }
 
     this.applyLocalPricingAliases(pricingData)

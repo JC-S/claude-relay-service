@@ -55,4 +55,33 @@ describe('Redis aggregated gpt-5.4 service tier cost', () => {
     expect(result.costs.cacheRead).toBeCloseTo(0.75, 10)
     expect(result.costs.total).toBeCloseTo(60.75, 10)
   })
+
+  test('splits gpt-5.6 cache writes into standard and priority prices', () => {
+    pricingService.pricingData = {
+      'gpt-5.6': {
+        input_cost_per_token: 0.000005,
+        input_cost_per_token_priority: 0.00001,
+        output_cost_per_token: 0.00003,
+        output_cost_per_token_priority: 0.00006,
+        cache_creation_input_token_cost: 0.00000625,
+        cache_creation_input_token_cost_priority: 0.0000125,
+        cache_read_input_token_cost: 0.0000005,
+        cache_read_input_token_cost_priority: 0.000001,
+        litellm_provider: 'openai'
+      }
+    }
+
+    const result = redis.calculateModelCostFromStats(
+      CostCalculator,
+      {
+        cacheCreateTokens: 2000000,
+        priorityCacheCreateTokens: 1000000
+      },
+      'gpt-5.6'
+    )
+
+    expect(result.hasServiceTierSplit).toBe(true)
+    expect(result.costs.cacheWrite).toBeCloseTo(18.75, 10)
+    expect(result.costs.total).toBeCloseTo(18.75, 10)
+  })
 })

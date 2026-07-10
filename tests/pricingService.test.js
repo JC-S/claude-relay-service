@@ -464,6 +464,65 @@ describe('PricingService - Long Context Pricing', () => {
       expect(result.pricing.cacheRead).toBeCloseTo(0.00000125, 12)
       expect(result.totalCost).toBeCloseTo(0.02025, 10)
     })
+
+    it('裸 gpt-5.6 仅补充 service tier capability，不覆盖显式 priority 价格', () => {
+      pricingService.pricingData = {
+        'gpt-5.6': {
+          input_cost_per_token: 0.000005,
+          input_cost_per_token_priority: 0.000011,
+          output_cost_per_token: 0.00003,
+          output_cost_per_token_priority: 0.000061,
+          cache_creation_input_token_cost: 0.00000625,
+          cache_creation_input_token_cost_priority: 0.00001275,
+          cache_read_input_token_cost: 0.0000005,
+          cache_read_input_token_cost_priority: 0.0000011,
+          litellm_provider: 'openai'
+        }
+      }
+
+      const pricing = pricingService.getModelPricing('gpt-5.6')
+
+      expect(pricing.supports_service_tier).toBe(true)
+      expect(pricing.input_cost_per_token_priority).toBe(0.000011)
+      expect(pricing.output_cost_per_token_priority).toBe(0.000061)
+      expect(pricing.cache_creation_input_token_cost_priority).toBe(0.00001275)
+      expect(pricing.cache_read_input_token_cost_priority).toBe(0.0000011)
+    })
+
+    it.each([
+      ['gpt-5.6', 6.25, 12.5],
+      ['gpt-5.6-sol', 6.25, 12.5],
+      ['gpt-5.6-terra', 3.125, 6.25],
+      ['gpt-5.6-luna', 1.25, 2.5]
+    ])('%s 按独立 standard/priority 缓存写入价格计费', (model, standardPrice, priorityPrice) => {
+      pricingService.pricingData = JSON.parse(JSON.stringify(pricingData))
+      const usage = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 1000000,
+        cache_read_input_tokens: 0
+      }
+
+      const standard = pricingService.calculateCost(usage, model)
+      const priority = pricingService.calculateCost(usage, model, 'priority')
+
+      expect(standard.cacheCreateCost).toBeCloseTo(standardPrice, 10)
+      expect(priority.cacheCreateCost).toBeCloseTo(priorityPrice, 10)
+    })
+
+    it('fallback 文件可由价格服务识别 GPT-5.6 四个模型', () => {
+      const fallbackPricing = JSON.parse(realFs.readFileSync(fallbackPath, 'utf8'))
+      pricingService.pricingData = pricingService.applyLocalPricingOverrides(fallbackPricing)
+
+      for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+        const pricing = pricingService.getModelPricing(model)
+        expect(pricing).not.toBeNull()
+        expect(pricing.supports_prompt_caching).toBe(true)
+        expect(pricing.cache_creation_input_token_cost).toBeGreaterThan(0)
+        expect(pricing.cache_creation_input_token_cost_priority).toBeGreaterThan(0)
+      }
+      expect(pricingService.getModelPricing('gpt-5.6').supports_service_tier).toBe(true)
+    })
   })
 
   describe('本地价格别名', () => {

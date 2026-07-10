@@ -278,6 +278,40 @@ describe('requestDetailHelper', () => {
     )
   })
 
+  test.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+    'marks cache creation as applicable for %s even when it is zero',
+    (rawModel) => {
+      const metrics = getRequestDetailCacheMetrics({
+        endpoint: '/openai/v1/responses',
+        accountType: 'openai',
+        rawModel,
+        model: `${rawModel} (fast)`,
+        inputTokens: 100,
+        cacheReadTokens: 20,
+        cacheCreateTokens: 0
+      })
+
+      expect(metrics.cacheCreateNotApplicable).toBe(false)
+    }
+  )
+
+  test('keeps older OpenAI cache creation unavailable unless tokens were reported', () => {
+    expect(
+      getRequestDetailCacheMetrics({
+        endpoint: '/openai/v1/responses',
+        model: 'gpt-5.5 (fast)',
+        cacheCreateTokens: 0
+      }).cacheCreateNotApplicable
+    ).toBe(true)
+    expect(
+      getRequestDetailCacheMetrics({
+        endpoint: '/openai/v1/responses',
+        model: 'gpt-5.5',
+        cacheCreateTokens: 10
+      }).cacheCreateNotApplicable
+    ).toBe(false)
+  })
+
   test('calculateCacheHitRate uses the same input-side denominator for /openai/ requests', () => {
     expect(
       calculateCacheHitRate({

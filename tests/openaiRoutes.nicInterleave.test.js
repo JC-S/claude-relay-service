@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const { PassThrough } = require('stream')
 
 const mockRouter = {
   get: jest.fn(),
@@ -115,9 +116,12 @@ jest.mock('../src/utils/performanceOptimizer', () => ({
 const axios = require('axios')
 const unifiedOpenAIScheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
 const openaiAccountService = require('../src/services/account/openaiAccountService')
+const apiKeyService = require('../src/services/apiKeyService')
 const openaiNicSelector = require('../src/utils/openaiNicSelector')
 const upstreamErrorHelper = require('../src/utils/upstreamErrorHelper')
 const { getHttpsAgentForLocalAddress } = require('../src/utils/performanceOptimizer')
+const { updateRateLimitCounters } = require('../src/utils/rateLimitHelper')
+const { IncrementalSSEParser } = require('../src/utils/sseParser')
 const openaiRoutes = require('../src/routes/openaiRoutes')
 
 function createHash(value) {
@@ -153,6 +157,7 @@ function createRes() {
     statusCode: 200,
     headers: {},
     headersSent: false,
+    destroyed: false,
     status: jest.fn((code) => {
       res.statusCode = code
       return res
@@ -163,7 +168,10 @@ function createRes() {
     }),
     setHeader: jest.fn((key, value) => {
       res.headers[key] = value
-    })
+    }),
+    write: jest.fn(),
+    end: jest.fn(),
+    flushHeaders: jest.fn()
   }
   return res
 }
@@ -237,6 +245,150 @@ describe('openaiRoutes NIC interleave', () => {
     expect(req.upstreamNicIp).toBe('10.0.0.191')
     expect(axios.post.mock.calls[0][2].httpsAgent.options.localAddress).toBe('10.0.0.191')
     expect(axios.post.mock.calls[0][2].proxy).toBe(false)
+  })
+
+  test('records non-stream cache writes as an input subset and reuses calculated costs', async () => {
+    const usageCosts = { realCost: 0.7475, ratedCost: 0.9 }
+    apiKeyService.recordUsage.mockResolvedValue(usageCosts)
+    updateRateLimitCounters.mockResolvedValue({ totalTokens: 110000, totalCost: 0.9 })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.6-sol',
+        usage: {
+          input_tokens: 100000,
+          output_tokens: 10000,
+          total_tokens: 110000,
+          input_tokens_details: {
+            cached_tokens: 20000,
+            cache_write_tokens: 30000
+          }
+        }
+      },
+      headers: {}
+    })
+    const req = createReq()
+    req.body.model = 'gpt-5.6-sol'
+    req.body.service_tier = 'priority'
+    req.rateLimitInfo = { costLimit: 10 }
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(apiKeyService.recordUsage).toHaveBeenCalledWith(
+      'key_1',
+      50000,
+      10000,
+      30000,
+      20000,
+      'gpt-5.6-sol',
+      'openai-1',
+      'openai',
+      'priority',
+      expect.objectContaining({ stream: false, statusCode: 200 })
+    )
+    expect(updateRateLimitCounters).toHaveBeenCalledWith(
+      req.rateLimitInfo,
+      {
+        inputTokens: 50000,
+        outputTokens: 10000,
+        cacheCreateTokens: 30000,
+        cacheReadTokens: 20000
+      },
+      'gpt-5.6-sol',
+      'key_1',
+      'openai',
+      usageCosts
+    )
+  })
+
+  test('records cache writes when aggregating an upstream stream for a non-stream client', async () => {
+    const ActualSSEParser = jest.requireActual('../src/utils/sseParser').IncrementalSSEParser
+    IncrementalSSEParser.mockImplementation(() => new ActualSSEParser())
+    const upstreamStream = new PassThrough()
+    axios.post.mockResolvedValue({ status: 200, data: upstreamStream, headers: {} })
+    const req = createReq()
+    req.body.model = 'gpt-5.6-terra'
+    req._forceCodexUpstreamStream = true
+
+    setImmediate(() => {
+      upstreamStream.end(
+        `data: ${JSON.stringify({
+          type: 'response.completed',
+          response: {
+            model: 'gpt-5.6-terra',
+            output: [],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 10,
+              input_tokens_details: { cached_tokens: 20, cache_write_tokens: 30 }
+            }
+          }
+        })}\n\n`
+      )
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(apiKeyService.recordUsage).toHaveBeenCalledWith(
+      'key_1',
+      50,
+      10,
+      30,
+      20,
+      'gpt-5.6-terra',
+      'openai-1',
+      'openai',
+      null,
+      expect.objectContaining({ stream: false })
+    )
+    expect(apiKeyService.recordUsage).toHaveBeenCalledTimes(1)
+  })
+
+  test('records cache writes once when the downstream response is streamed', async () => {
+    const ActualSSEParser = jest.requireActual('../src/utils/sseParser').IncrementalSSEParser
+    IncrementalSSEParser.mockImplementation(() => new ActualSSEParser())
+    const upstreamStream = new PassThrough()
+    let usageRecorded
+    const usageRecordedPromise = new Promise((resolve) => {
+      usageRecorded = resolve
+    })
+    apiKeyService.recordUsage.mockImplementation(async (...args) => {
+      usageRecorded(args)
+      return { realCost: 0.01, ratedCost: 0.01 }
+    })
+    axios.post.mockResolvedValue({ status: 200, data: upstreamStream, headers: {} })
+    const req = createReq()
+    req.body.model = 'gpt-5.6-luna'
+    req.body.stream = true
+
+    await openaiRoutes.handleResponses(req, createRes())
+    upstreamStream.end(
+      `data: ${JSON.stringify({
+        type: 'response.completed',
+        response: {
+          model: 'gpt-5.6-luna',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 10,
+            input_tokens_details: { cached_tokens: 20, cache_write_tokens: 30 }
+          }
+        }
+      })}\n\n`
+    )
+    const recordedArgs = await usageRecordedPromise
+
+    expect(recordedArgs.slice(0, 9)).toEqual([
+      'key_1',
+      50,
+      10,
+      30,
+      20,
+      'gpt-5.6-luna',
+      'openai-1',
+      'openai',
+      null
+    ])
+    expect(apiKeyService.recordUsage).toHaveBeenCalledTimes(1)
   })
 
   test('passes manually disabled local addresses to the NIC selector', async () => {

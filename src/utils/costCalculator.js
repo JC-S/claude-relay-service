@@ -208,9 +208,11 @@ class CostCalculator {
     const pricingSource = this.getPricingSource(safeModel, pricingData)
     let pricing
     let usingDynamicPricing = false
+    let hasCacheCreatePrice = false
 
     if (pricingData) {
       const usePriority = serviceTier === 'priority' && pricingData.supports_service_tier
+      const hasPrice = (value) => value !== null && value !== undefined
 
       const inputPrice =
         ((usePriority && pricingData.input_cost_per_token_priority) ||
@@ -225,11 +227,16 @@ class CostCalculator {
           pricingData.cache_read_input_token_cost ||
           0) * 1000000
 
-      let cacheWritePrice = (pricingData.cache_creation_input_token_cost || 0) * 1000000
+      const selectedCacheWritePrice =
+        usePriority && hasPrice(pricingData.cache_creation_input_token_cost_priority)
+          ? pricingData.cache_creation_input_token_cost_priority
+          : pricingData.cache_creation_input_token_cost
+      hasCacheCreatePrice = hasPrice(selectedCacheWritePrice)
+      let cacheWritePrice = (selectedCacheWritePrice || 0) * 1000000
 
       if (
         this.isOpenAIModel(safeModel, pricingData) &&
-        !pricingData.cache_creation_input_token_cost &&
+        !hasPrice(selectedCacheWritePrice) &&
         cacheCreateTokens > 0
       ) {
         cacheWritePrice = inputPrice
@@ -286,7 +293,7 @@ class CostCalculator {
       },
       debug: {
         isOpenAIModel: this.isOpenAIModel(safeModel, pricingData),
-        hasCacheCreatePrice: !!pricingData?.cache_creation_input_token_cost,
+        hasCacheCreatePrice,
         cacheCreateTokens,
         cacheWritePriceUsed: pricing.cacheWrite,
         isLongContextModel: typeof safeModel === 'string' && safeModel.includes('[1m]'),

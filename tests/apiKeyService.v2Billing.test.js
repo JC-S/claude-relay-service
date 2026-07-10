@@ -177,6 +177,84 @@ describe('apiKeyService v2 billing', () => {
     expect(amount).not.toBeCloseTo(1, 5) // 不是 realCost
   })
 
+  test('recordUsage preserves the GPT-5.6 cache-write split and priority tier for every sink', async () => {
+    CostCalculator.calculateCost.mockReturnValue({
+      costs: {
+        total: 0.7475,
+        input: 0.25,
+        output: 0.3,
+        cacheCreate: 0.1875,
+        cacheRead: 0.01
+      }
+    })
+
+    const result = await apiKeyService.recordUsage(
+      CHILD_ID,
+      50000,
+      10000,
+      30000,
+      20000,
+      'gpt-5.6-sol',
+      'acct-1',
+      'openai',
+      'priority',
+      null
+    )
+
+    expect(CostCalculator.calculateCost).toHaveBeenCalledWith(
+      {
+        input_tokens: 50000,
+        output_tokens: 10000,
+        cache_creation_input_tokens: 30000,
+        cache_read_input_tokens: 20000
+      },
+      'gpt-5.6-sol',
+      'priority'
+    )
+    expect(redis.incrementTokenUsage).toHaveBeenCalledWith(
+      CHILD_ID,
+      110000,
+      50000,
+      10000,
+      30000,
+      20000,
+      'gpt-5.6-sol',
+      0,
+      0,
+      false,
+      0.7475,
+      expect.any(Number),
+      'priority'
+    )
+    expect(redis.incrementAccountUsage).toHaveBeenCalledWith(
+      'acct-1',
+      110000,
+      50000,
+      10000,
+      30000,
+      20000,
+      0,
+      0,
+      'gpt-5.6-sol',
+      false,
+      'priority'
+    )
+    expect(redis.addUsageRecord).toHaveBeenCalledWith(
+      CHILD_ID,
+      expect.objectContaining({
+        model: 'gpt-5.6-sol',
+        serviceTier: 'priority',
+        inputTokens: 50000,
+        outputTokens: 10000,
+        cacheCreateTokens: 30000,
+        cacheReadTokens: 20000,
+        totalTokens: 110000,
+        realCost: 0.7475
+      })
+    )
+    expect(result.realCost).toBeCloseTo(0.7475, 10)
+  })
+
   // 3. recordUsageWithDetails：同样把倍率后成本写入父总账
   test('recordUsageWithDetails also rolls up rated cost to parent total', async () => {
     CostCalculator.calculateCost.mockReturnValue({

@@ -185,6 +185,103 @@ describe('CostCalculator', () => {
     expect(result.costs.total).toBeCloseTo(0.02025, 10)
   })
 
+  describe('gpt-5.6 cache-write pricing', () => {
+    const modelPricing = {
+      'gpt-5.6': [5, 10, 30, 60, 6.25, 12.5, 0.5, 1],
+      'gpt-5.6-sol': [5, 10, 30, 60, 6.25, 12.5, 0.5, 1],
+      'gpt-5.6-terra': [2.5, 5, 15, 30, 3.125, 6.25, 0.25, 0.5],
+      'gpt-5.6-luna': [1, 2, 6, 12, 1.25, 2.5, 0.1, 0.2]
+    }
+
+    it.each(Object.entries(modelPricing))(
+      'uses explicit standard and priority cache-write prices for %s',
+      (model, prices) => {
+        const [input, priorityInput, output, priorityOutput, cacheWrite, priorityCacheWrite] =
+          prices
+        pricingService.getModelPricing.mockReturnValue({
+          input_cost_per_token: input / 1000000,
+          input_cost_per_token_priority: priorityInput / 1000000,
+          output_cost_per_token: output / 1000000,
+          output_cost_per_token_priority: priorityOutput / 1000000,
+          cache_creation_input_token_cost: cacheWrite / 1000000,
+          cache_creation_input_token_cost_priority: priorityCacheWrite / 1000000,
+          supports_service_tier: true,
+          litellm_provider: 'openai'
+        })
+
+        const usage = {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 1000000,
+          cache_read_input_tokens: 0
+        }
+        const standard = CostCalculator.calculateCost(usage, model)
+        const priority = CostCalculator.calculateCost(usage, model, 'priority')
+
+        expect(standard.pricing.cacheWrite).toBe(cacheWrite)
+        expect(standard.costs.cacheWrite).toBeCloseTo(cacheWrite, 10)
+        expect(priority.pricing.cacheWrite).toBe(priorityCacheWrite)
+        expect(priority.costs.cacheWrite).toBeCloseTo(priorityCacheWrite, 10)
+      }
+    )
+
+    it('calculates the representative Sol standard and priority totals', () => {
+      pricingService.getModelPricing.mockReturnValue({
+        input_cost_per_token: 0.000005,
+        input_cost_per_token_priority: 0.00001,
+        output_cost_per_token: 0.00003,
+        output_cost_per_token_priority: 0.00006,
+        cache_creation_input_token_cost: 0.00000625,
+        cache_creation_input_token_cost_priority: 0.0000125,
+        cache_read_input_token_cost: 0.0000005,
+        cache_read_input_token_cost_priority: 0.000001,
+        supports_service_tier: true,
+        litellm_provider: 'openai'
+      })
+      const usage = {
+        input_tokens: 50000,
+        output_tokens: 10000,
+        cache_creation_input_tokens: 30000,
+        cache_read_input_tokens: 20000
+      }
+
+      const standard = CostCalculator.calculateCost(usage, 'gpt-5.6-sol')
+      const priority = CostCalculator.calculateCost(usage, 'gpt-5.6-sol', 'priority')
+
+      expect(standard.costs.total).toBeCloseTo(0.7475, 10)
+      expect(priority.costs.total).toBeCloseTo(1.495, 10)
+    })
+
+    it('does not activate 272K pricing fields in the legacy path', () => {
+      pricingService.getModelPricing.mockReturnValue({
+        input_cost_per_token: 0.000005,
+        input_cost_per_token_above_272k_tokens: 0.00001,
+        output_cost_per_token: 0.00003,
+        output_cost_per_token_above_272k_tokens: 0.000045,
+        cache_creation_input_token_cost: 0.00000625,
+        cache_creation_input_token_cost_above_272k_tokens: 0.0000125,
+        cache_read_input_token_cost: 0.0000005,
+        cache_read_input_token_cost_above_272k_tokens: 0.000001,
+        litellm_provider: 'openai'
+      })
+
+      const result = CostCalculator.calculateCost(
+        {
+          input_tokens: 300000,
+          output_tokens: 1000,
+          cache_creation_input_tokens: 1000,
+          cache_read_input_tokens: 1000
+        },
+        'gpt-5.6'
+      )
+
+      expect(result.pricing.input).toBe(5)
+      expect(result.pricing.output).toBe(30)
+      expect(result.pricing.cacheWrite).toBe(6.25)
+      expect(result.pricing.cacheRead).toBe(0.5)
+    })
+  })
+
   describe('gpt-5.4 service_tier pricing', () => {
     const gpt54Pricing = {
       input_cost_per_token: 0.0000025,

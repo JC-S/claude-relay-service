@@ -280,6 +280,54 @@ describe('requestDetailService', () => {
     expect(result.summary.cacheHitRate).toBe(29.03)
   })
 
+  test('listRequestDetails shows zero cache creation for fast gpt-5.6 records and summaries', async () => {
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: true
+    })
+
+    redis.getApiKey.mockResolvedValue({ name: 'GPT 5.6 Key' })
+    openaiAccountService.getAccount.mockResolvedValue({ name: 'OpenAI Main' })
+    redis.getClient.mockReturnValue({
+      zrangebyscore: jest.fn().mockResolvedValue(['req_56', '1775563200000']),
+      mget: jest.fn().mockResolvedValue([
+        JSON.stringify({
+          requestId: 'req_56',
+          timestamp: '2026-04-07T12:00:00.000Z',
+          endpoint: '/openai/v1/responses',
+          method: 'POST',
+          apiKeyId: 'key_56',
+          accountId: 'acct_56',
+          accountType: 'openai',
+          rawModel: 'gpt-5.6-sol',
+          model: 'gpt-5.6-sol (fast)',
+          serviceTier: 'priority',
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheReadTokens: 30,
+          cacheCreateTokens: 0,
+          totalTokens: 150,
+          cost: 0.3,
+          durationMs: 500
+        })
+      ])
+    })
+
+    const result = await requestDetailService.listRequestDetails({
+      startDate: '2026-04-07T00:00:00.000Z',
+      endDate: '2026-04-07T23:59:59.000Z'
+    })
+
+    expect(result.records).toHaveLength(1)
+    expect(result.records[0].rawModel).toBe('gpt-5.6-sol')
+    expect(result.records[0].model).toBe('gpt-5.6-sol (fast)')
+    expect(result.records[0].cacheCreateNotApplicable).toBe(false)
+    expect(result.summary.cacheCreateTokens).toBe(0)
+    expect(result.summary.cacheCreateNotApplicable).toBe(false)
+    expect(result.summary.cacheHitDenominator).toBe(130)
+  })
+
   test('listRequestDetails treats azure-openai cache hits as openai-style metrics', async () => {
     claudeRelayConfigService.getConfig.mockResolvedValue({
       requestDetailCaptureEnabled: true,

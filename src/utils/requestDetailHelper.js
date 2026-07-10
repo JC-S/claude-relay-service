@@ -1,3 +1,6 @@
+const { normalizeBaseModelName } = require('./modelVariantHelper')
+const { normalizeOpenAIUsage } = require('./openaiUsageHelper')
+
 const SENSITIVE_KEY_PATTERN =
   /(authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|cookie|set-cookie|client_secret|private[_-]?key|proxy)/i
 const DEFAULT_MAX_STRING_CHARS = 80
@@ -8,6 +11,12 @@ const ENCRYPTED_CONTENT_KEY = 'encrypted_content'
 const TOOLS_KEY = 'tools'
 const PREVIEW_TRUNCATION_SUFFIX_PATTERN = /\.\.\.\[(?:truncated )?(\d+) chars\]$/
 const OPENAI_RELATED_ACCOUNT_TYPES = new Set(['openai', 'openai-responses', 'azure-openai'])
+const GPT_56_CACHE_WRITE_MODELS = new Set([
+  'gpt-5.6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna'
+])
 const CACHE_HIT_FORMULA = 'cacheReadTokens / (inputTokens + cacheReadTokens + cacheCreateTokens)'
 
 function toFiniteNumber(value) {
@@ -606,29 +615,7 @@ function finalizeRequestDetailMeta(requestMeta = null) {
 }
 
 function extractOpenAICacheReadTokens(usage = {}) {
-  if (!usage || typeof usage !== 'object') {
-    return 0
-  }
-
-  const candidates = [
-    usage.input_tokens_details?.cached_tokens,
-    usage.input_tokens_details?.cached_token,
-    usage.prompt_tokens_details?.cached_tokens,
-    usage.prompt_tokens_details?.cached_token
-  ]
-
-  for (const value of candidates) {
-    if (value === undefined || value === null || value === '') {
-      continue
-    }
-
-    const parsed = Number(value)
-    if (!Number.isNaN(parsed)) {
-      return Math.max(0, parsed)
-    }
-  }
-
-  return 0
+  return normalizeOpenAIUsage(usage, { logDiagnostics: false }).cacheReadTokens
 }
 
 function isOpenAIRelatedEndpoint(endpoint) {
@@ -658,12 +645,15 @@ function getRequestDetailCacheMetrics(detail = {}) {
   const input = Math.max(0, Number(detail.inputTokens) || 0)
   const isOpenAIRelated =
     OPENAI_RELATED_ACCOUNT_TYPES.has(detail.accountType) || isOpenAIRelatedEndpoint(detail.endpoint)
+  const baseModel = normalizeBaseModelName(detail.rawModel || detail.model)
+  const cacheCreateApplicable = create > 0 || GPT_56_CACHE_WRITE_MODELS.has(baseModel)
+  const cacheCreateNotApplicable = isOpenAIRelated && !cacheCreateApplicable
   const denominator = input + read + create
 
   if (denominator <= 0) {
     return {
       isOpenAIRelated,
-      cacheCreateNotApplicable: isOpenAIRelated,
+      cacheCreateNotApplicable,
       numerator: read,
       denominator: 0,
       formula: CACHE_HIT_FORMULA,
@@ -674,7 +664,7 @@ function getRequestDetailCacheMetrics(detail = {}) {
 
   return {
     isOpenAIRelated,
-    cacheCreateNotApplicable: isOpenAIRelated,
+    cacheCreateNotApplicable,
     numerator: read,
     denominator,
     formula: CACHE_HIT_FORMULA,
