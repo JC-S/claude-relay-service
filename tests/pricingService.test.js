@@ -465,29 +465,32 @@ describe('PricingService - Long Context Pricing', () => {
       expect(result.totalCost).toBeCloseTo(0.02025, 10)
     })
 
-    it('裸 gpt-5.6 仅补充 service tier capability，不覆盖显式 priority 价格', () => {
-      pricingService.pricingData = {
-        'gpt-5.6': {
-          input_cost_per_token: 0.000005,
-          input_cost_per_token_priority: 0.000011,
-          output_cost_per_token: 0.00003,
-          output_cost_per_token_priority: 0.000061,
-          cache_creation_input_token_cost: 0.00000625,
-          cache_creation_input_token_cost_priority: 0.00001275,
-          cache_read_input_token_cost: 0.0000005,
-          cache_read_input_token_cost_priority: 0.0000011,
-          litellm_provider: 'openai'
+    it.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+      '%s 的 priority 价格按基础价格 2x 本地覆盖',
+      (model) => {
+        pricingService.pricingData = {
+          [model]: {
+            input_cost_per_token: 0.000005,
+            input_cost_per_token_priority: 0.000011,
+            output_cost_per_token: 0.00003,
+            output_cost_per_token_priority: 0.000061,
+            cache_creation_input_token_cost: 0.00000625,
+            cache_creation_input_token_cost_priority: 0.00001275,
+            cache_read_input_token_cost: 0.0000005,
+            cache_read_input_token_cost_priority: 0.0000011,
+            litellm_provider: 'openai'
+          }
         }
+
+        const pricing = pricingService.getModelPricing(model)
+
+        expect(pricing.supports_service_tier).toBe(true)
+        expect(pricing.input_cost_per_token_priority).toBe(0.00001)
+        expect(pricing.output_cost_per_token_priority).toBe(0.00006)
+        expect(pricing.cache_creation_input_token_cost_priority).toBe(0.0000125)
+        expect(pricing.cache_read_input_token_cost_priority).toBe(0.000001)
       }
-
-      const pricing = pricingService.getModelPricing('gpt-5.6')
-
-      expect(pricing.supports_service_tier).toBe(true)
-      expect(pricing.input_cost_per_token_priority).toBe(0.000011)
-      expect(pricing.output_cost_per_token_priority).toBe(0.000061)
-      expect(pricing.cache_creation_input_token_cost_priority).toBe(0.00001275)
-      expect(pricing.cache_read_input_token_cost_priority).toBe(0.0000011)
-    })
+    )
 
     it.each([
       ['gpt-5.6', 6.25, 12.5],

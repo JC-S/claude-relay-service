@@ -193,15 +193,9 @@ import { showToast } from '@/utils/tools'
 
 // 哪些 base 模型在表格里追加一条「 (fast)」行,价格走 priority 字段。
 // 与 src/utils/modelVariantHelper.js 的 FAST_MODEL_SUFFIX 命名约定一致。
-const FAST_VARIANT_MODELS = [
-  'gpt-5.4',
-  'gpt-5.5',
-  'gpt-5.6',
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna'
-]
+const FAST_VARIANT_MODELS = new Set(['gpt-5.4', 'gpt-5.5'])
 const FAST_MODEL_SUFFIX = ' (fast)'
+const supportsFastVariant = (name) => FAST_VARIANT_MODELS.has(name) || /^gpt-5\.6(?:$|-)/.test(name)
 
 // ========== 状态 ==========
 const loading = ref(false)
@@ -246,7 +240,7 @@ const allModels = computed(() => {
     rows.push(toRowFromPricing(name, data))
 
     if (
-      FAST_VARIANT_MODELS.includes(name) &&
+      supportsFastVariant(name) &&
       (data.input_cost_per_token_priority || data.output_cost_per_token_priority)
     ) {
       rows.push(

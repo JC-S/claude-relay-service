@@ -53,7 +53,16 @@ class PricingService {
         priorityMultiplier: 2.5
       },
       'gpt-5.6': {
-        setSupportsServiceTier: true
+        priorityMultiplier: 2
+      },
+      'gpt-5.6-sol': {
+        priorityMultiplier: 2
+      },
+      'gpt-5.6-terra': {
+        priorityMultiplier: 2
+      },
+      'gpt-5.6-luna': {
+        priorityMultiplier: 2
       }
     }
 
