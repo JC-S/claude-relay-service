@@ -49,7 +49,8 @@ jest.mock('../src/services/userMessageQueueService', () => ({
   releaseQueueLock: jest.fn()
 }))
 jest.mock('../src/services/account/claudeAccountService', () => ({
-  recordClaudeOAuth429AndShouldPause: jest.fn()
+  recordClaudeOAuth429AndShouldPause: jest.fn(),
+  markAccountModelRateLimited: jest.fn()
 }))
 jest.mock('../src/services/scheduler/unifiedClaudeScheduler', () => ({
   markAccountRateLimited: jest.fn()
@@ -89,7 +90,7 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
       rollingDecision({ count: 2 })
     )
 
-    const result = await claudeRelayService._handleClaudeOfficial429AutoProtection({
+    const result = await claudeRelayService._handleClaude429AutoProtection({
       accountId: 'acct_1',
       accountType: 'claude-official',
       account: { authType: 'oauth' },
@@ -98,7 +99,7 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
       responseHeaders: { 'retry-after': '120' },
       upstreamErrorContext: { requestId: 'req_1' },
       phase: 'non_stream',
-      model: 'claude-opus-4-8'
+      model: 'unknown-claude-model'
     })
 
     expect(result.paused).toBe(false)
@@ -121,7 +122,7 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
   })
 
   test('skips rate-limit marking and rolling counter when authoritative reset header is missing', async () => {
-    const result = await claudeRelayService._handleClaudeOfficial429AutoProtection({
+    const result = await claudeRelayService._handleClaude429AutoProtection({
       accountId: 'acct_1',
       accountType: 'claude-official',
       account: { authType: 'oauth' },
@@ -163,7 +164,7 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
       rollingDecision({ count: 3, shouldPause: true, action: 'paused' })
     )
 
-    const result = await claudeRelayService._handleClaudeOfficial429AutoProtection({
+    const result = await claudeRelayService._handleClaude429AutoProtection({
       accountId: 'acct_1',
       accountType: 'claude-official',
       account: { authType: 'oauth' },
@@ -172,7 +173,7 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
       responseHeaders: { 'retry-after': '120' },
       upstreamErrorContext: { requestId: 'req_1' },
       phase: 'stream',
-      model: 'claude-opus-4-8'
+      model: 'unknown-claude-model'
     })
 
     expect(result.paused).toBe(true)
@@ -208,14 +209,15 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
       reason: 'account_temp_unavailable_disabled'
     })
 
-    await claudeRelayService._handleClaudeOfficial429AutoProtection({
+    await claudeRelayService._handleClaude429AutoProtection({
       accountId: 'acct_1',
       accountType: 'claude-official',
       account: { authType: 'oauth' },
       sessionHash: null,
       rateLimitResetTimestamp: 1_780_000_000,
       responseHeaders: {},
-      upstreamErrorContext: { requestId: 'req_1' }
+      upstreamErrorContext: { requestId: 'req_1' },
+      model: 'unknown-claude-model'
     })
 
     expect(upstreamErrorHelper.recordErrorHistory).toHaveBeenCalledWith(
@@ -237,14 +239,15 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
       rollingDecision({ enabled: false, shouldPause: true, action: 'not_applicable' })
     )
 
-    await claudeRelayService._handleClaudeOfficial429AutoProtection({
+    await claudeRelayService._handleClaude429AutoProtection({
       accountId: 'acct_setup',
       accountType: 'claude-official',
       account: { scopes: 'user:inference' },
       sessionHash: null,
       rateLimitResetTimestamp: 1_780_000_000,
       responseHeaders: {},
-      upstreamErrorContext: null
+      upstreamErrorContext: null,
+      model: 'unknown-claude-model'
     })
 
     expect(unifiedClaudeScheduler.markAccountRateLimited).toHaveBeenCalledWith(
@@ -255,5 +258,88 @@ describe('Claude OAuth 429 relay auto-protection helper', () => {
     )
     expect(upstreamErrorHelper.markTempUnavailable).toHaveBeenCalled()
     expect(upstreamErrorHelper.recordErrorHistory).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['claude-opus-4-8', 'opus'],
+    ['claude-sonnet-4-6', 'sonnet'],
+    ['claude-3-5-haiku-20241022', 'haiku'],
+    ['claude-fable-5[1m]', 'fable']
+  ])(
+    'marks only the %s model family when an authoritative reset is present',
+    async (model, family) => {
+      const result = await claudeRelayService._handleClaude429AutoProtection({
+        accountId: 'acct_1',
+        accountType: 'claude-official',
+        account: { authType: 'oauth' },
+        sessionHash: 'session_1',
+        rateLimitResetTimestamp: 1_780_000_000,
+        responseHeaders: { 'retry-after': '120' },
+        upstreamErrorContext: { requestId: `req_${family}`, errorBody: 'full upstream body' },
+        phase: 'stream',
+        model
+      })
+
+      expect(result).toMatchObject({
+        paused: false,
+        modelRateLimited: true,
+        modelFamily: family
+      })
+      expect(claudeAccountService.markAccountModelRateLimited).toHaveBeenCalledWith(
+        'acct_1',
+        family,
+        1_780_000_000
+      )
+      expect(claudeAccountService.recordClaudeOAuth429AndShouldPause).not.toHaveBeenCalled()
+      expect(unifiedClaudeScheduler.markAccountRateLimited).not.toHaveBeenCalled()
+      expect(upstreamErrorHelper.markTempUnavailable).not.toHaveBeenCalled()
+      expect(upstreamErrorHelper.recordErrorHistory).toHaveBeenCalledWith(
+        'acct_1',
+        'claude-official',
+        429,
+        'rate_limit',
+        expect.objectContaining({
+          requestId: `req_${family}`,
+          errorBody: 'full upstream body',
+          modelFamily: family,
+          rateLimit: expect.objectContaining({
+            action: 'model_family_limited',
+            modelFamily: family
+          })
+        })
+      )
+    }
+  )
+
+  test('a known family without a reset only records complete history', async () => {
+    await claudeRelayService._handleClaude429AutoProtection({
+      accountId: 'acct_1',
+      accountType: 'claude-official',
+      account: { authType: 'oauth' },
+      sessionHash: 'session_1',
+      upstreamErrorContext: { requestId: 'req_no_reset', errorBody: 'full upstream body' },
+      phase: 'non_stream',
+      model: 'claude-sonnet-4-6'
+    })
+
+    expect(claudeAccountService.markAccountModelRateLimited).not.toHaveBeenCalled()
+    expect(claudeAccountService.recordClaudeOAuth429AndShouldPause).not.toHaveBeenCalled()
+    expect(unifiedClaudeScheduler.markAccountRateLimited).not.toHaveBeenCalled()
+    expect(upstreamErrorHelper.markTempUnavailable).not.toHaveBeenCalled()
+    expect(upstreamErrorHelper.recordErrorHistory).toHaveBeenCalledWith(
+      'acct_1',
+      'claude-official',
+      429,
+      'rate_limit',
+      expect.objectContaining({
+        requestId: 'req_no_reset',
+        errorBody: 'full upstream body',
+        modelFamily: 'sonnet',
+        rateLimit: expect.objectContaining({
+          authoritativeResetHeader: false,
+          modelFamily: 'sonnet'
+        })
+      })
+    )
   })
 })

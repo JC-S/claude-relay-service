@@ -53,8 +53,10 @@ jest.mock('../src/services/userMessageQueueService', () => ({
 jest.mock('../src/services/account/claudeAccountService', () => ({
   getAccount: jest.fn(),
   getValidAccessToken: jest.fn(),
-  clearExpiredOpusRateLimit: jest.fn(),
-  isAccountOpusRateLimited: jest.fn(),
+  clearExpiredModelRateLimit: jest.fn(),
+  getAccountModelRateLimitInfo: jest.fn(() =>
+    Promise.resolve({ isRateLimited: false, resetAt: null })
+  ),
   clearInternalErrors: jest.fn(),
   isAccountOverloaded: jest.fn(),
   removeAccountOverload: jest.fn(),

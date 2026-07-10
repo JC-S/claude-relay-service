@@ -447,6 +447,9 @@ describe('PricingService - Long Context Pricing', () => {
         pricing.cache_read_input_token_cost * 2.5,
         12
       )
+      // OpenAI does not publish a separate GPT-5.5 cache-write price. Do not invent one.
+      expect(pricing.cache_creation_input_token_cost).toBeUndefined()
+      expect(pricing.cache_creation_input_token_cost_priority).toBeUndefined()
     })
 
     it('gpt-5.5 在 service_tier=priority 时按 2.5x 计费', () => {
@@ -525,6 +528,21 @@ describe('PricingService - Long Context Pricing', () => {
         expect(pricing.cache_creation_input_token_cost_priority).toBeGreaterThan(0)
       }
       expect(pricingService.getModelPricing('gpt-5.6').supports_service_tier).toBe(true)
+    })
+
+    it('keeps the legacy gpt-5-codex fallback but refuses GPT-5.5/5.6 fuzzy fallback', () => {
+      const gpt5Pricing = {
+        input_cost_per_token: 0.00000125,
+        output_cost_per_token: 0.00001,
+        litellm_provider: 'openai'
+      }
+      pricingService.pricingData = { 'gpt-5': gpt5Pricing }
+
+      expect(pricingService.getModelPricing('gpt-5-codex')).toBe(gpt5Pricing)
+      expect(pricingService.getModelPricing('gpt-5.5')).toBeNull()
+      for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+        expect(pricingService.getModelPricing(model)).toBeNull()
+      }
     })
   })
 

@@ -514,6 +514,16 @@ class PricingService {
       }
     }
 
+    // These models have intentionally distinct local prices. If an exact entry is
+    // missing, do not let the generic fuzzy matcher silently underprice them as gpt-5.
+    if (
+      modelName === 'gpt-5.5' ||
+      ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'].includes(modelName)
+    ) {
+      logger.warn(`💰 Exact pricing is required for ${modelName}; refusing fuzzy fallback`)
+      return null
+    }
+
     // 对于Bedrock区域前缀模型（如 us.anthropic.claude-sonnet-4-20250514-v1:0），
     // 尝试去掉区域前缀进行匹配
     if (modelName.includes('.anthropic.') || modelName.includes('.claude')) {

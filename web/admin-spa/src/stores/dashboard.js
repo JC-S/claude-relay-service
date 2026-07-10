@@ -153,13 +153,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
   })
 
   // 辅助函数：获取系统时区某一天的起止UTC时间
-  // 输入：一个本地时间的日期对象（如用户选择的日期）
-  // 输出：该日期在系统时区的0点/23:59对应的UTC时间
+  // 输入：一个时间点（Date 对象，通常由当前时刻推算而来）
+  // 输出：该时间点在系统时区（UTC+8）所属日期的0点/23:59对应的UTC时间
   function getSystemTimezoneDay(localDate, startOfDay = true) {
     // 固定使用UTC+8，因为后端系统时区是UTC+8
-    const year = localDate.getFullYear()
-    const month = localDate.getMonth()
-    const day = localDate.getDate()
+    const shifted = new Date(localDate.getTime() + 8 * 60 * 60 * 1000)
+    const year = shifted.getUTCFullYear()
+    const month = shifted.getUTCMonth()
+    const day = shifted.getUTCDate()
 
     if (startOfDay) {
       // 系统时区（UTC+8）的 YYYY-MM-DD 00:00:00
@@ -170,6 +171,14 @@ export const useDashboardStore = defineStore('dashboard', () => {
       // 对应的UTC时间是当天的15:59:59
       return new Date(Date.UTC(year, month, day, 15, 59, 59, 999))
     }
+  }
+
+  // 把日期选择器中的 UTC+8 墙钟字符串转换为明确的 ISO 时间。
+  function systemTimeStringToISO(timeStr) {
+    const [datePart, timePart = '00:00:00'] = timeStr.split(' ')
+    const [year, month, day] = datePart.split('-').map(Number)
+    const [hours, minutes, seconds] = timePart.split(':').map(Number)
+    return new Date(Date.UTC(year, month - 1, day, hours - 8, minutes, seconds)).toISOString()
   }
 
   // 公共函数：根据预设计算时间范围
@@ -320,13 +329,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
       if (granularity === 'hour') {
         url += `granularity=hour`
 
-        if (dateFilter.value.customRange && dateFilter.value.customRange.length === 2) {
-          url += `&startDate=${encodeURIComponent(dateFilter.value.customRange[0])}`
-          url += `&endDate=${encodeURIComponent(dateFilter.value.customRange[1])}`
-        } else if (dateFilter.value.type === 'preset') {
+        if (dateFilter.value.type === 'preset') {
           const { start, end } = getPresetTimeRange(dateFilter.value.preset)
           url += `&startDate=${encodeURIComponent(start.toISOString())}`
           url += `&endDate=${encodeURIComponent(end.toISOString())}`
+        } else if (dateFilter.value.customRange && dateFilter.value.customRange.length === 2) {
+          url += `&startDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[0]))}`
+          url += `&endDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[1]))}`
         } else {
           const now = new Date()
           url += `&startDate=${encodeURIComponent(new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString())}`
@@ -350,15 +359,17 @@ export const useDashboardStore = defineStore('dashboard', () => {
     try {
       let url = `/admin/model-stats?period=${period}`
 
-      if (dateFilter.value.type === 'custom' || currentGranularity === 'hour') {
-        if (dateFilter.value.customRange && dateFilter.value.customRange.length === 2) {
-          url += `&startDate=${encodeURIComponent(dateFilter.value.customRange[0])}`
-          url += `&endDate=${encodeURIComponent(dateFilter.value.customRange[1])}`
-        } else if (currentGranularity === 'hour' && dateFilter.value.type === 'preset') {
-          const { start, end } = getPresetTimeRange(dateFilter.value.preset)
-          url += `&startDate=${encodeURIComponent(start.toISOString())}`
-          url += `&endDate=${encodeURIComponent(end.toISOString())}`
-        }
+      if (currentGranularity === 'hour' && dateFilter.value.type === 'preset') {
+        const { start, end } = getPresetTimeRange(dateFilter.value.preset)
+        url += `&startDate=${encodeURIComponent(start.toISOString())}`
+        url += `&endDate=${encodeURIComponent(end.toISOString())}`
+      } else if (
+        dateFilter.value.type === 'custom' &&
+        dateFilter.value.customRange &&
+        dateFilter.value.customRange.length === 2
+      ) {
+        url += `&startDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[0]))}`
+        url += `&endDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[1]))}`
       } else if (dateFilter.value.type === 'preset' && currentGranularity === 'day') {
         const now = new Date()
         const option = dateFilter.value.presetOptions.find(
@@ -398,13 +409,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
       if (currentGranularity === 'hour') {
         url += `granularity=hour`
 
-        if (dateFilter.value.customRange && dateFilter.value.customRange.length === 2) {
-          url += `&startDate=${encodeURIComponent(dateFilter.value.customRange[0])}`
-          url += `&endDate=${encodeURIComponent(dateFilter.value.customRange[1])}`
-        } else if (dateFilter.value.type === 'preset') {
+        if (dateFilter.value.type === 'preset') {
           const { start, end } = getPresetTimeRange(dateFilter.value.preset)
           url += `&startDate=${encodeURIComponent(start.toISOString())}`
           url += `&endDate=${encodeURIComponent(end.toISOString())}`
+        } else if (dateFilter.value.customRange && dateFilter.value.customRange.length === 2) {
+          url += `&startDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[0]))}`
+          url += `&endDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[1]))}`
         } else {
           const now = new Date()
           url += `&startDate=${encodeURIComponent(new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString())}`
@@ -446,13 +457,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
       if (currentGranularity === 'hour') {
         url += `granularity=hour`
 
-        if (dateFilter.value.customRange && dateFilter.value.customRange.length === 2) {
-          url += `&startDate=${encodeURIComponent(dateFilter.value.customRange[0])}`
-          url += `&endDate=${encodeURIComponent(dateFilter.value.customRange[1])}`
-        } else if (dateFilter.value.type === 'preset') {
+        if (dateFilter.value.type === 'preset') {
           const { start, end } = getPresetTimeRange(dateFilter.value.preset)
           url += `&startDate=${encodeURIComponent(start.toISOString())}`
           url += `&endDate=${encodeURIComponent(end.toISOString())}`
+        } else if (dateFilter.value.customRange && dateFilter.value.customRange.length === 2) {
+          url += `&startDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[0]))}`
+          url += `&endDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[1]))}`
         } else {
           const now = new Date()
           url += `&startDate=${encodeURIComponent(new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString())}`
@@ -504,33 +515,33 @@ export const useDashboardStore = defineStore('dashboard', () => {
       startDate = range.start
       endDate = range.end
     } else {
-      startDate = new Date(now)
-      endDate = new Date(now)
-
       if (normalizedPreset === 'today') {
-        startDate.setHours(0, 0, 0, 0)
-        endDate.setHours(23, 59, 59, 999)
+        startDate = getSystemTimezoneDay(now, true)
+        endDate = getSystemTimezoneDay(now, false)
       } else if (option?.days) {
-        startDate.setDate(now.getDate() - (option.days - 1))
-        startDate.setHours(0, 0, 0, 0)
-        endDate.setHours(23, 59, 59, 999)
+        const daysAgo = new Date(now)
+        daysAgo.setDate(daysAgo.getDate() - (option.days - 1))
+        startDate = getSystemTimezoneDay(daysAgo, true)
+        endDate = getSystemTimezoneDay(now, false)
+      } else {
+        startDate = new Date(now)
+        endDate = new Date(now)
       }
     }
 
     const formatDateForDisplay = (date) => {
-      // 使用本地时间直接格式化，避免多余的时区偏移导致日期错位
-      const localTime = new Date(date)
-      const year = localTime.getFullYear()
-      const month = String(localTime.getMonth() + 1).padStart(2, '0')
-      const day = String(localTime.getDate()).padStart(2, '0')
-      const hours = String(localTime.getHours()).padStart(2, '0')
-      const minutes = String(localTime.getMinutes()).padStart(2, '0')
-      const seconds = String(localTime.getSeconds()).padStart(2, '0')
+      const systemTime = new Date(date.getTime() + 8 * 60 * 60 * 1000)
+      const year = systemTime.getUTCFullYear()
+      const month = String(systemTime.getUTCMonth() + 1).padStart(2, '0')
+      const day = String(systemTime.getUTCDate()).padStart(2, '0')
+      const hours = String(systemTime.getUTCHours()).padStart(2, '0')
+      const minutes = String(systemTime.getUTCMinutes()).padStart(2, '0')
+      const seconds = String(systemTime.getUTCSeconds()).padStart(2, '0')
       return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
     }
 
-    dateFilter.value.customStart = startDate ? startDate.toISOString().split('T')[0] : ''
-    dateFilter.value.customEnd = endDate ? endDate.toISOString().split('T')[0] : ''
+    dateFilter.value.customStart = startDate ? formatDateForDisplay(startDate).split(' ')[0] : ''
+    dateFilter.value.customEnd = endDate ? formatDateForDisplay(endDate).split(' ')[0] : ''
     dateFilter.value.customRange =
       startDate && endDate ? [formatDateForDisplay(startDate), formatDateForDisplay(endDate)] : null
 

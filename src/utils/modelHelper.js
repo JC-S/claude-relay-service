@@ -253,6 +253,25 @@ function isClaudeFamilyModel(modelName) {
   return false
 }
 
+const RATE_LIMITED_MODEL_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable']
+
+/**
+ * Resolve the independent Anthropic rate-limit bucket for a model.
+ * Vendor prefixes are removed before matching.
+ */
+function getRateLimitModelFamily(modelName) {
+  if (!modelName || typeof modelName !== 'string') {
+    return null
+  }
+
+  const effectiveModel = (getEffectiveModel(modelName) || '').trim().toLowerCase()
+  if (!effectiveModel) {
+    return null
+  }
+
+  return RATE_LIMITED_MODEL_FAMILIES.find((family) => effectiveModel.includes(family)) || null
+}
+
 module.exports = {
   parseVendorPrefixedModel,
   hasVendorPrefix,
@@ -260,6 +279,8 @@ module.exports = {
   getVendorType,
   isOpus45OrNewer,
   isClaudeFamilyModel,
+  RATE_LIMITED_MODEL_FAMILIES,
+  getRateLimitModelFamily,
   isClaudeFableModel,
   isExportControlledClaudeModel,
   EXPORT_CONTROLLED_CLAUDE_MODEL_MESSAGE

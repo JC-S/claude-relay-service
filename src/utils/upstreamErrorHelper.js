@@ -16,6 +16,8 @@ const DEFAULT_TTL = {
   rate_limit: 300 // 429: 5分钟（优先使用响应头解析值）
 }
 
+const DEFAULT_MAX_CUSTOM_TTL = 1800
+
 // 延迟加载配置，避免循环依赖
 let _configCache = null
 const getConfig = () => {
@@ -45,7 +47,11 @@ const getTtlConfig = () => {
     overload: config.upstreamError?.overloadTtlSeconds ?? DEFAULT_TTL.overload,
     auth_error: config.upstreamError?.authErrorTtlSeconds ?? DEFAULT_TTL.auth_error,
     timeout: config.upstreamError?.timeoutTtlSeconds ?? DEFAULT_TTL.timeout,
-    rate_limit: DEFAULT_TTL.rate_limit
+    rate_limit: DEFAULT_TTL.rate_limit,
+    max_custom:
+      config.upstreamError?.maxCustomTtlSeconds ??
+      parseEnvPositiveInt('UPSTREAM_ERROR_MAX_CUSTOM_TTL_SECONDS') ??
+      DEFAULT_MAX_CUSTOM_TTL
   }
 }
 
@@ -447,10 +453,18 @@ const markTempUnavailable = async (
 
     const ttlConfig = getTtlConfig()
     const parsedCustomTtl = Number(customTtl)
-    let ttlSeconds =
-      Number.isFinite(parsedCustomTtl) && parsedCustomTtl > 0
-        ? Math.ceil(parsedCustomTtl)
-        : ttlConfig[errorType]
+    let ttlSeconds
+    if (Number.isFinite(parsedCustomTtl) && parsedCustomTtl > 0) {
+      const requestedTtl = Math.ceil(parsedCustomTtl)
+      ttlSeconds = Math.min(requestedTtl, ttlConfig.max_custom)
+      if (ttlSeconds < requestedTtl) {
+        logger.warn(
+          `⚠️ [UpstreamError] Upstream retry-after ${requestedTtl}s for account ${accountId} (${accountType}) exceeds temp-unavailable cap, clamping to ${ttlSeconds}s`
+        )
+      }
+    } else {
+      ttlSeconds = ttlConfig[errorType]
+    }
     if (
       Number.isFinite(policyDecision.ttlOverrideSeconds) &&
       policyDecision.ttlOverrideSeconds > 0
@@ -479,8 +493,18 @@ const markTempUnavailable = async (
       `⏱️ [UpstreamError] Account ${accountId} (${accountType}) marked temporarily unavailable for ${ttlSeconds}s (${statusCode} ${errorType}), recovers at ${expiresAtIso}`
     )
 
-    // 异步记录错误历史，不阻塞主流程
-    recordErrorHistory(accountId, accountType, statusCode, errorType, context).catch(() => {})
+    // 异步记录错误历史，不阻塞主流程；保存最终生效的 TTL，而不是原始 retry-after。
+    const historyContext = {
+      ...(context || {}),
+      tempUnavailable: {
+        ttlSeconds,
+        expiresAt: expiresAtIso,
+        policyReason: policyDecision.reason || null
+      }
+    }
+    recordErrorHistory(accountId, accountType, statusCode, errorType, historyContext).catch(
+      () => {}
+    )
 
     return { success: true, ttlSeconds, errorType, expiresAt: expiresAtIso }
   } catch (error) {

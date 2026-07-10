@@ -28,7 +28,7 @@ function createCodexTuiRequest(overrides = {}) {
     },
     body: {
       instructions: overrides.instructions || codexInstructions,
-      model: overrides.model || 'gpt-5-codex',
+      model: overrides.model || 'gpt-5.5',
       ...(overrides.body || {})
     }
   }
