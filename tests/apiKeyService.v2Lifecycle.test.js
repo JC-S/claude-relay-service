@@ -48,6 +48,7 @@ jest.mock('../src/models/redis', () => ({
   getV2ParentTotalCost: jest.fn(), // validateApiKey 子 key 总账信息用
   getV2ParentWeeklyOpusCost: jest.fn(),
   getV2ParentWeeklyFableCost: jest.fn(),
+  getWeeklyOpusCost: jest.fn(),
   getWeeklyFableCost: jest.fn(),
   setV2ParentTotalCost: jest.fn(),
   deleteV2ParentTotalCost: jest.fn(),
@@ -130,6 +131,7 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     redis.getCostStats.mockResolvedValue({ total: 0 })
     redis.getV2ParentWeeklyOpusCost.mockResolvedValue(0)
     redis.getV2ParentWeeklyFableCost.mockResolvedValue(0)
+    redis.getWeeklyOpusCost.mockResolvedValue(0)
     redis.getWeeklyFableCost.mockResolvedValue(0)
     redis.client.hset.mockResolvedValue()
   })
@@ -1104,6 +1106,26 @@ describe('apiKeyService v2 IP whitelist', () => {
       expect(redis.getWeeklyFableCost).not.toHaveBeenCalled()
       expect(result.keyData.weeklyFableCostLimit).toBe(100)
       expect(result.keyData.weeklyFableCost).toBe(88.5)
+    })
+
+    test('uses v2 parent aggregate Claude weekly cost for inherited Claude limit', async () => {
+      redis.getV2ParentWeeklyOpusCost.mockResolvedValue(77.25)
+      mockChildAndParent(
+        {},
+        {
+          weeklyOpusCostLimit: '100',
+          weeklyResetDay: '4',
+          weeklyResetHour: '9'
+        }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(redis.getV2ParentWeeklyOpusCost).toHaveBeenCalledWith(PARENT_ID, 4, 9)
+      expect(redis.getWeeklyOpusCost).not.toHaveBeenCalled()
+      expect(result.keyData.weeklyOpusCostLimit).toBe(100)
+      expect(result.keyData.weeklyOpusCost).toBe(77.25)
     })
   })
 

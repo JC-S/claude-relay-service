@@ -726,9 +726,10 @@ class ApiKeyService {
         const resetDay = parseInt(keyData.weeklyResetDay || 1)
         const resetHour = parseInt(keyData.weeklyResetHour || 0)
         costQueries.push(
-          redis
-            .getWeeklyOpusCost(keyData.id, resetDay, resetHour)
-            .then((v) => ({ weeklyOpusCost: v || 0 }))
+          (keyData.parentKeyId
+            ? redis.getV2ParentWeeklyOpusCost(keyData.parentKeyId, resetDay, resetHour)
+            : redis.getWeeklyOpusCost(keyData.id, resetDay, resetHour)
+          ).then((v) => ({ weeklyOpusCost: v || 0 }))
         )
       }
       if (weeklyFableCostLimit > 0) {

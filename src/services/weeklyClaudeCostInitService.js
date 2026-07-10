@@ -36,6 +36,15 @@ function toInt(v) {
   return Number.isFinite(n) ? n : 0
 }
 
+function toFiniteNumber(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key)
+}
+
 class WeeklyClaudeCostInitService {
   // 获取最近 7 天的日期字符串数组（覆盖任意重置配置的完整周期）
   _getLast7DaysInTimezone() {
@@ -60,6 +69,258 @@ class WeeklyClaudeCostInitService {
     return `usage:fable:weekly:${keyId}:${periodString}`
   }
 
+  _buildBucketId(bucket) {
+    return `${bucket.type}:${bucket.bucketKey}`
+  }
+
+  _addBucketCost(map, keyId, bucketId, cost) {
+    if (!map.has(keyId)) {
+      map.set(keyId, new Map())
+    }
+    const bucketMap = map.get(keyId)
+    bucketMap.set(bucketId, (bucketMap.get(bucketId) || 0) + cost)
+  }
+
+  _getBucketCost(map, keyId, bucket) {
+    const bucketMap = map.get(keyId)
+    if (!bucketMap) {
+      return 0
+    }
+    return bucketMap.get(this._buildBucketId(bucket)) || 0
+  }
+
+  _iterPeriodBuckets(periodStart, nowTz = redis.getDateInTimezone(new Date())) {
+    const buckets = []
+    const startDay = new Date(periodStart)
+    startDay.setUTCHours(0, 0, 0, 0)
+
+    const endDay = new Date(nowTz)
+    endDay.setUTCHours(0, 0, 0, 0)
+
+    const resetHour = periodStart.getUTCHours()
+    const currentHour = nowTz.getUTCHours()
+
+    for (const d = new Date(startDay); d <= endDay; d.setUTCDate(d.getUTCDate() + 1)) {
+      const dateStr = formatTzDateYmd(d)
+      const isStartDay = d.getTime() === startDay.getTime()
+      const isCurrentDay = d.getTime() === endDay.getTime()
+
+      if (isStartDay && resetHour > 0) {
+        const endHour = isCurrentDay ? currentHour : 23
+        for (let h = resetHour; h <= endHour; h++) {
+          buckets.push({
+            type: 'hourly',
+            bucketKey: `${dateStr}:${pad2(h)}`,
+            dateStr,
+            hour: h
+          })
+        }
+        continue
+      }
+
+      buckets.push({
+        type: 'daily',
+        bucketKey: dateStr,
+        dateStr
+      })
+    }
+
+    return buckets
+  }
+
+  _parseUsageModelKey(usageKey, bucketType) {
+    if (bucketType === 'hourly') {
+      const match = usageKey.match(/^usage:([^:]+):model:hourly:(.+):(\d{4}-\d{2}-\d{2}):(\d{2})$/)
+      if (!match) {
+        return null
+      }
+      return {
+        keyId: match[1],
+        model: match[2],
+        bucket: {
+          type: 'hourly',
+          bucketKey: `${match[3]}:${match[4]}`,
+          dateStr: match[3],
+          hour: parseInt(match[4], 10)
+        }
+      }
+    }
+
+    const match = usageKey.match(/^usage:([^:]+):model:daily:(.+):(\d{4}-\d{2}-\d{2})$/)
+    if (!match) {
+      return null
+    }
+    return {
+      keyId: match[1],
+      model: match[2],
+      bucket: {
+        type: 'daily',
+        bucketKey: match[3],
+        dateStr: match[3]
+      }
+    }
+  }
+
+  _buildUsageFromStats(data) {
+    const inputTokens = toInt(data.totalInputTokens || data.inputTokens)
+    const outputTokens = toInt(data.totalOutputTokens || data.outputTokens)
+    const cacheReadTokens = toInt(data.totalCacheReadTokens || data.cacheReadTokens)
+    const cacheCreateTokens = toInt(data.totalCacheCreateTokens || data.cacheCreateTokens)
+    const ephemeral5mTokens = toInt(data.ephemeral5mTokens)
+    const ephemeral1hTokens = toInt(data.ephemeral1hTokens)
+
+    const cacheCreationTotal =
+      ephemeral5mTokens > 0 || ephemeral1hTokens > 0
+        ? ephemeral5mTokens + ephemeral1hTokens
+        : cacheCreateTokens
+
+    const usage = {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_creation_input_tokens: cacheCreationTotal,
+      cache_read_input_tokens: cacheReadTokens
+    }
+
+    if (ephemeral5mTokens > 0 || ephemeral1hTokens > 0) {
+      usage.cache_creation = {
+        ephemeral_5m_input_tokens: ephemeral5mTokens,
+        ephemeral_1h_input_tokens: ephemeral1hTokens
+      }
+    }
+
+    return usage
+  }
+
+  async _calculateFallbackRatedCost(data, model, configKeyData, accountType, globalRateCache) {
+    if (!pricingService || !pricingService.pricingData) {
+      return 0
+    }
+
+    const usage = this._buildUsageFromStats(data)
+    const costInfo = pricingService.calculateCost(usage, model)
+    const realCost = costInfo && costInfo.totalCost ? costInfo.totalCost : 0
+    if (realCost <= 0) {
+      return 0
+    }
+
+    const service = serviceRatesService.getService(accountType, model)
+
+    let globalRate = globalRateCache.get(service)
+    if (globalRate === undefined) {
+      globalRate = await serviceRatesService.getServiceRate(service)
+      globalRateCache.set(service, globalRate)
+    }
+
+    let keyRates = {}
+    try {
+      keyRates = JSON.parse(configKeyData?.serviceRates || '{}')
+    } catch (e) {
+      keyRates = {}
+    }
+    const keyRate = keyRates[service] ?? 1.0
+    return realCost * globalRate * keyRate
+  }
+
+  async _getRatedCostFromStats(data, model, configKeyData, accountType, globalRateCache, counters) {
+    if (hasOwn(data, 'ratedCostMicro')) {
+      counters.storedRatedCostHits++
+      return toFiniteNumber(data.ratedCostMicro) / 1000000
+    }
+
+    if (hasOwn(data, 'realCostMicro')) {
+      counters.storedRealCostFallbacks++
+      return toFiniteNumber(data.realCostMicro) / 1000000
+    }
+
+    counters.recomputedCostFallbacks++
+    return await this._calculateFallbackRatedCost(
+      data,
+      model,
+      configKeyData,
+      accountType,
+      globalRateCache
+    )
+  }
+
+  async _collectBucketCosts({
+    client,
+    patterns,
+    keyDataCache,
+    globalRateCache,
+    costByKeyBucket,
+    fableCostByKeyBucket,
+    counters
+  }) {
+    for (const { pattern, bucketType } of patterns) {
+      let cursor = '0'
+
+      do {
+        const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 1000)
+        cursor = nextCursor
+        counters.scannedKeys += keys.length
+
+        const entries = []
+        for (const usageKey of keys) {
+          const parsed = this._parseUsageModelKey(usageKey, bucketType)
+          if (!parsed || !isClaudeFamilyModel(parsed.model)) {
+            continue
+          }
+          counters.matchedClaudeKeys++
+          entries.push({ usageKey, ...parsed })
+        }
+
+        if (entries.length === 0) {
+          continue
+        }
+
+        const pipeline = client.pipeline()
+        for (const entry of entries) {
+          pipeline.hgetall(entry.usageKey)
+        }
+        const results = await pipeline.exec()
+
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i]
+          const [, data] = results[i] || []
+          if (!data || Object.keys(data).length === 0) {
+            continue
+          }
+
+          const keyData = keyDataCache.get(entry.keyId)
+          const configKeyData =
+            keyData?.parentKeyId && keyDataCache.get(keyData.parentKeyId)
+              ? keyDataCache.get(keyData.parentKeyId)
+              : keyData
+          const accountType = inferAccountType(configKeyData)
+
+          if (!accountType || !OPUS_ACCOUNT_TYPES.includes(accountType)) {
+            continue
+          }
+
+          const ratedCost = await this._getRatedCostFromStats(
+            data,
+            entry.model,
+            configKeyData,
+            accountType,
+            globalRateCache,
+            counters
+          )
+          if (ratedCost <= 0) {
+            continue
+          }
+
+          const bucketId = this._buildBucketId(entry.bucket)
+          this._addBucketCost(costByKeyBucket, entry.keyId, bucketId, ratedCost)
+
+          if (isClaudeFableModel(entry.model)) {
+            counters.matchedFableKeys++
+            this._addBucketCost(fableCostByKeyBucket, entry.keyId, bucketId, ratedCost)
+          }
+        }
+      } while (cursor !== '0')
+    }
+  }
+
   /**
    * 启动回填：从"按日/按模型"统计中反算 Claude 模型费用，
    * 根据每个 API Key 的 weeklyResetDay/weeklyResetHour 计算周期，
@@ -78,8 +339,7 @@ class WeeklyClaudeCostInitService {
     }
 
     if (!pricingService || !pricingService.pricingData) {
-      logger.warn('⚠️ Claude 周费用回填跳过：pricing service 未初始化')
-      return { success: false, reason: 'pricing_uninitialized' }
+      logger.warn('⚠️ Claude 周费用回填：pricing service 未初始化，旧格式 usage 将无法重算')
     }
 
     const todayStr = redis.getDateStringInTimezone()
@@ -132,131 +392,38 @@ class WeeklyClaudeCostInitService {
       }
       logger.info(`💰 预加载 ${keyDataCache.size} 个 API Key 数据`)
 
-      // 收集每个 key 每天的费用: Map<keyId, Map<dateStr, ratedCost>>
-      const costByKeyDate = new Map()
-      const fableCostByKeyDate = new Map()
-      let scannedKeys = 0
-      let matchedClaudeKeys = 0
-      let matchedFableKeys = 0
-
+      // 收集每个 key 每个 bucket 的费用。非 0 点 reset 的起始日只使用 hourly bucket，
+      // 其他完整日期使用 daily bucket，避免把 reset 前的同日费用算入本周期。
+      const costByKeyBucket = new Map()
+      const fableCostByKeyBucket = new Map()
+      const counters = {
+        scannedKeys: 0,
+        matchedClaudeKeys: 0,
+        matchedFableKeys: 0,
+        storedRatedCostHits: 0,
+        storedRealCostFallbacks: 0,
+        recomputedCostFallbacks: 0
+      }
+      const patterns = []
       for (const dateStr of dates) {
-        let cursor = '0'
-        const pattern = `usage:*:model:daily:*:${dateStr}`
+        patterns.push({ bucketType: 'daily', pattern: `usage:*:model:daily:*:${dateStr}` })
+        patterns.push({ bucketType: 'hourly', pattern: `usage:*:model:hourly:*:${dateStr}:*` })
+      }
 
-        do {
-          const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 1000)
-          cursor = nextCursor
-          scannedKeys += keys.length
+      await this._collectBucketCosts({
+        client,
+        patterns,
+        keyDataCache,
+        globalRateCache,
+        costByKeyBucket,
+        fableCostByKeyBucket,
+        counters
+      })
 
-          const entries = []
-          for (const usageKey of keys) {
-            const match = usageKey.match(/^usage:([^:]+):model:daily:(.+):(\d{4}-\d{2}-\d{2})$/)
-            if (!match) {
-              continue
-            }
-            const keyId = match[1]
-            const model = match[2]
-            if (!isClaudeFamilyModel(model)) {
-              continue
-            }
-            matchedClaudeKeys++
-            entries.push({ usageKey, keyId, model, dateStr })
-          }
-
-          if (entries.length === 0) {
-            continue
-          }
-
-          const pipeline = client.pipeline()
-          for (const entry of entries) {
-            pipeline.hgetall(entry.usageKey)
-          }
-          const results = await pipeline.exec()
-
-          for (let i = 0; i < entries.length; i++) {
-            const entry = entries[i]
-            const [, data] = results[i] || []
-            if (!data || Object.keys(data).length === 0) {
-              continue
-            }
-
-            const inputTokens = toInt(data.totalInputTokens || data.inputTokens)
-            const outputTokens = toInt(data.totalOutputTokens || data.outputTokens)
-            const cacheReadTokens = toInt(data.totalCacheReadTokens || data.cacheReadTokens)
-            const cacheCreateTokens = toInt(data.totalCacheCreateTokens || data.cacheCreateTokens)
-            const ephemeral5mTokens = toInt(data.ephemeral5mTokens)
-            const ephemeral1hTokens = toInt(data.ephemeral1hTokens)
-
-            const cacheCreationTotal =
-              ephemeral5mTokens > 0 || ephemeral1hTokens > 0
-                ? ephemeral5mTokens + ephemeral1hTokens
-                : cacheCreateTokens
-
-            const usage = {
-              input_tokens: inputTokens,
-              output_tokens: outputTokens,
-              cache_creation_input_tokens: cacheCreationTotal,
-              cache_read_input_tokens: cacheReadTokens
-            }
-
-            if (ephemeral5mTokens > 0 || ephemeral1hTokens > 0) {
-              usage.cache_creation = {
-                ephemeral_5m_input_tokens: ephemeral5mTokens,
-                ephemeral_1h_input_tokens: ephemeral1hTokens
-              }
-            }
-
-            const costInfo = pricingService.calculateCost(usage, entry.model)
-            const realCost = costInfo && costInfo.totalCost ? costInfo.totalCost : 0
-            if (realCost <= 0) {
-              continue
-            }
-
-            const keyData = keyDataCache.get(entry.keyId)
-            const configKeyData =
-              keyData?.parentKeyId && keyDataCache.get(keyData.parentKeyId)
-                ? keyDataCache.get(keyData.parentKeyId)
-                : keyData
-            const accountType = inferAccountType(configKeyData)
-
-            if (!accountType || !OPUS_ACCOUNT_TYPES.includes(accountType)) {
-              continue
-            }
-
-            const service = serviceRatesService.getService(accountType, entry.model)
-
-            let globalRate = globalRateCache.get(service)
-            if (globalRate === undefined) {
-              globalRate = await serviceRatesService.getServiceRate(service)
-              globalRateCache.set(service, globalRate)
-            }
-
-            let keyRates = {}
-            try {
-              keyRates = JSON.parse(configKeyData?.serviceRates || '{}')
-            } catch (e) {
-              keyRates = {}
-            }
-            const keyRate = keyRates[service] ?? 1.0
-            const ratedCost = realCost * globalRate * keyRate
-
-            // 按 keyId+dateStr 累加
-            if (!costByKeyDate.has(entry.keyId)) {
-              costByKeyDate.set(entry.keyId, new Map())
-            }
-            const dateMap = costByKeyDate.get(entry.keyId)
-            dateMap.set(entry.dateStr, (dateMap.get(entry.dateStr) || 0) + ratedCost)
-
-            if (isClaudeFableModel(entry.model)) {
-              matchedFableKeys++
-              if (!fableCostByKeyDate.has(entry.keyId)) {
-                fableCostByKeyDate.set(entry.keyId, new Map())
-              }
-              const fableDateMap = fableCostByKeyDate.get(entry.keyId)
-              fableDateMap.set(entry.dateStr, (fableDateMap.get(entry.dateStr) || 0) + ratedCost)
-            }
-          }
-        } while (cursor !== '0')
+      if (counters.storedRealCostFallbacks > 0) {
+        logger.warn(
+          `⚠️ Claude 周费用回填：${counters.storedRealCostFallbacks} 个 usage hash 缺 ratedCostMicro，已用 realCostMicro 兜底`
+        )
       }
 
       // 为每个 API Key 按其重置配置计算当前周期费用
@@ -277,27 +444,15 @@ class WeeklyClaudeCostInitService {
 
           // 获取当前周期的起始日期
           const periodStart = redis.getPeriodStartDate(resetDay, resetHour)
-          const periodStartDateStr = formatTzDateYmd(periodStart)
           const periodString = redis.getPeriodString(resetDay, resetHour)
 
           // 汇总该 key 在当前周期内的费用
-          const dateMap = costByKeyDate.get(keyId)
-          const fableDateMap = fableCostByKeyDate.get(keyId)
+          const periodBuckets = this._iterPeriodBuckets(periodStart)
           let periodCost = 0
           let periodFableCost = 0
-          if (dateMap) {
-            for (const [dateStr, cost] of dateMap) {
-              if (dateStr >= periodStartDateStr) {
-                periodCost += cost
-              }
-            }
-          }
-          if (fableDateMap) {
-            for (const [dateStr, cost] of fableDateMap) {
-              if (dateStr >= periodStartDateStr) {
-                periodFableCost += cost
-              }
-            }
+          for (const bucket of periodBuckets) {
+            periodCost += this._getBucketCost(costByKeyBucket, keyId, bucket)
+            periodFableCost += this._getBucketCost(fableCostByKeyBucket, keyId, bucket)
           }
 
           if (periodCost > 0) {
@@ -322,16 +477,19 @@ class WeeklyClaudeCostInitService {
 
       const durationMs = Date.now() - startedAt
       logger.info(
-        `✅ Claude 周费用回填完成（${todayStr}）：keys=${keyIds.length}, scanned=${scannedKeys}, matchedClaude=${matchedClaudeKeys}, matchedFable=${matchedFableKeys}, filled=${filledCount}, fableFilled=${fableFilledCount}（${durationMs}ms）`
+        `✅ Claude 周费用回填完成（${todayStr}）：keys=${keyIds.length}, scanned=${counters.scannedKeys}, matchedClaude=${counters.matchedClaudeKeys}, matchedFable=${counters.matchedFableKeys}, storedRated=${counters.storedRatedCostHits}, realFallback=${counters.storedRealCostFallbacks}, recomputed=${counters.recomputedCostFallbacks}, filled=${filledCount}, fableFilled=${fableFilledCount}（${durationMs}ms）`
       )
 
       return {
         success: true,
         todayStr,
         keyCount: keyIds.length,
-        scannedKeys,
-        matchedClaudeKeys,
-        matchedFableKeys,
+        scannedKeys: counters.scannedKeys,
+        matchedClaudeKeys: counters.matchedClaudeKeys,
+        matchedFableKeys: counters.matchedFableKeys,
+        storedRatedCostHits: counters.storedRatedCostHits,
+        storedRealCostFallbacks: counters.storedRealCostFallbacks,
+        recomputedCostFallbacks: counters.recomputedCostFallbacks,
         filledKeys: filledCount,
         fableFilledKeys: fableFilledCount,
         durationMs
@@ -390,109 +548,50 @@ class WeeklyClaudeCostInitService {
       }
 
       const periodStart = redis.getPeriodStartDate(resetDay, resetHour)
-      const periodStartDateStr = formatTzDateYmd(periodStart)
       const periodString = redis.getPeriodString(resetDay, resetHour)
 
-      // 扫描最近 8 天的每日使用数据
-      const dates = this._getLast7DaysInTimezone()
+      const periodBuckets = this._iterPeriodBuckets(periodStart)
+      const patterns = periodBuckets.map((bucket) => ({
+        bucketType: bucket.type,
+        pattern: `usage:${keyId}:model:${bucket.type}:*:${bucket.bucketKey}`
+      }))
+      const keyDataCache = new Map([[keyId, keyData]])
+      if (configKeyData !== keyData && keyData.parentKeyId) {
+        keyDataCache.set(keyData.parentKeyId, configKeyData)
+      }
       const globalRateCache = new Map()
+      const costByKeyBucket = new Map()
+      const fableCostByKeyBucket = new Map()
+      const counters = {
+        scannedKeys: 0,
+        matchedClaudeKeys: 0,
+        matchedFableKeys: 0,
+        storedRatedCostHits: 0,
+        storedRealCostFallbacks: 0,
+        recomputedCostFallbacks: 0
+      }
       let totalCost = 0
       let fableCost = 0
 
-      for (const dateStr of dates) {
-        if (dateStr < periodStartDateStr) {
-          continue
-        }
+      await this._collectBucketCosts({
+        client,
+        patterns,
+        keyDataCache,
+        globalRateCache,
+        costByKeyBucket,
+        fableCostByKeyBucket,
+        counters
+      })
 
-        let cursor = '0'
-        const pattern = `usage:${keyId}:model:daily:*:${dateStr}`
+      for (const bucket of periodBuckets) {
+        totalCost += this._getBucketCost(costByKeyBucket, keyId, bucket)
+        fableCost += this._getBucketCost(fableCostByKeyBucket, keyId, bucket)
+      }
 
-        do {
-          const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 1000)
-          cursor = nextCursor
-
-          if (keys.length === 0) {
-            continue
-          }
-
-          const pipeline = client.pipeline()
-          const models = []
-          for (const usageKey of keys) {
-            const match = usageKey.match(/^usage:[^:]+:model:daily:(.+):(\d{4}-\d{2}-\d{2})$/)
-            if (!match || !isClaudeFamilyModel(match[1])) {
-              continue
-            }
-            models.push(match[1])
-            pipeline.hgetall(usageKey)
-          }
-
-          if (models.length === 0) {
-            continue
-          }
-
-          const results = await pipeline.exec()
-
-          for (let i = 0; i < models.length; i++) {
-            const model = models[i]
-            const [, data] = results[i] || []
-            if (!data || Object.keys(data).length === 0) {
-              continue
-            }
-
-            const inputTokens = toInt(data.totalInputTokens || data.inputTokens)
-            const outputTokens = toInt(data.totalOutputTokens || data.outputTokens)
-            const cacheReadTokens = toInt(data.totalCacheReadTokens || data.cacheReadTokens)
-            const cacheCreateTokens = toInt(data.totalCacheCreateTokens || data.cacheCreateTokens)
-            const ephemeral5mTokens = toInt(data.ephemeral5mTokens)
-            const ephemeral1hTokens = toInt(data.ephemeral1hTokens)
-
-            const cacheCreationTotal =
-              ephemeral5mTokens > 0 || ephemeral1hTokens > 0
-                ? ephemeral5mTokens + ephemeral1hTokens
-                : cacheCreateTokens
-
-            const usage = {
-              input_tokens: inputTokens,
-              output_tokens: outputTokens,
-              cache_creation_input_tokens: cacheCreationTotal,
-              cache_read_input_tokens: cacheReadTokens
-            }
-
-            if (ephemeral5mTokens > 0 || ephemeral1hTokens > 0) {
-              usage.cache_creation = {
-                ephemeral_5m_input_tokens: ephemeral5mTokens,
-                ephemeral_1h_input_tokens: ephemeral1hTokens
-              }
-            }
-
-            const costInfo = pricingService.calculateCost(usage, model)
-            const realCost = costInfo && costInfo.totalCost ? costInfo.totalCost : 0
-            if (realCost <= 0) {
-              continue
-            }
-
-            const service = serviceRatesService.getService(accountType, model)
-
-            let globalRate = globalRateCache.get(service)
-            if (globalRate === undefined) {
-              globalRate = await serviceRatesService.getServiceRate(service)
-              globalRateCache.set(service, globalRate)
-            }
-
-            let keyRates = {}
-            try {
-              keyRates = JSON.parse(configKeyData.serviceRates || '{}')
-            } catch (e) {
-              keyRates = {}
-            }
-            const keyRate = keyRates[service] ?? 1.0
-            const ratedCost = realCost * globalRate * keyRate
-            totalCost += ratedCost
-            if (isClaudeFableModel(model)) {
-              fableCost += ratedCost
-            }
-          }
-        } while (cursor !== '0')
+      if (counters.storedRealCostFallbacks > 0) {
+        logger.warn(
+          `⚠️ 单 Key 回填 (${keyId})：${counters.storedRealCostFallbacks} 个 usage hash 缺 ratedCostMicro，已用 realCostMicro 兜底`
+        )
       }
 
       await redis.setWeeklyOpusCost(keyId, totalCost, periodString)
