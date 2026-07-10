@@ -81,10 +81,10 @@ class ClaudeRelayService {
 
   _buildStandardRateLimitMessage(resetTime) {
     if (!resetTime) {
-      return '此专属账号已触发 Anthropic 限流控制。'
+      return "This dedicated account has hit Anthropic's rate limit."
     }
     const formattedReset = formatDateWithTimezone(resetTime)
-    return `此专属账号已触发 Anthropic 限流控制，将于 ${formattedReset} 自动恢复。`
+    return `This dedicated account has hit Anthropic's rate limit. It will automatically recover at ${formattedReset}.`
   }
 
   _buildOpusLimitMessage(resetTime) {
@@ -96,10 +96,10 @@ class ClaudeRelayService {
       ? `${modelFamily.charAt(0).toUpperCase()}${modelFamily.slice(1)}`
       : 'requested'
     if (!resetTime) {
-      return `此专属账号的${displayFamily}模型已达到周使用限制，请尝试切换其他模型后再试。`
+      return `This dedicated account has reached the weekly usage limit for ${displayFamily} models. Please switch to another model and try again.`
     }
     const formattedReset = formatDateWithTimezone(resetTime)
-    return `此专属账号的${displayFamily}模型已达到周使用限制，将于 ${formattedReset} 自动恢复，请尝试切换其他模型后再试。`
+    return `This dedicated account has reached the weekly usage limit for ${displayFamily} models. It will automatically recover at ${formattedReset}. Please switch to another model and try again.`
   }
 
   _buildRollingWindowErrorContext(upstreamErrorContext, rollingWindow) {
@@ -833,7 +833,7 @@ class ClaudeRelayService {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               error: 'dedicated_account_unavailable',
-              message: `该 API Key 绑定的专属账号当前不可用（${error.reason}），请稍后重试。`
+              message: `The dedicated account bound to this API key is currently unavailable (${error.reason}). Please try again later.`
             }),
             accountId: error.accountId
           }
@@ -2334,7 +2334,7 @@ class ClaudeRelayService {
           responseStream.write(
             JSON.stringify({
               error: 'dedicated_account_unavailable',
-              message: `该 API Key 绑定的专属账号当前不可用（${error.reason}），请稍后重试。`
+              message: `The dedicated account bound to this API key is currently unavailable (${error.reason}). Please try again later.`
             })
           )
           responseStream.end()

@@ -260,7 +260,10 @@ function rewriteHeaders(headers, accountId) {
       abortResponse: {
         statusCode: 500,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ error: 'fingerprint_persist_failed', message: '指纹信息持久化失败' })
+        body: JSON.stringify({
+          error: 'fingerprint_persist_failed',
+          message: 'Failed to persist request fingerprint.'
+        })
       }
     }
   }

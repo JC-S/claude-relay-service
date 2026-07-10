@@ -7,6 +7,7 @@ const logger = require('../utils/logger')
 const apiKeyService = require('../services/apiKeyService')
 
 const router = express.Router()
+const DROID_PERMISSION_MESSAGE = 'Droid access is not enabled for this API key.'
 
 function hasDroidPermission(apiKeyData) {
   return apiKeyService.hasPermission(apiKeyData?.permissions, 'droid')
@@ -32,7 +33,7 @@ router.post('/claude/v1/messages', authenticateApiKey, async (req, res) => {
       )
       return res.status(403).json({
         error: 'permission_denied',
-        message: '此 API Key 未启用 Droid 权限'
+        message: DROID_PERMISSION_MESSAGE
       })
     }
 
@@ -81,7 +82,7 @@ router.post('/comm/v1/chat/completions', authenticateApiKey, async (req, res) =>
       )
       return res.status(403).json({
         error: 'permission_denied',
-        message: '此 API Key 未启用 Droid 权限'
+        message: DROID_PERMISSION_MESSAGE
       })
     }
 
@@ -128,7 +129,7 @@ router.post(['/openai/v1/responses', '/openai/responses'], authenticateApiKey, a
       )
       return res.status(403).json({
         error: 'permission_denied',
-        message: '此 API Key 未启用 Droid 权限'
+        message: DROID_PERMISSION_MESSAGE
       })
     }
 

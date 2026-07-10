@@ -1187,7 +1187,7 @@ const authenticateApiKey = async (req, res, next) => {
 
         return res.status(429).json({
           error: 'Rate limit exceeded',
-          message: `已达到请求次数限制 (${rateLimitRequests} 次)，将在 ${remainingMinutes} 分钟后重置`,
+          message: `Request limit reached (${rateLimitRequests} requests). The limit resets in ${remainingMinutes} minutes.`,
           currentRequests,
           requestLimit: rateLimitRequests,
           resetAt: resetTime.toISOString(),
@@ -1209,7 +1209,7 @@ const authenticateApiKey = async (req, res, next) => {
 
           return res.status(429).json({
             error: 'Rate limit exceeded',
-            message: `已达到 Token 使用限制 (${tokenLimit} tokens)，将在 ${remainingMinutes} 分钟后重置`,
+            message: `Token usage limit reached (${tokenLimit} tokens). The limit resets in ${remainingMinutes} minutes.`,
             currentTokens,
             tokenLimit,
             resetAt: resetTime.toISOString(),
@@ -1230,7 +1230,7 @@ const authenticateApiKey = async (req, res, next) => {
 
           return res.status(429).json({
             error: 'Rate limit exceeded',
-            message: `已达到费用限制 ($${rateLimitCost})，将在 ${remainingMinutes} 分钟后重置`,
+            message: `Cost limit reached ($${rateLimitCost}). The limit resets in ${remainingMinutes} minutes.`,
             currentCost,
             costLimit: rateLimitCost,
             resetAt: resetTime.toISOString(),
@@ -1274,7 +1274,7 @@ const authenticateApiKey = async (req, res, next) => {
         return res.status(402).json({
           error: {
             type: 'insufficient_quota',
-            message: `已达到每日费用限制 ($${dailyCostLimit})`,
+            message: `Daily cost limit reached ($${dailyCostLimit}).`,
             code: 'daily_cost_limit_exceeded'
           },
           currentCost: dailyCost,
@@ -1307,7 +1307,7 @@ const authenticateApiKey = async (req, res, next) => {
         return res.status(402).json({
           error: {
             type: 'insufficient_quota',
-            message: `已达到总费用限制 ($${totalCostLimit})`,
+            message: `Total cost limit reached ($${totalCostLimit}).`,
             code: 'total_cost_limit_exceeded'
           },
           currentCost: totalCost,
@@ -1333,7 +1333,7 @@ const authenticateApiKey = async (req, res, next) => {
         return res.status(402).json({
           error: {
             type: 'insufficient_quota',
-            message: `已达到账号总额度限制 ($${v2Budget})`,
+            message: `Account total budget exhausted ($${v2Budget}).`,
             code: 'account_total_budget_exhausted'
           },
           currentCost: v2Used,
@@ -1367,7 +1367,7 @@ const authenticateApiKey = async (req, res, next) => {
           return res.status(402).json({
             error: {
               type: 'insufficient_quota',
-              message: `已达到 Claude 模型周费用限制 ($${weeklyOpusCostLimit})`,
+              message: `Claude weekly cost limit reached ($${weeklyOpusCostLimit}).`,
               code: 'weekly_opus_cost_limit_exceeded'
             },
             currentCost: weeklyOpusCost,
@@ -1404,7 +1404,7 @@ const authenticateApiKey = async (req, res, next) => {
         return res.status(402).json({
           error: {
             type: 'insufficient_quota',
-            message: `已达到 Claude Fable 模型周费用限制 ($${weeklyFableCostLimit})`,
+            message: `Claude Fable weekly cost limit reached ($${weeklyFableCostLimit}).`,
             code: 'weekly_fable_cost_limit_exceeded'
           },
           currentCost: weeklyFableCost,

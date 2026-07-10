@@ -9,12 +9,15 @@ const metadataUserIdHelper = require('../utils/metadataUserIdHelper')
 
 const CONFIG_KEY = 'claude_relay_config'
 const SESSION_BINDING_PREFIX = 'original_session_binding:'
+const DEFAULT_SESSION_BINDING_ERROR_MESSAGE =
+  'Your local session is no longer valid. Please clear it and try again.'
+const LEGACY_SESSION_BINDING_ERROR_MESSAGE = '你的本地session已污染，请清理后使用。'
 
 // 默认配置
 const DEFAULT_CONFIG = {
   claudeCodeOnlyEnabled: false,
   globalSessionBindingEnabled: false,
-  sessionBindingErrorMessage: '你的本地session已污染，请清理后使用。',
+  sessionBindingErrorMessage: DEFAULT_SESSION_BINDING_ERROR_MESSAGE,
   sessionBindingTtlDays: 1, // 会话绑定 TTL（天），默认1天（支持 /clear 场景，避免 Redis 累积）
   // 用户消息队列配置
   userMessageQueueEnabled: false, // 是否启用用户消息队列（默认关闭）
@@ -43,6 +46,21 @@ let configCache = null
 let configCacheTime = 0
 const CONFIG_CACHE_TTL = 60000 // 1分钟缓存
 
+function normalizeSessionBindingConfig(config) {
+  const normalized = config && typeof config === 'object' ? { ...config } : {}
+  const message = normalized.sessionBindingErrorMessage
+
+  if (
+    typeof message !== 'string' ||
+    message.trim() === '' ||
+    message === LEGACY_SESSION_BINDING_ERROR_MESSAGE
+  ) {
+    normalized.sessionBindingErrorMessage = DEFAULT_SESSION_BINDING_ERROR_MESSAGE
+  }
+
+  return normalized
+}
+
 class ClaudeRelayConfigService {
   /**
    * 从 metadata.user_id 中提取原始 sessionId
@@ -64,28 +82,29 @@ class ClaudeRelayConfigService {
     try {
       // 检查缓存
       if (configCache && Date.now() - configCacheTime < CONFIG_CACHE_TTL) {
+        configCache = normalizeSessionBindingConfig(configCache)
         return configCache
       }
 
       const client = redis.getClient()
       if (!client) {
         logger.warn('⚠️ Redis not connected, using default config')
-        return { ...DEFAULT_CONFIG }
+        return normalizeSessionBindingConfig(DEFAULT_CONFIG)
       }
 
       const data = await client.get(CONFIG_KEY)
 
       if (data) {
-        configCache = { ...DEFAULT_CONFIG, ...JSON.parse(data) }
+        configCache = normalizeSessionBindingConfig({ ...DEFAULT_CONFIG, ...JSON.parse(data) })
       } else {
-        configCache = { ...DEFAULT_CONFIG }
+        configCache = normalizeSessionBindingConfig(DEFAULT_CONFIG)
       }
 
       configCacheTime = Date.now()
       return configCache
     } catch (error) {
       logger.error('❌ Failed to get Claude relay config:', error)
-      return { ...DEFAULT_CONFIG }
+      return normalizeSessionBindingConfig(DEFAULT_CONFIG)
     }
   }
 
@@ -100,12 +119,12 @@ class ClaudeRelayConfigService {
       const client = redis.getClientSafe()
       const currentConfig = await this.getConfig()
 
-      const updatedConfig = {
+      const updatedConfig = normalizeSessionBindingConfig({
         ...currentConfig,
         ...newConfig,
         updatedAt: new Date().toISOString(),
         updatedBy
-      }
+      })
 
       await client.set(CONFIG_KEY, JSON.stringify(updatedConfig))
 

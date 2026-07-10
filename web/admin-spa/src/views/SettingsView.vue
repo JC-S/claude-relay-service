@@ -905,7 +905,7 @@
                   <textarea
                     v-model="claudeConfig.sessionBindingErrorMessage"
                     class="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
-                    placeholder="你的本地session已污染，请清理后使用。"
+                    placeholder="Your local session is no longer valid. Please clear it and try again."
                     rows="2"
                     @change="saveClaudeConfig"
                   ></textarea>
@@ -2131,7 +2131,8 @@ const claudeConfigLoading = ref(false)
 const claudeConfig = ref({
   claudeCodeOnlyEnabled: false,
   globalSessionBindingEnabled: false,
-  sessionBindingErrorMessage: '你的本地session已污染，请清理后使用。',
+  sessionBindingErrorMessage:
+    'Your local session is no longer valid. Please clear it and try again.',
   sessionBindingTtlDays: 1,
   userMessageQueueEnabled: false, // 与后端默认值保持一致
   userMessageQueueDelayMs: 200,
@@ -2532,7 +2533,8 @@ const loadClaudeConfig = async () => {
         claudeCodeOnlyEnabled: response.config?.claudeCodeOnlyEnabled ?? false,
         globalSessionBindingEnabled: response.config?.globalSessionBindingEnabled ?? false,
         sessionBindingErrorMessage:
-          response.config?.sessionBindingErrorMessage || '你的本地session已污染，请清理后使用。',
+          response.config?.sessionBindingErrorMessage ||
+          'Your local session is no longer valid. Please clear it and try again.',
         sessionBindingTtlDays: response.config?.sessionBindingTtlDays ?? 1,
         userMessageQueueEnabled: response.config?.userMessageQueueEnabled ?? false, // 与后端默认值保持一致
         userMessageQueueDelayMs: response.config?.userMessageQueueDelayMs ?? 200,

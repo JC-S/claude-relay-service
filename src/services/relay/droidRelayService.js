@@ -137,13 +137,15 @@ class DroidRelayService {
   async _selectApiKey(account, endpointType, sessionHash) {
     const entries = await droidAccountService.getDecryptedApiKeyEntries(account.id)
     if (!entries || entries.length === 0) {
-      throw new Error(`Droid account ${account.id} 未配置任何 API Key`)
+      throw new Error(`Droid account ${account.id} has no API keys configured.`)
     }
 
     // 过滤掉异常状态的API Key
     const activeEntries = entries.filter((entry) => entry.status !== 'error')
     if (!activeEntries || activeEntries.length === 0) {
-      throw new Error(`Droid account ${account.id} 没有可用的 API Key（所有API Key均已异常）`)
+      throw new Error(
+        `Droid account ${account.id} has no available API keys (all configured API keys are in an error state).`
+      )
     }
 
     const stickyKey = this._composeApiKeyStickyKey(account.id, endpointType, sessionHash)
@@ -165,7 +167,7 @@ class DroidRelayService {
 
     const selectedEntry = activeEntries[Math.floor(Math.random() * activeEntries.length)]
     if (!selectedEntry) {
-      throw new Error(`Droid account ${account.id} 没有可用的 API Key`)
+      throw new Error(`Droid account ${account.id} has no available API keys.`)
     }
 
     if (stickyKey) {
@@ -1544,7 +1546,7 @@ class DroidRelayService {
   _buildNetworkErrorBody(error) {
     const body = {
       error: 'relay_upstream_failure',
-      message: error?.message || '上游请求失败'
+      message: error?.message || 'Upstream request failed.'
     }
 
     if (error?.code) {

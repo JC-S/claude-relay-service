@@ -33,6 +33,13 @@ const {
 } = require('../services/anthropicGeminiBridgeService')
 const router = express.Router()
 
+const CLAUDE_PERMISSION_MESSAGE =
+  'This API key does not have permission to access the Claude service.'
+const GEMINI_PERMISSION_MESSAGE =
+  'This API key does not have permission to access the Gemini service.'
+const MODEL_RESTRICTION_MESSAGE =
+  'This API key does not have permission to access the requested model.'
+
 function queueRateLimitUpdate(
   rateLimitInfo,
   usageSummary,
@@ -152,9 +159,7 @@ async function handleMessagesRequest(req, res) {
         error: {
           type: 'permission_error',
           message:
-            requiredService === 'gemini'
-              ? '此 API Key 无权访问 Gemini 服务'
-              : '此 API Key 无权访问 Claude 服务'
+            requiredService === 'gemini' ? GEMINI_PERMISSION_MESSAGE : CLAUDE_PERMISSION_MESSAGE
         }
       })
     }
@@ -210,7 +215,7 @@ async function handleMessagesRequest(req, res) {
         return res.status(403).json({
           error: {
             type: 'forbidden',
-            message: '暂无该模型访问权限'
+            message: MODEL_RESTRICTION_MESSAGE
           }
         })
       }
@@ -1502,7 +1507,7 @@ router.get('/v1/models', authenticateApiKey, async (req, res) => {
         return res.status(403).json({
           error: {
             type: 'permission_error',
-            message: '此 API Key 无权访问 Gemini 服务'
+            message: GEMINI_PERMISSION_MESSAGE
           }
         })
       }
@@ -1699,9 +1704,7 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
       error: {
         type: 'permission_error',
         message:
-          requiredService === 'gemini'
-            ? 'This API key does not have permission to access Gemini'
-            : 'This API key does not have permission to access Claude'
+          requiredService === 'gemini' ? GEMINI_PERMISSION_MESSAGE : CLAUDE_PERMISSION_MESSAGE
       }
     })
   }
@@ -1752,7 +1755,7 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
       return res.status(400).json({
         error: {
           type: 'session_binding_error',
-          message: cfg.sessionBindingErrorMessage || '你的本地session已污染，请清理后使用。'
+          message: cfg.sessionBindingErrorMessage
         }
       })
     }

@@ -1457,7 +1457,7 @@ async function onboardUser(client, tierId, projectId, clientMetadata, proxyConfi
   }
 
   if (!lroRes.data.done) {
-    throw new Error('onboardUser操作超时')
+    throw new Error('onboardUser operation timed out.')
   }
 
   logger.info('✅ onboardUser API调用完成')
@@ -1507,7 +1507,9 @@ async function setupUser(
   })
 
   if (tier.userDefinedCloudaiCompanionProject && !projectId) {
-    throw new Error('此账号需要设置GOOGLE_CLOUD_PROJECT环境变量或提供projectId')
+    throw new Error(
+      'This account requires GOOGLE_CLOUD_PROJECT to be set or a projectId to be provided.'
+    )
   }
 
   // 调用onboardUser

@@ -336,7 +336,7 @@ class DroidAccountService {
    */
   async _refreshTokensWithWorkOS(refreshToken, proxyConfig = null, organizationId = null) {
     if (!refreshToken || typeof refreshToken !== 'string') {
-      throw new Error('Refresh Token 无效')
+      throw new Error('Refresh token is invalid.')
     }
 
     const formData = new URLSearchParams()
@@ -371,7 +371,7 @@ class DroidAccountService {
 
     const response = await axios(requestOptions)
     if (!response.data || !response.data.access_token) {
-      throw new Error('WorkOS OAuth 返回数据无效')
+      throw new Error('WorkOS OAuth returned an invalid response.')
     }
 
     const {
@@ -1350,7 +1350,9 @@ class DroidAccountService {
       typeof account.authenticationMethod === 'string' &&
       account.authenticationMethod.toLowerCase().trim() === 'api_key'
     ) {
-      throw new Error(`Droid account ${accountId} 已配置为 API Key 模式，不能获取 Access Token`)
+      throw new Error(
+        `Droid account ${accountId} is configured for API key authentication and cannot provide an access token.`
+      )
     }
 
     // 检查是否需要刷新

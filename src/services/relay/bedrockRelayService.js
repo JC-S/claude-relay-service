@@ -67,7 +67,7 @@ class BedrockRelayService {
         clientConfig.credentials = fromEnv()
       } else {
         throw new Error(
-          'AWS凭证未配置。请在Bedrock账户中配置AWS访问密钥或Bearer Token，或设置环境变量AWS_ACCESS_KEY_ID、AWS_SECRET_ACCESS_KEY 或 AWS_BEARER_TOKEN_BEDROCK'
+          'AWS credentials are not configured. Configure the AWS access key or Bearer Token on the Bedrock account, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (or AWS_BEARER_TOKEN_BEDROCK).'
         )
       }
     }
@@ -781,22 +781,22 @@ class BedrockRelayService {
     const errorMessage = error.message || 'Unknown Bedrock error'
 
     if (error.name === 'ValidationException') {
-      return new Error(`Bedrock参数验证失败: ${errorMessage}`)
+      return new Error(`Bedrock request validation failed: ${errorMessage}`)
     }
 
     if (error.name === 'ThrottlingException') {
-      return new Error('Bedrock请求限流，请稍后重试')
+      return new Error('Bedrock request was throttled. Please try again later.')
     }
 
     if (error.name === 'AccessDeniedException') {
-      return new Error('Bedrock访问被拒绝，请检查IAM权限')
+      return new Error('Bedrock access denied. Check the IAM permissions.')
     }
 
     if (error.name === 'ModelNotReadyException') {
-      return new Error('Bedrock模型未就绪，请稍后重试')
+      return new Error('Bedrock model is not ready. Please try again later.')
     }
 
-    return new Error(`Bedrock服务错误: ${errorMessage}`)
+    return new Error(`Bedrock service error: ${errorMessage}`)
   }
 
   // 获取可用模型列表
