@@ -184,4 +184,90 @@ describe('CostCalculator', () => {
     expect(result.pricing.cacheRead).toBe(1.25)
     expect(result.costs.total).toBeCloseTo(0.02025, 10)
   })
+
+  describe('gpt-5.4 service_tier pricing', () => {
+    const gpt54Pricing = {
+      input_cost_per_token: 0.0000025,
+      input_cost_per_token_priority: 0.000005,
+      output_cost_per_token: 0.000015,
+      output_cost_per_token_priority: 0.00003,
+      cache_read_input_token_cost: 0.00000025,
+      cache_read_input_token_cost_priority: 0.0000005,
+      supports_service_tier: true,
+      litellm_provider: 'openai'
+    }
+
+    beforeEach(() => {
+      pricingService.getModelPricing.mockReturnValue(gpt54Pricing)
+    })
+
+    it('uses standard prices without priority service_tier', () => {
+      const result = CostCalculator.calculateCost(
+        {
+          input_tokens: 1000000,
+          output_tokens: 1000000,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0
+        },
+        'gpt-5.4'
+      )
+
+      expect(result.pricing.input).toBe(2.5)
+      expect(result.pricing.output).toBe(15)
+      expect(result.costs.total).toBeCloseTo(17.5, 10)
+    })
+
+    it('uses 2x input, output and cache-read prices for priority service_tier', () => {
+      const result = CostCalculator.calculateCost(
+        {
+          input_tokens: 1000000,
+          output_tokens: 1000000,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 1000000
+        },
+        'gpt-5.4',
+        'priority'
+      )
+
+      expect(result.pricing.input).toBe(5)
+      expect(result.pricing.output).toBe(30)
+      expect(result.pricing.cacheRead).toBe(0.5)
+      expect(result.costs.total).toBeCloseTo(35.5, 10)
+    })
+
+    it('uses the priority input price for legacy cache creation fallback', () => {
+      const result = CostCalculator.calculateCost(
+        {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 1000000,
+          cache_read_input_tokens: 0
+        },
+        'gpt-5.4',
+        'priority'
+      )
+
+      expect(result.pricing.cacheWrite).toBe(5)
+      expect(result.costs.cacheWrite).toBeCloseTo(5, 10)
+      expect(result.costs.total).toBeCloseTo(5, 10)
+    })
+
+    it.each([null, 'standard', 'PRIORITY', 'Priority', 'fast'])(
+      'does not use priority prices for service_tier=%s',
+      (serviceTier) => {
+        const result = CostCalculator.calculateCost(
+          {
+            input_tokens: 1000000,
+            output_tokens: 1000000,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0
+          },
+          'gpt-5.4',
+          serviceTier
+        )
+
+        expect(result.costs.total).toBeCloseTo(17.5, 10)
+      }
+    )
+  })
 })

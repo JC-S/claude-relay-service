@@ -386,4 +386,55 @@ describe('apiKeyService v2 billing', () => {
     expect(recordCost).toBe(Number(dailyRated.toFixed(6)))
     expect(recordCost).toBe(Number(parentAmount.toFixed(6)))
   })
+
+  test('recordUsage propagates corrected gpt-5.4 priority cost through every ledger', async () => {
+    CostCalculator.calculateCost.mockReturnValue({
+      costs: {
+        total: 35,
+        input: 5,
+        output: 30,
+        cacheCreate: 0,
+        cacheRead: 0
+      }
+    })
+
+    const result = await apiKeyService.recordUsage(
+      CHILD_ID,
+      1000000,
+      1000000,
+      0,
+      0,
+      'gpt-5.4',
+      'acct-1',
+      'openai',
+      'priority',
+      null
+    )
+
+    expect(CostCalculator.calculateCost).toHaveBeenCalledWith(
+      {
+        input_tokens: 1000000,
+        output_tokens: 1000000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0
+      },
+      'gpt-5.4',
+      'priority'
+    )
+    expect(result.realCost).toBeCloseTo(35, 10)
+    expect(result.ratedCost).toBeCloseTo(105, 10)
+    expect(redis.incrementTokenUsage.mock.calls[0].slice(10, 13)).toEqual([35, 105, 'priority'])
+    expect(redis.incrementDailyCost).toHaveBeenCalledWith(CHILD_ID, 105, 35)
+    expect(redis.incrementV2ParentTotalCost).toHaveBeenCalledWith(PARENT_ID, 105)
+    expect(redis.incrementAccountUsage.mock.calls[0].at(-1)).toBe('priority')
+
+    const usageRecord = redis.addUsageRecord.mock.calls[0][1]
+    expect(usageRecord).toMatchObject({
+      model: 'gpt-5.4',
+      serviceTier: 'priority',
+      realCost: 35,
+      cost: 105,
+      realCostBreakdown: CostCalculator.calculateCost.mock.results[0].value.costs
+    })
+  })
 })

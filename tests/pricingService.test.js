@@ -353,7 +353,84 @@ describe('PricingService - Long Context Pricing', () => {
     })
   })
 
-  describe('OpenAI service_tier 计费（gpt-5.5）', () => {
+  describe('OpenAI service_tier 计费', () => {
+    it.each(['gpt-5.4', 'gpt-5.4-2026-03-05'])(
+      '%s 的 priority 价格按基础价格 2x 本地覆盖',
+      (model) => {
+        const pricing = pricingService.getModelPricing(model)
+
+        expect(pricing.supports_service_tier).toBe(true)
+        expect(pricing.input_cost_per_token_priority).toBeCloseTo(
+          pricing.input_cost_per_token * 2,
+          12
+        )
+        expect(pricing.output_cost_per_token_priority).toBeCloseTo(
+          pricing.output_cost_per_token * 2,
+          12
+        )
+        expect(pricing.cache_read_input_token_cost_priority).toBeCloseTo(
+          pricing.cache_read_input_token_cost * 2,
+          12
+        )
+      }
+    )
+
+    it('gpt-5.4 普通请求和 priority 请求分别按 1x 与 2x 计费', () => {
+      const usage = {
+        input_tokens: 1000000,
+        output_tokens: 1000000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0
+      }
+
+      const standard = pricingService.calculateCost(usage, 'gpt-5.4')
+      const priority = pricingService.calculateCost(usage, 'gpt-5.4', 'priority')
+
+      expect(standard.totalCost).toBeCloseTo(17.5, 10)
+      expect(priority.totalCost).toBeCloseTo(35, 10)
+      expect(priority.totalCost).toBeCloseTo(standard.totalCost * 2, 10)
+    })
+
+    it('gpt-5.4 priority 缓存读取按 2x 计费', () => {
+      const result = pricingService.calculateCost(
+        {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 1000000
+        },
+        'gpt-5.4',
+        'priority'
+      )
+
+      expect(result.pricing.cacheRead).toBeCloseTo(0.0000005, 12)
+      expect(result.cacheReadCost).toBeCloseTo(0.5, 10)
+      expect(result.totalCost).toBeCloseTo(0.5, 10)
+    })
+
+    it('gpt-5.4-pro 和 gpt-5.4-nano 不被精确覆盖误标记', () => {
+      pricingService.pricingData = {
+        'gpt-5.4-pro': {
+          input_cost_per_token: 0.00003,
+          output_cost_per_token: 0.00018,
+          litellm_provider: 'openai'
+        },
+        'gpt-5.4-nano': {
+          input_cost_per_token: 0.0000002,
+          output_cost_per_token: 0.00000125,
+          litellm_provider: 'openai'
+        }
+      }
+
+      const proPricing = pricingService.getModelPricing('gpt-5.4-pro')
+      const nanoPricing = pricingService.getModelPricing('gpt-5.4-nano')
+
+      expect(proPricing.supports_service_tier).not.toBe(true)
+      expect(proPricing.input_cost_per_token_priority).toBeUndefined()
+      expect(nanoPricing.supports_service_tier).not.toBe(true)
+      expect(nanoPricing.input_cost_per_token_priority).toBeUndefined()
+    })
+
     it('gpt-5.5 的 priority 价格按基础价格 2.5x 本地覆盖', () => {
       const pricing = pricingService.getModelPricing('gpt-5.5')
 
@@ -466,10 +543,7 @@ describe('PricingService - Long Context Pricing', () => {
       expect(fable5Cost.totalCost).toBeCloseTo(opus47Cost.totalCost * 2, 12)
       expect(fable5Cost.pricing.input).toBeCloseTo(opus47Cost.pricing.input * 2, 12)
       expect(fable5Cost.pricing.output).toBeCloseTo(opus47Cost.pricing.output * 2, 12)
-      expect(fable5Cost.pricing.cacheCreate).toBeCloseTo(
-        opus47Cost.pricing.cacheCreate * 2,
-        12
-      )
+      expect(fable5Cost.pricing.cacheCreate).toBeCloseTo(opus47Cost.pricing.cacheCreate * 2, 12)
       expect(fable5Cost.pricing.cacheRead).toBeCloseTo(opus47Cost.pricing.cacheRead * 2, 12)
     })
 

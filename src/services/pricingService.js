@@ -43,6 +43,12 @@ class PricingService {
     }
 
     this.localPricingOverrides = {
+      'gpt-5.4': {
+        priorityMultiplier: 2
+      },
+      'gpt-5.4-2026-03-05': {
+        priorityMultiplier: 2
+      },
       'gpt-5.5': {
         priorityMultiplier: 2.5
       }
