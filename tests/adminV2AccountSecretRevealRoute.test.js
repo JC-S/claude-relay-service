@@ -89,11 +89,7 @@ describe('POST /admin/v2/keys/:keyId/secret/reveal', () => {
     const res = createResponse()
     await handler(createReq(), res)
 
-    expect(apiKeyService.getV2ChildPlaintext).toHaveBeenCalledWith(
-      'parent-1',
-      'child-1',
-      'tenant@example.com'
-    )
+    expect(apiKeyService.getV2ChildPlaintext).toHaveBeenCalledWith('parent-1', 'child-1')
     expect(res.status).not.toHaveBeenCalled()
     expect(res.statusCode).toBe(200)
     expect(res.headers['Cache-Control']).toBe('no-store')

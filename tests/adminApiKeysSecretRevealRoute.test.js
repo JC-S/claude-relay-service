@@ -107,7 +107,7 @@ describe('admin api keys route secret reveal', () => {
       res
     )
 
-    expect(apiKeyService.getApiKeyPlaintextById).toHaveBeenCalledWith('key-1', 'admin-user')
+    expect(apiKeyService.getApiKeyPlaintextById).toHaveBeenCalledWith('key-1')
     expect(res.status).not.toHaveBeenCalled()
     expect(res.statusCode).toBe(200)
     expect(res.headers['Cache-Control']).toBe('no-store')

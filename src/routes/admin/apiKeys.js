@@ -1690,10 +1690,7 @@ router.get('/api-keys/:keyId/v2-children', authenticateAdmin, async (req, res) =
 router.post('/api-keys/:keyId/secret/reveal', authenticateAdmin, async (req, res) => {
   try {
     res.set('Cache-Control', 'no-store')
-    const apiKey = await apiKeyService.getApiKeyPlaintextById(
-      req.params.keyId,
-      req.admin?.username || 'admin'
-    )
+    const apiKey = await apiKeyService.getApiKeyPlaintextById(req.params.keyId)
     return res.json({ success: true, data: { apiKey } })
   } catch (error) {
     if (error.code === 'NOT_FOUND') {

@@ -1323,8 +1323,8 @@ describe('apiKeyService 明文 reveal', () => {
 
   // getApiKeyPlaintextById ────────────────────────────────────────────────────
 
-  // 3. 正常：用 encrypt('cr_xxx') 造数据 → 解密后原样返回；并写审计日志（不含明文）
-  test('getApiKeyPlaintextById returns the decrypted plaintext and writes a security audit', async () => {
+  // 3. 正常：用 encrypt('cr_xxx') 造数据 → 解密后原样返回，不写 security log
+  test('getApiKeyPlaintextById returns the decrypted plaintext without a security log', async () => {
     const secret = 'cr_plain-secret-123'
     redis.getApiKey.mockResolvedValue({
       id: 'key-1',
@@ -1332,11 +1332,10 @@ describe('apiKeyService 明文 reveal', () => {
       encryptedApiKey: encrypt(secret)
     })
 
-    const plaintext = await apiKeyService.getApiKeyPlaintextById('key-1', 'admin-user')
+    const plaintext = await apiKeyService.getApiKeyPlaintextById('key-1')
 
     expect(plaintext).toBe(secret)
-    expect(logger.security).toHaveBeenCalledTimes(1)
-    expect(logger.security.mock.calls[0][0]).not.toContain(secret) // 审计不落明文
+    expect(logger.security).not.toHaveBeenCalled()
   })
 
   // 4. NOT_FOUND：getApiKey 返回 null / 空对象 / isDeleted
@@ -1395,13 +1394,13 @@ describe('apiKeyService 明文 reveal', () => {
     await expect(apiKeyService.getApiKeyPlaintextById('key-1')).rejects.toMatchObject({
       code: 'PLAINTEXT_DECRYPT_FAILED'
     })
-    // 审计在解密之前已写出（reveal 意图已记录），此处不对其断言
+    expect(logger.security).not.toHaveBeenCalled()
   })
 
   // getV2ChildPlaintext ────────────────────────────────────────────────────────
 
-  // 8. 归属内正常：返回解密明文 + 写审计（含 parent/child id，不含明文）
-  test('getV2ChildPlaintext returns the decrypted plaintext for an owned child', async () => {
+  // 8. 归属内正常：返回解密明文，不写 security log
+  test('getV2ChildPlaintext returns the decrypted plaintext without a security log', async () => {
     const secret = 'cr_child-secret-xyz'
     redis.getApiKey.mockResolvedValue({
       id: 'child-1',
@@ -1410,11 +1409,10 @@ describe('apiKeyService 明文 reveal', () => {
       encryptedApiKey: encrypt(secret)
     })
 
-    const plaintext = await apiKeyService.getV2ChildPlaintext(PARENT_ID, 'child-1', 'tenant')
+    const plaintext = await apiKeyService.getV2ChildPlaintext(PARENT_ID, 'child-1')
 
     expect(plaintext).toBe(secret)
-    expect(logger.security).toHaveBeenCalledTimes(1)
-    expect(logger.security.mock.calls[0][0]).not.toContain(secret)
+    expect(logger.security).not.toHaveBeenCalled()
   })
 
   // 9. NOT_FOUND：不存在 / 非归属 / 已软删（assertV2ChildOwnership 统一按 404）

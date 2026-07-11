@@ -3206,7 +3206,7 @@ class ApiKeyService {
   }
 
   // 🔓 管理员显示 API Key 明文（只返回明文、绝不记录明文；旧 key 无副本 → PLAINTEXT_UNAVAILABLE）
-  async getApiKeyPlaintextById(keyId, actor = 'admin') {
+  async getApiKeyPlaintextById(keyId) {
     const keyData = await redis.getApiKey(keyId)
     if (!keyData || Object.keys(keyData).length === 0 || keyData.isDeleted === 'true') {
       const err = new Error('API key not found')
@@ -3223,7 +3223,6 @@ class ApiKeyService {
       err.code = 'PLAINTEXT_UNAVAILABLE'
       throw err
     }
-    logger.security(`API key secret revealed by ${actor}: ${keyId}`)
     return this._decryptStoredApiKeySecret(keyData.encryptedApiKey)
   }
 
@@ -4161,16 +4160,13 @@ class ApiKeyService {
   }
 
   // 🔓 v2 自助显示子 key 明文（先归属校验；只返回该子 key 明文，无任何上游/父账号信息）
-  async getV2ChildPlaintext(parentKeyId, childKeyId, actor = 'v2') {
+  async getV2ChildPlaintext(parentKeyId, childKeyId) {
     const child = await this.assertV2ChildOwnership(parentKeyId, childKeyId)
     if (!child.encryptedApiKey) {
       const err = new Error('API key plaintext is unavailable')
       err.code = 'PLAINTEXT_UNAVAILABLE'
       throw err
     }
-    logger.security(
-      `v2 child API key secret revealed by ${actor}: parent=${parentKeyId}, child=${childKeyId}`
-    )
     return this._decryptStoredApiKeySecret(child.encryptedApiKey)
   }
 

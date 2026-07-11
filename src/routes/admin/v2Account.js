@@ -182,8 +182,7 @@ router.post('/keys/:keyId/secret/reveal', async (req, res) => {
     res.set('Cache-Control', 'no-store')
     const apiKey = await apiKeyService.getV2ChildPlaintext(
       req.v2Account.parentKeyId,
-      req.params.keyId,
-      req.v2Account.email || 'v2'
+      req.params.keyId
     )
     return res.json({ success: true, data: { apiKey } })
   } catch (error) {
