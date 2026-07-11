@@ -94,7 +94,9 @@ function selectUsageRecordByExpectedTimestamp(records, expectedIso, toleranceMs 
   let bestDiff = Infinity
   for (const record of records) {
     const recordMs = Date.parse(record?.timestamp)
-    if (!Number.isFinite(recordMs)) continue
+    if (!Number.isFinite(recordMs)) {
+      continue
+    }
 
     const diff = Math.abs(recordMs - expectedMs)
     if (diff < bestDiff) {
@@ -1387,7 +1389,9 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       weeklyFableCostLimit !== '' &&
       (Number.isNaN(Number(weeklyFableCostLimit)) || Number(weeklyFableCostLimit) < 0)
     ) {
-      return res.status(400).json({ error: 'Weekly Fable cost limit must be a non-negative number' })
+      return res
+        .status(400)
+        .json({ error: 'Weekly Fable cost limit must be a non-negative number' })
     }
 
     // 验证激活相关字段
@@ -1806,7 +1810,9 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       weeklyFableCostLimit !== '' &&
       (Number.isNaN(Number(weeklyFableCostLimit)) || Number(weeklyFableCostLimit) < 0)
     ) {
-      return res.status(400).json({ error: 'Weekly Fable cost limit must be a non-negative number' })
+      return res
+        .status(400)
+        .json({ error: 'Weekly Fable cost limit must be a non-negative number' })
     }
 
     if (
