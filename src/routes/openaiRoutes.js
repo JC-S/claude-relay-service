@@ -9,6 +9,7 @@ const openaiAccountService = require('../services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../services/relay/openaiResponsesRelayService')
 const apiKeyService = require('../services/apiKeyService')
+const claudeRelayConfigService = require('../services/claudeRelayConfigService')
 const redis = require('../models/redis')
 const crypto = require('crypto')
 const ProxyHelper = require('../utils/proxyHelper')
@@ -25,7 +26,8 @@ const {
   IMAGE_MODEL,
   MAX_UPSTREAM_BODY_BYTES,
   MAX_UPSTREAM_RESPONSE_BYTES,
-  OpenAIImageSSEObserver
+  OpenAIImageSSEObserver,
+  createImageStreamKeepAlive
 } = require('../utils/openaiImageRequestHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { removeGptFastModeFromBody } = require('../utils/gptFastModeHelper')
@@ -46,6 +48,8 @@ const CODEX_IMAGE_ENDPOINTS = {
   edits: 'https://chatgpt.com/backend-api/codex/images/edits'
 }
 const MAX_IMAGE_ERROR_RESPONSE_BYTES = 2 * 1024 * 1024
+const IMAGE_STREAM_EARLY_SSE_DELAY_MS = 20000
+const IMAGE_STREAM_HEARTBEAT_INTERVAL_MS = 15000
 let generalOpenAIUpstreamCodexVersion = null
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
@@ -1986,6 +1990,9 @@ async function readImageUpstreamPayload(upstream, maxBytes = MAX_IMAGE_ERROR_RES
 }
 
 function passImageDiagnosticHeaders(res, headers = {}) {
+  if (res.headersSent) {
+    return
+  }
   for (const key of ['openai-version', 'x-request-id', 'openai-processing-ms']) {
     if (headers[key] !== undefined) {
       res.setHeader(key, headers[key])
@@ -2040,7 +2047,14 @@ async function recordOpenAIImageUsage({ req, usageData, accountId, endpoint, str
   return costs
 }
 
-function forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint }) {
+function forwardOpenAIImageStream({
+  upstream,
+  req,
+  res,
+  accountId,
+  endpoint,
+  streamKeepAlive = null
+}) {
   return new Promise((resolve) => {
     const observer = new OpenAIImageSSEObserver()
     let usageData = null
@@ -2078,7 +2092,11 @@ function forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint }) {
       }
     }
 
-    const settle = async ({ recordUsage = false, endResponse = true } = {}) => {
+    const settle = async ({
+      recordUsage = false,
+      endResponse = true,
+      phase = 'upstream_end'
+    } = {}) => {
       if (settled) {
         return
       }
@@ -2088,7 +2106,18 @@ function forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint }) {
         await recordUsageOnce()
       }
       if (endResponse && !res.writableEnded && !res.destroyed) {
-        res.end()
+        if (streamKeepAlive && !streamKeepAlive.isAtEventBoundary()) {
+          streamKeepAlive.endAfterPartialEvent({
+            requestId: req.requestId,
+            endpoint,
+            phase
+          })
+        } else {
+          streamKeepAlive?.stop()
+          res.end()
+        }
+      } else {
+        streamKeepAlive?.stop()
       }
       resolve()
     }
@@ -2110,7 +2139,9 @@ function forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint }) {
           return
         }
 
-        if (!res.write(chunk)) {
+        const canContinue = res.write(chunk)
+        streamKeepAlive?.noteBytesWritten(chunk)
+        if (!canContinue) {
           upstream.data.pause()
           if (!drainListener) {
             drainListener = () => {
@@ -2127,7 +2158,10 @@ function forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint }) {
           `OpenAI image stream processing failed (${error.code || 'stream_error'}): ${error.message}`
         )
         upstream.data.destroy()
-        void settle({ recordUsage: Boolean(usageData) })
+        void settle({
+          recordUsage: Boolean(usageData),
+          phase: 'stream_processing_error'
+        })
       }
     }
 
@@ -2139,14 +2173,14 @@ function forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint }) {
           `OpenAI image stream finalization failed (${error.code || 'stream_error'}): ${error.message}`
         )
       }
-      void settle({ recordUsage: true })
+      void settle({ recordUsage: true, phase: 'upstream_end' })
     }
     const onError = (error) => {
       logger.error(`OpenAI image upstream stream error: ${getSafeMessage(error)}`)
-      void settle({ recordUsage: Boolean(usageData) })
+      void settle({ recordUsage: Boolean(usageData), phase: 'upstream_error' })
     }
     const onClose = () => {
-      void settle({ recordUsage: Boolean(usageData) })
+      void settle({ recordUsage: Boolean(usageData), phase: 'upstream_close' })
     }
 
     upstream.data.on('data', onData)
@@ -2200,6 +2234,164 @@ async function sendImageUpstreamPayload(res, upstream, payload) {
   return res.send(payload === undefined || payload === null ? '' : payload)
 }
 
+function buildOpenAIImageStreamErrorPayload(body, statusCode, fallbackCode = 'upstream_error') {
+  const safeBody = sanitizeImageData(body)
+  const sourceError =
+    safeBody?.error && typeof safeBody.error === 'object' ? safeBody.error : safeBody || {}
+  const rawMessage =
+    sourceError.message ||
+    safeBody?.message ||
+    (typeof safeBody === 'string' ? safeBody : 'The upstream image request failed')
+  const defaultType =
+    statusCode === 429
+      ? 'rate_limit_error'
+      : statusCode >= 500
+        ? 'server_error'
+        : 'invalid_request_error'
+
+  return {
+    error: {
+      message: getSafeMessage(
+        { message: rawMessage, statusCode },
+        { context: 'openai_image_stream', logOriginal: false }
+      ),
+      type:
+        typeof sourceError.type === 'string' && sourceError.type.trim()
+          ? sourceError.type
+          : defaultType,
+      code:
+        typeof sourceError.code === 'string' && sourceError.code.trim()
+          ? sourceError.code
+          : fallbackCode
+    }
+  }
+}
+
+function endEstablishedOpenAIImageStreamWithError({
+  streamKeepAlive,
+  res,
+  req,
+  accountId,
+  endpoint,
+  statusCode,
+  body,
+  phase,
+  fallbackCode
+}) {
+  if (!streamKeepAlive?.isEstablished()) {
+    return false
+  }
+
+  logger.warn(
+    'OpenAI image upstream error arrived after the downstream SSE response was committed',
+    {
+      accountId,
+      endpoint,
+      requestId: req.requestId,
+      upstreamStatus: statusCode,
+      upstreamNicIp: req.upstreamNicIp || null,
+      phase
+    }
+  )
+
+  if (res.destroyed || res.writableEnded) {
+    streamKeepAlive.stop()
+    return true
+  }
+
+  if (!streamKeepAlive.isAtEventBoundary()) {
+    streamKeepAlive.endAfterPartialEvent({
+      requestId: req.requestId,
+      endpoint,
+      phase
+    })
+    return true
+  }
+
+  const payload = buildOpenAIImageStreamErrorPayload(body, statusCode, fallbackCode)
+  if (!streamKeepAlive.endWithErrorEvent(payload) && !res.destroyed && !res.writableEnded) {
+    streamKeepAlive.stop()
+    res.end()
+  }
+  return true
+}
+
+function buildOpenAIImageCompletedSseFrames(responseData, endpoint) {
+  if (!responseData || typeof responseData !== 'object' || !Array.isArray(responseData.data)) {
+    return []
+  }
+
+  const images = responseData.data
+  if (
+    images.length === 0 ||
+    images.some(
+      (image) =>
+        !image ||
+        typeof image !== 'object' ||
+        !['b64_json', 'url', 'image_url'].some(
+          (field) => typeof image[field] === 'string' && image[field].trim()
+        )
+    )
+  ) {
+    return []
+  }
+
+  const eventName = endpoint === 'edits' ? 'image_edit.completed' : 'image_generation.completed'
+  return images.map((image, index) => {
+    const eventData = { ...image, type: eventName }
+    delete eventData.usage
+    if (index === images.length - 1 && responseData.usage) {
+      eventData.usage = responseData.usage
+    }
+    return `event: ${eventName}\ndata: ${JSON.stringify(eventData)}\n\n`
+  })
+}
+
+function waitForOpenAIImageSseDrain(res) {
+  return new Promise((resolve) => {
+    let settled = false
+    const cleanup = () => {
+      res.removeListener('drain', onDrain)
+      res.removeListener('close', onClose)
+      res.removeListener('error', onClose)
+    }
+    const settle = (writable) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      resolve(writable)
+    }
+    const onDrain = () => settle(true)
+    const onClose = () => settle(false)
+
+    res.once('drain', onDrain)
+    res.once('close', onClose)
+    res.once('error', onClose)
+    if (res.destroyed || res.writableEnded) {
+      settle(false)
+    }
+  })
+}
+
+async function writeOpenAIImageSseFrames(res, streamKeepAlive, frames) {
+  for (const frame of frames) {
+    if (res.destroyed || res.writableEnded) {
+      return false
+    }
+    const canContinue = res.write(frame)
+    streamKeepAlive.noteBytesWritten(frame)
+    if (typeof res.flush === 'function') {
+      res.flush()
+    }
+    if (!canContinue && !(await waitForOpenAIImageSseDrain(res))) {
+      return false
+    }
+  }
+  return true
+}
+
 const handleImages = async (req, res) => {
   let upstream = null
   let accountId = null
@@ -2207,6 +2399,7 @@ const handleImages = async (req, res) => {
   let account = null
   let sessionHash = null
   let selectedLocalAddress = null
+  let streamKeepAlive = null
   const abortController = new AbortController()
 
   const cancelUpstream = () => {
@@ -2273,6 +2466,13 @@ const handleImages = async (req, res) => {
     }
 
     const isStream = req._downstreamStream === true
+    if (isStream && (await claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled())) {
+      streamKeepAlive = createImageStreamKeepAlive({
+        res,
+        delayMs: IMAGE_STREAM_EARLY_SSE_DELAY_MS,
+        intervalMs: IMAGE_STREAM_HEARTBEAT_INTERVAL_MS
+      })
+    }
     const headers = buildCodexUpstreamHeaders({
       incoming: req.headers || {},
       accessToken: auth.accessToken,
@@ -2348,6 +2548,7 @@ const handleImages = async (req, res) => {
       }
     }
 
+    streamKeepAlive?.armEarlyStart()
     upstream = await sendUpstreamRequestWithFallback()
     let nicRateLimitRetryCount = 0
     const maxNicRateLimitRetries =
@@ -2395,13 +2596,47 @@ const handleImages = async (req, res) => {
             resetsInSeconds
           )
         }
-        return res.status(429).json(buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds))
+        const errorResponse = buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds)
+        if (
+          endEstablishedOpenAIImageStreamWithError({
+            streamKeepAlive,
+            res,
+            req,
+            accountId,
+            endpoint,
+            statusCode: 429,
+            body: errorResponse,
+            phase: 'rate_limit_exhausted',
+            fallbackCode: 'rate_limit_exceeded'
+          })
+        ) {
+          return undefined
+        }
+        streamKeepAlive?.cancelEarlyStart()
+        return res.status(429).json(errorResponse)
       }
 
       const previousLocalAddress = selectedLocalAddress
       selectedLocalAddress = await chooseAndApplyLocalAddress('retrying with')
       if (!selectedLocalAddress || selectedLocalAddress === previousLocalAddress) {
-        return res.status(429).json(buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds))
+        const errorResponse = buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds)
+        if (
+          endEstablishedOpenAIImageStreamWithError({
+            streamKeepAlive,
+            res,
+            req,
+            accountId,
+            endpoint,
+            statusCode: 429,
+            body: errorResponse,
+            phase: 'rate_limit_no_alternate_nic',
+            fallbackCode: 'rate_limit_exceeded'
+          })
+        ) {
+          return undefined
+        }
+        streamKeepAlive?.cancelEarlyStart()
+        return res.status(429).json(errorResponse)
       }
       nicRateLimitRetryCount += 1
       upstream = await sendUpstreamRequestWithFallback()
@@ -2439,6 +2674,23 @@ const handleImages = async (req, res) => {
           .catch(() => {})
       }
 
+      if (
+        endEstablishedOpenAIImageStreamWithError({
+          streamKeepAlive,
+          res,
+          req,
+          accountId,
+          endpoint,
+          statusCode: upstream.status,
+          body: errorData,
+          phase: 'upstream_non_2xx',
+          fallbackCode: 'upstream_error'
+        })
+      ) {
+        return undefined
+      }
+
+      streamKeepAlive?.cancelEarlyStart()
       res.status(upstream.status)
       passImageDiagnosticHeaders(res, upstream.headers)
       return await sendImageUpstreamPayload(res, upstream, errorData)
@@ -2448,20 +2700,31 @@ const handleImages = async (req, res) => {
       await unifiedOpenAIScheduler.removeAccountRateLimit(accountId, 'openai')
     }
 
-    res.status(upstream.status)
-    passImageDiagnosticHeaders(res, upstream.headers)
     const upstreamContentType = getUpstreamContentType(upstream)
     const upstreamIsSse = upstreamContentType.includes('text/event-stream')
 
     if (isStream && upstreamIsSse) {
-      res.setHeader('Content-Type', 'text/event-stream')
-      res.setHeader('Cache-Control', 'no-cache')
-      res.setHeader('Connection', 'keep-alive')
-      res.setHeader('X-Accel-Buffering', 'no')
-      if (typeof res.flushHeaders === 'function') {
-        res.flushHeaders()
+      if (!streamKeepAlive?.isEstablished()) {
+        streamKeepAlive?.cancelEarlyStart()
+        res.status(upstream.status)
+        passImageDiagnosticHeaders(res, upstream.headers)
+        res.setHeader('Content-Type', 'text/event-stream')
+        res.setHeader('Cache-Control', 'no-cache')
+        res.setHeader('Connection', 'keep-alive')
+        res.setHeader('X-Accel-Buffering', 'no')
+        if (typeof res.flushHeaders === 'function') {
+          res.flushHeaders()
+        }
+        streamKeepAlive?.onClassicSseEstablished()
       }
-      await forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint })
+      await forwardOpenAIImageStream({
+        upstream,
+        req,
+        res,
+        accountId,
+        endpoint,
+        streamKeepAlive
+      })
       return undefined
     }
 
@@ -2483,13 +2746,57 @@ const handleImages = async (req, res) => {
           usageData: responseData.usage,
           accountId,
           endpoint,
-          stream: false,
+          stream: isStream,
           statusCode: upstream.status
         })
       } catch (error) {
         logger.error(`Failed to record OpenAI image usage: ${getSafeMessage(error)}`)
       }
     }
+
+    if (streamKeepAlive?.isEstablished()) {
+      const frames = buildOpenAIImageCompletedSseFrames(responseData, endpoint)
+      if (frames.length === 0) {
+        logger.warn('OpenAI image stream received an unrecognized successful upstream payload', {
+          accountId,
+          endpoint,
+          requestId: req.requestId,
+          upstreamContentType: upstreamContentType || null
+        })
+        endEstablishedOpenAIImageStreamWithError({
+          streamKeepAlive,
+          res,
+          req,
+          accountId,
+          endpoint,
+          statusCode: 502,
+          body: {
+            error: {
+              message: 'The upstream image response could not be converted to a stream',
+              type: 'server_error',
+              code: 'upstream_protocol_mismatch'
+            }
+          },
+          phase: 'upstream_protocol_mismatch',
+          fallbackCode: 'upstream_protocol_mismatch'
+        })
+        return undefined
+      }
+
+      if (await writeOpenAIImageSseFrames(res, streamKeepAlive, frames)) {
+        streamKeepAlive.stop()
+        if (!res.writableEnded && !res.destroyed) {
+          res.end()
+        }
+      } else {
+        streamKeepAlive.stop()
+      }
+      return undefined
+    }
+
+    streamKeepAlive?.cancelEarlyStart()
+    res.status(upstream.status)
+    passImageDiagnosticHeaders(res, upstream.headers)
     return await sendImageUpstreamPayload(res, upstream, responseData)
   } catch (error) {
     const status = Number(error.statusCode || error.response?.status) || 500
@@ -2501,18 +2808,40 @@ const handleImages = async (req, res) => {
       endpoint: req._openAIImageEndpoint,
       upstreamNicIp: req.upstreamNicIp || null
     })
-    if (!res.headersSent && !res.destroyed) {
-      return res.status(status).json({
-        error: {
-          message:
-            status >= 500 ? 'Failed to process the upstream image request' : getSafeMessage(error),
-          type: status >= 500 ? 'server_error' : 'invalid_request_error',
-          code: error.code || 'upstream_error'
-        }
+    const errorResponse = {
+      error: {
+        message:
+          status >= 500 ? 'Failed to process the upstream image request' : getSafeMessage(error),
+        type: status >= 500 ? 'server_error' : 'invalid_request_error',
+        code: error.code || 'upstream_error'
+      }
+    }
+    if (
+      endEstablishedOpenAIImageStreamWithError({
+        streamKeepAlive,
+        res,
+        req,
+        accountId,
+        endpoint: req._openAIImageEndpoint,
+        statusCode: status,
+        body: errorResponse,
+        phase: 'upstream_request_error',
+        fallbackCode: error.code || 'upstream_error'
       })
+    ) {
+      return undefined
+    }
+
+    streamKeepAlive?.cancelEarlyStart()
+    if (!res.headersSent && !res.destroyed) {
+      return res.status(status).json(errorResponse)
+    }
+    if (!res.writableEnded && !res.destroyed) {
+      res.end()
     }
     return undefined
   } finally {
+    streamKeepAlive?.stop()
     req.removeListener('aborted', onRequestAborted)
     res.removeListener('close', onResponseClosed)
   }

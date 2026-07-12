@@ -53,6 +53,7 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       requestDetailRetentionHours,
       requestDetailBodyPreviewEnabled,
       exportControlledClaudeModelBlockEnabled,
+      openAIImageStreamKeepAliveEnabled,
       purgeRequestDetailBodySnapshots
     } = req.body
 
@@ -205,6 +206,13 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
 
     if (
+      openAIImageStreamKeepAliveEnabled !== undefined &&
+      typeof openAIImageStreamKeepAliveEnabled !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'openAIImageStreamKeepAliveEnabled must be a boolean' })
+    }
+
+    if (
       purgeRequestDetailBodySnapshots !== undefined &&
       typeof purgeRequestDetailBodySnapshots !== 'boolean'
     ) {
@@ -256,6 +264,9 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
     if (exportControlledClaudeModelBlockEnabled !== undefined) {
       updateData.exportControlledClaudeModelBlockEnabled = exportControlledClaudeModelBlockEnabled
+    }
+    if (openAIImageStreamKeepAliveEnabled !== undefined) {
+      updateData.openAIImageStreamKeepAliveEnabled = openAIImageStreamKeepAliveEnabled
     }
 
     const updatedConfig = await claudeRelayConfigService.updateConfig(

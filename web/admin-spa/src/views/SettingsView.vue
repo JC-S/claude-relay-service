@@ -839,6 +839,54 @@
               </div>
             </div>
 
+            <!-- GPT-Image 流式保活 -->
+            <div
+              class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
+            >
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="flex items-center">
+                    <div
+                      class="mr-3 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white shadow-lg"
+                    >
+                      <i class="fas fa-heart-pulse"></i>
+                    </div>
+                    <div>
+                      <h2 class="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                        启用 GPT-Image 流式保活
+                      </h2>
+                      <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                        开启后，GPT-Image 流式请求等待超过约 20 秒仍无响应时，会提前建立 SSE
+                        并定期发送心跳注释，避免 Cloudflare 524 断开。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <label class="relative inline-flex cursor-pointer items-center">
+                  <input
+                    v-model="claudeConfig.openAIImageStreamKeepAliveEnabled"
+                    class="peer sr-only"
+                    type="checkbox"
+                    @change="saveClaudeConfig"
+                  />
+                  <div
+                    class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-cyan-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-cyan-300 dark:border-gray-600 dark:bg-gray-700 dark:peer-focus:ring-cyan-800"
+                  ></div>
+                </label>
+              </div>
+              <div class="mt-4 rounded-lg bg-amber-50 p-4 dark:bg-amber-900/20">
+                <div class="flex">
+                  <i class="fas fa-triangle-exclamation mt-0.5 text-amber-500"></i>
+                  <div class="ml-3">
+                    <p class="text-sm text-amber-700 dark:text-amber-300">
+                      提前建立 SSE 后，上游后续返回的错误将以流内 error 事件下发，HTTP 状态码保持
+                      200。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- 全局会话绑定 -->
             <div
               class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
@@ -2145,6 +2193,7 @@ const claudeConfig = ref({
   requestDetailRetentionHours: 6,
   requestDetailBodyPreviewEnabled: false,
   exportControlledClaudeModelBlockEnabled: true,
+  openAIImageStreamKeepAliveEnabled: false,
   updatedAt: null,
   updatedBy: null
 })
@@ -2550,6 +2599,8 @@ const loadClaudeConfig = async () => {
         requestDetailBodyPreviewEnabled: response.config?.requestDetailBodyPreviewEnabled ?? false,
         exportControlledClaudeModelBlockEnabled:
           response.config?.exportControlledClaudeModelBlockEnabled ?? true,
+        openAIImageStreamKeepAliveEnabled:
+          response.config?.openAIImageStreamKeepAliveEnabled ?? false,
         updatedAt: response.config?.updatedAt || null,
         updatedBy: response.config?.updatedBy || null
       }
@@ -2595,7 +2646,8 @@ const saveClaudeConfig = async (options = {}) => {
       requestDetailRetentionHours: claudeConfig.value.requestDetailRetentionHours,
       requestDetailBodyPreviewEnabled,
       exportControlledClaudeModelBlockEnabled:
-        claudeConfig.value.exportControlledClaudeModelBlockEnabled
+        claudeConfig.value.exportControlledClaudeModelBlockEnabled,
+      openAIImageStreamKeepAliveEnabled: claudeConfig.value.openAIImageStreamKeepAliveEnabled
     }
 
     if (options.purgeRequestDetailBodySnapshots === true) {
@@ -2617,6 +2669,9 @@ const saveClaudeConfig = async (options = {}) => {
         exportControlledClaudeModelBlockEnabled:
           response.config?.exportControlledClaudeModelBlockEnabled ??
           claudeConfig.value.exportControlledClaudeModelBlockEnabled,
+        openAIImageStreamKeepAliveEnabled:
+          response.config?.openAIImageStreamKeepAliveEnabled ??
+          claudeConfig.value.openAIImageStreamKeepAliveEnabled,
         updatedAt: response.config?.updatedAt || new Date().toISOString(),
         updatedBy: response.config?.updatedBy || null
       }
@@ -2630,6 +2685,7 @@ const saveClaudeConfig = async (options = {}) => {
 
     if (isMounted.value) {
       showToast(response.message || '保存 Claude 转发配置失败', 'error')
+      await loadClaudeConfig()
     }
     return response
   } catch (error) {
@@ -2637,6 +2693,7 @@ const saveClaudeConfig = async (options = {}) => {
     if (!isMounted.value) return
     showToast('保存 Claude 转发配置失败', 'error')
     console.error(error)
+    await loadClaudeConfig()
     return { success: false, message: error.message || '保存 Claude 转发配置失败' }
   }
 }

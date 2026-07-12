@@ -56,6 +56,10 @@ jest.mock('../src/services/apiKeyService', () => ({
   recordUsage: jest.fn(async () => ({ realCost: 0.12, ratedCost: 0.12 }))
 }))
 
+jest.mock('../src/services/claudeRelayConfigService', () => ({
+  isOpenAIImageStreamKeepAliveEnabled: jest.fn().mockResolvedValue(false)
+}))
+
 jest.mock('../src/models/redis', () => ({
   getUsageStats: jest.fn()
 }))
@@ -111,6 +115,8 @@ const axios = require('axios')
 const scheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
 const openaiAccountService = require('../src/services/account/openaiAccountService')
 const apiKeyService = require('../src/services/apiKeyService')
+const claudeRelayConfigService = require('../src/services/claudeRelayConfigService')
+const openaiNicSelector = require('../src/utils/openaiNicSelector')
 const upstreamErrorHelper = require('../src/utils/upstreamErrorHelper')
 const openaiRoutes = require('../src/routes/openaiRoutes')
 
@@ -204,6 +210,7 @@ describe('openaiRoutes.handleImages', () => {
     jest.clearAllMocks()
     setupAccount()
     scheduler.isAccountRateLimited.mockResolvedValue(false)
+    claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(false)
   })
 
   test('uses the direct Codex images endpoint, dynamic General UA, and records image usage', async () => {
@@ -504,5 +511,388 @@ describe('openaiRoutes.handleImages', () => {
     )
     expect(res.statusCode).toBe(429)
     expect(res.payload.error.type).toBe('usage_limit_reached')
+  })
+
+  test('keeps the original HTTP error when keepalive is enabled but the response is fast', async () => {
+    claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+    axios.post.mockResolvedValue({
+      status: 529,
+      statusText: 'Overloaded',
+      headers: { 'content-type': 'application/json' },
+      data: { error: { message: 'overloaded', type: 'server_error', code: 'overloaded' } }
+    })
+    const req = createReq('generations', true)
+    const res = createRes()
+
+    await openaiRoutes.handleImages(req, res)
+
+    expect(res.statusCode).toBe(529)
+    expect(res.payload.error.code).toBe('overloaded')
+    expect(res.chunks).toEqual([])
+  })
+
+  test('establishes SSE after 20 seconds and converts a delayed JSON image response', async () => {
+    jest.useFakeTimers()
+    try {
+      claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+      let resolveUpstream
+      axios.post.mockReturnValue(
+        new Promise((resolve) => {
+          resolveUpstream = resolve
+        })
+      )
+      const req = createReq('generations', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+
+      for (let index = 0; index < 20 && !axios.post.mock.calls.length; index += 1) {
+        await Promise.resolve()
+      }
+      expect(axios.post).toHaveBeenCalledTimes(1)
+
+      await jest.advanceTimersByTimeAsync(20000)
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['Content-Type']).toBe('text/event-stream')
+      expect(res.chunks).toEqual([': connected\n\n'])
+
+      resolveUpstream({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        data: {
+          created: 1,
+          data: [{ b64_json: 'AAAA' }, { b64_json: 'BBBB' }],
+          usage: { input_tokens: 3, output_tokens: 5 }
+        }
+      })
+      await pending
+
+      const body = res.chunks.join('')
+      expect(body.match(/event: image_generation\.completed/g)).toHaveLength(2)
+      expect(body.match(/"usage"/g)).toHaveLength(1)
+      expect(apiKeyService.recordUsage).toHaveBeenCalledTimes(1)
+      expect(res.writableEnded).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('returns a late upstream error as an SSE error event after keepalive starts', async () => {
+    jest.useFakeTimers()
+    try {
+      claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+      let resolveUpstream
+      axios.post.mockReturnValue(
+        new Promise((resolve) => {
+          resolveUpstream = resolve
+        })
+      )
+      const req = createReq('edits', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+
+      for (let index = 0; index < 20 && !axios.post.mock.calls.length; index += 1) {
+        await Promise.resolve()
+      }
+      await jest.advanceTimersByTimeAsync(20000)
+      resolveUpstream({
+        status: 529,
+        statusText: 'Overloaded',
+        headers: { 'content-type': 'application/json' },
+        data: { error: { message: 'overloaded', type: 'server_error', code: 'overloaded' } }
+      })
+      await pending
+
+      expect(res.statusCode).toBe(200)
+      expect(res.chunks[0]).toBe(': connected\n\n')
+      expect(res.chunks.join('')).toContain('event: error\n')
+      expect(res.chunks.join('')).toContain('"code":"overloaded"')
+      expect(upstreamErrorHelper.recordErrorHistory).toHaveBeenCalledTimes(1)
+      expect(res.writableEnded).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('waits for downstream drain while converting a delayed JSON image response', async () => {
+    jest.useFakeTimers()
+    try {
+      claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+      let resolveUpstream
+      axios.post.mockReturnValue(
+        new Promise((resolve) => {
+          resolveUpstream = resolve
+        })
+      )
+      const req = createReq('generations', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+
+      for (let index = 0; index < 20 && !axios.post.mock.calls.length; index += 1) {
+        await Promise.resolve()
+      }
+      await jest.advanceTimersByTimeAsync(20000)
+
+      const originalWrite = res.write.bind(res)
+      let blockNextImageFrame = true
+      res.write = jest.fn((chunk) => {
+        originalWrite(chunk)
+        if (blockNextImageFrame && String(chunk).includes('image_generation.completed')) {
+          blockNextImageFrame = false
+          return false
+        }
+        return true
+      })
+      resolveUpstream({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        data: { data: [{ b64_json: 'AAAA' }] }
+      })
+
+      for (let index = 0; index < 20 && res.listenerCount('drain') === 0; index += 1) {
+        await Promise.resolve()
+      }
+      expect(res.listenerCount('drain')).toBe(1)
+      expect(res.writableEnded).toBe(false)
+
+      res.emit('drain')
+      await pending
+      expect(res.writableEnded).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('does not append an error event after a partial upstream SSE frame', async () => {
+    claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+    const stream = new PassThrough()
+    axios.post.mockResolvedValue({
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      data: stream
+    })
+    const req = createReq('generations', true)
+    const res = createRes()
+    const partialFrame = 'event: image_generation.partial_image\ndata: {"b64_json":"AAAA'
+
+    setImmediate(() => {
+      stream.write(partialFrame)
+      stream.destroy(new Error('upstream reset'))
+    })
+
+    await openaiRoutes.handleImages(req, res)
+
+    expect(res.chunks.join('')).toBe(partialFrame)
+    expect(res.chunks.join('')).not.toContain('event: error')
+    expect(res.writableEnded).toBe(true)
+  })
+
+  test('only sends stream heartbeats between complete upstream SSE events', async () => {
+    jest.useFakeTimers()
+    try {
+      claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+      const stream = new PassThrough()
+      axios.post.mockResolvedValue({
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+        data: stream
+      })
+      const req = createReq('generations', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+
+      for (let index = 0; index < 20 && !res.headersSent; index += 1) {
+        await Promise.resolve()
+      }
+      expect(res.headers['Content-Type']).toBe('text/event-stream')
+      expect(res.chunks).toEqual([])
+
+      stream.write('event: image_generation.partial_image\ndata: {"b64_json":"AAAA')
+      await jest.advanceTimersByTimeAsync(15000)
+      expect(res.chunks.join('')).not.toContain(': keep-alive')
+
+      stream.write('"}\n\n')
+      await jest.advanceTimersByTimeAsync(15000)
+      expect(res.chunks.join('')).toContain(': keep-alive\n\n')
+
+      stream.end(
+        'event: image_generation.completed\ndata: {"type":"image_generation.completed","usage":{"input_tokens":2,"output_tokens":4}}\n\n'
+      )
+      await pending
+
+      expect(apiKeyService.recordUsage).toHaveBeenCalledTimes(1)
+      expect(res.writableEnded).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('does not establish an early response while the keepalive toggle is disabled', async () => {
+    jest.useFakeTimers()
+    try {
+      let resolveUpstream
+      axios.post.mockReturnValue(
+        new Promise((resolve) => {
+          resolveUpstream = resolve
+        })
+      )
+      const req = createReq('generations', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+
+      for (let index = 0; index < 20 && !axios.post.mock.calls.length; index += 1) {
+        await Promise.resolve()
+      }
+      await jest.advanceTimersByTimeAsync(35000)
+      expect(res.headersSent).toBe(false)
+      expect(res.chunks).toEqual([])
+
+      resolveUpstream({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        data: { data: [{ b64_json: 'AAAA' }] }
+      })
+      await pending
+
+      expect(res.payload.data[0].b64_json).toBe('AAAA')
+      expect(res.chunks).toEqual([])
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('keeps the downstream open while retrying a 429 on another NIC', async () => {
+    jest.useFakeTimers()
+    try {
+      claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+      openaiAccountService.getAccount.mockResolvedValue({
+        id: 'openai-image-1',
+        name: 'OpenAI Image Account',
+        accessToken: 'encrypted-token',
+        accountId: 'chatgpt-account-1',
+        interleaveNicEnabled: true
+      })
+      openaiNicSelector.getEnabledLocalAddresses.mockReturnValue(['10.0.0.184', '10.0.0.191'])
+      openaiNicSelector.chooseLocalAddress
+        .mockResolvedValueOnce('10.0.0.184')
+        .mockResolvedValueOnce('10.0.0.191')
+      openaiNicSelector.markCooldown.mockResolvedValue({
+        marked: true,
+        ttlSeconds: 3600,
+        expiresAt: Date.now() + 3600000,
+        remainingAddresses: 1
+      })
+
+      let resolveRetry
+      axios.post
+        .mockResolvedValueOnce({
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+          data: { error: { type: 'rate_limit', resets_in_seconds: 60 } }
+        })
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveRetry = resolve
+          })
+        )
+
+      const req = createReq('generations', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+      for (let index = 0; index < 30 && axios.post.mock.calls.length < 2; index += 1) {
+        await Promise.resolve()
+      }
+      expect(axios.post).toHaveBeenCalledTimes(2)
+
+      await jest.advanceTimersByTimeAsync(20000)
+      expect(res.chunks).toEqual([': connected\n\n'])
+
+      resolveRetry({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        data: {
+          data: [{ b64_json: 'AAAA' }],
+          usage: { input_tokens: 1, output_tokens: 2 }
+        }
+      })
+      await pending
+
+      expect(res.statusCode).toBe(200)
+      expect(res.chunks.join('')).toContain('image_generation.completed')
+      expect(res.chunks.join('')).not.toContain('event: error')
+      expect(openaiNicSelector.markCooldown).toHaveBeenCalledWith(
+        expect.objectContaining({ localAddress: '10.0.0.184' })
+      )
+      expect(scheduler.markAccountRateLimited).not.toHaveBeenCalled()
+      expect(apiKeyService.recordUsage).toHaveBeenCalledTimes(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('returns a protocol error when a delayed successful payload has no image result', async () => {
+    jest.useFakeTimers()
+    try {
+      claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+      let resolveUpstream
+      axios.post.mockReturnValue(
+        new Promise((resolve) => {
+          resolveUpstream = resolve
+        })
+      )
+      const req = createReq('generations', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+
+      for (let index = 0; index < 20 && !axios.post.mock.calls.length; index += 1) {
+        await Promise.resolve()
+      }
+      await jest.advanceTimersByTimeAsync(20000)
+      resolveUpstream({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        data: { status: 'ok' }
+      })
+      await pending
+
+      expect(res.statusCode).toBe(200)
+      expect(res.chunks.join('')).toContain('event: error')
+      expect(res.chunks.join('')).toContain('"code":"upstream_protocol_mismatch"')
+      expect(apiKeyService.recordUsage).not.toHaveBeenCalled()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('returns a response-header transport failure as an SSE error after keepalive starts', async () => {
+    jest.useFakeTimers()
+    try {
+      claudeRelayConfigService.isOpenAIImageStreamKeepAliveEnabled.mockResolvedValue(true)
+      let rejectUpstream
+      axios.post.mockReturnValue(
+        new Promise((_resolve, reject) => {
+          rejectUpstream = reject
+        })
+      )
+      const req = createReq('edits', true)
+      const res = createRes()
+      const pending = openaiRoutes.handleImages(req, res)
+
+      for (let index = 0; index < 20 && !axios.post.mock.calls.length; index += 1) {
+        await Promise.resolve()
+      }
+      await jest.advanceTimersByTimeAsync(20000)
+      const transportError = new Error('upstream response header timeout')
+      transportError.code = 'ETIMEDOUT'
+      rejectUpstream(transportError)
+      await pending
+
+      expect(res.statusCode).toBe(200)
+      expect(res.chunks[0]).toBe(': connected\n\n')
+      expect(res.chunks.join('')).toContain('event: error')
+      expect(res.chunks.join('')).toContain('"code":"ETIMEDOUT"')
+      expect(res.writableEnded).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })

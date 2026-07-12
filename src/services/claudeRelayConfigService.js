@@ -34,6 +34,7 @@ const DEFAULT_CONFIG = {
   requestDetailRetentionHours: 6, // 请求明细保留时间（小时）
   requestDetailBodyPreviewEnabled: false, // 是否保存请求体预览快照
   exportControlledClaudeModelBlockEnabled: true, // 是否拦截受出口管制限制的 Claude 模型
+  openAIImageStreamKeepAliveEnabled: false, // 是否为 GPT-Image 流式请求启用提前 SSE 保活
   // 排队健康检查配置
   concurrentRequestQueueHealthCheckEnabled: true, // 是否启用排队健康检查（默认开启）
   concurrentRequestQueueHealthThreshold: 0.8, // 健康检查阈值（P90 >= 超时 × 阈值时拒绝新请求）
@@ -137,7 +138,8 @@ class ClaudeRelayConfigService {
         globalSessionBindingEnabled: updatedConfig.globalSessionBindingEnabled,
         concurrentRequestQueueEnabled: updatedConfig.concurrentRequestQueueEnabled,
         exportControlledClaudeModelBlockEnabled:
-          updatedConfig.exportControlledClaudeModelBlockEnabled
+          updatedConfig.exportControlledClaudeModelBlockEnabled,
+        openAIImageStreamKeepAliveEnabled: updatedConfig.openAIImageStreamKeepAliveEnabled
       })
 
       return updatedConfig
@@ -172,6 +174,15 @@ class ClaudeRelayConfigService {
   async isExportControlledClaudeModelBlockEnabled() {
     const cfg = await this.getConfig()
     return cfg.exportControlledClaudeModelBlockEnabled !== false
+  }
+
+  /**
+   * 检查是否为 GPT-Image 流式请求启用提前 SSE 保活
+   * @returns {Promise<boolean>}
+   */
+  async isOpenAIImageStreamKeepAliveEnabled() {
+    const cfg = await this.getConfig()
+    return cfg.openAIImageStreamKeepAliveEnabled === true
   }
 
   /**

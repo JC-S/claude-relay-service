@@ -565,6 +565,215 @@ function sanitizeCompletedImageEventData(dataText) {
     )
 }
 
+function createImageStreamKeepAlive({ res, delayMs = 20000, intervalMs = 15000 } = {}) {
+  if (!res || typeof res.write !== 'function') {
+    throw new TypeError('A writable response is required for image stream keepalive')
+  }
+
+  let earlyStartTimer = null
+  let heartbeatTimer = null
+  let established = false
+  let establishedEarly = false
+  let stopped = false
+  let businessBytesWritten = false
+  let businessTail = Buffer.alloc(0)
+
+  const canWrite = () => !res.destroyed && !res.writableEnded
+
+  const clearEarlyStartTimer = () => {
+    if (earlyStartTimer) {
+      clearTimeout(earlyStartTimer)
+      earlyStartTimer = null
+    }
+  }
+
+  const clearHeartbeatTimer = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
+  }
+
+  const stop = () => {
+    if (stopped) {
+      return
+    }
+    stopped = true
+    clearEarlyStartTimer()
+    clearHeartbeatTimer()
+  }
+
+  const isAtEventBoundary = () => {
+    if (!businessBytesWritten) {
+      return true
+    }
+
+    const { length } = businessTail
+    return (
+      (length >= 2 && businessTail[length - 2] === 0x0a && businessTail[length - 1] === 0x0a) ||
+      (length >= 3 &&
+        businessTail[length - 3] === 0x0a &&
+        businessTail[length - 2] === 0x0d &&
+        businessTail[length - 1] === 0x0a)
+    )
+  }
+
+  const flush = () => {
+    if (typeof res.flush === 'function') {
+      res.flush()
+    }
+  }
+
+  const writeComment = (comment) => {
+    if (stopped || !established || !canWrite()) {
+      return false
+    }
+    try {
+      res.write(`: ${comment}\n\n`)
+      flush()
+      return true
+    } catch (error) {
+      logger.warn(`Failed to write OpenAI image SSE keepalive: ${error.message}`)
+      stop()
+      return false
+    }
+  }
+
+  const startHeartbeat = () => {
+    if (stopped || heartbeatTimer || !established || intervalMs <= 0) {
+      return
+    }
+
+    heartbeatTimer = setInterval(() => {
+      if (stopped || !established || !canWrite() || res.writableNeedDrain || !isAtEventBoundary()) {
+        return
+      }
+      writeComment('keep-alive')
+    }, intervalMs)
+    heartbeatTimer.unref?.()
+  }
+
+  const establishEarly = () => {
+    earlyStartTimer = null
+    if (stopped || established || res.headersSent || !canWrite()) {
+      return
+    }
+
+    try {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.setHeader('X-Accel-Buffering', 'no')
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders()
+      }
+      established = true
+      establishedEarly = true
+      if (!writeComment('connected')) {
+        return
+      }
+      startHeartbeat()
+    } catch (error) {
+      logger.warn(`Failed to establish OpenAI image SSE keepalive: ${error.message}`)
+      stop()
+    }
+  }
+
+  const armEarlyStart = () => {
+    if (stopped || established || earlyStartTimer || res.headersSent || !canWrite()) {
+      return
+    }
+    earlyStartTimer = setTimeout(establishEarly, Math.max(0, delayMs))
+    earlyStartTimer.unref?.()
+  }
+
+  const cancelEarlyStart = () => {
+    clearEarlyStartTimer()
+  }
+
+  const onClassicSseEstablished = () => {
+    cancelEarlyStart()
+    if (stopped || established || !canWrite()) {
+      return
+    }
+    established = true
+    startHeartbeat()
+  }
+
+  const noteBytesWritten = (chunk) => {
+    if (chunk === undefined || chunk === null) {
+      return
+    }
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+    if (buffer.length === 0) {
+      return
+    }
+
+    businessBytesWritten = true
+    if (buffer.length >= 3) {
+      businessTail = Buffer.from(buffer.subarray(buffer.length - 3))
+      return
+    }
+    const combined = Buffer.concat([businessTail, buffer])
+    businessTail = Buffer.from(combined.subarray(Math.max(0, combined.length - 3)))
+  }
+
+  const endWithErrorEvent = (payload) => {
+    if (stopped || !established || !canWrite() || !isAtEventBoundary()) {
+      return false
+    }
+
+    stop()
+    try {
+      res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`)
+      flush()
+      res.end()
+      return true
+    } catch (error) {
+      logger.warn(`Failed to write OpenAI image SSE error event: ${error.message}`)
+      if (!res.destroyed && !res.writableEnded) {
+        try {
+          res.end()
+        } catch (_) {
+          // The downstream connection is already unusable.
+        }
+      }
+      return false
+    }
+  }
+
+  const endAfterPartialEvent = ({ requestId = null, endpoint = null, phase = null } = {}) => {
+    if (stopped) {
+      return false
+    }
+    stop()
+    logger.warn('OpenAI image SSE closed after a partial event', {
+      requestId,
+      endpoint,
+      phase
+    })
+    if (canWrite()) {
+      res.end()
+    }
+    return true
+  }
+
+  return {
+    armEarlyStart,
+    cancelEarlyStart,
+    isEstablished: () => established,
+    wasEstablishedEarly: () => establishedEarly,
+    isAtEventBoundary,
+    hasBusinessBytesWritten: () => businessBytesWritten,
+    onClassicSseEstablished,
+    noteBytesWritten,
+    endWithErrorEvent,
+    endAfterPartialEvent,
+    stop
+  }
+}
+
 class OpenAIImageSSEObserver {
   constructor({ maxEventBytes = MAX_SSE_EVENT_BYTES, maxStreamBytes = MAX_SSE_STREAM_BYTES } = {}) {
     this.maxEventBytes = maxEventBytes
@@ -706,6 +915,7 @@ module.exports = {
   OpenAIImageRequestError,
   OpenAIImageSSEObserver,
   cleanupStaleTempDirectories,
+  createImageStreamKeepAlive,
   detectImageMimeType,
   prepareOpenAIImageRequest,
   sanitizeCompletedImageEventData,

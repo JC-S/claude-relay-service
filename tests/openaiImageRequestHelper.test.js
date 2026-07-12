@@ -12,8 +12,36 @@ jest.mock('../src/utils/logger', () => ({
 const {
   OpenAIImageSSEObserver,
   cleanupStaleTempDirectories,
+  createImageStreamKeepAlive,
   prepareOpenAIImageRequest
 } = require('../src/utils/openaiImageRequestHelper')
+
+function createKeepAliveResponse() {
+  return {
+    statusCode: 0,
+    headers: {},
+    headersSent: false,
+    destroyed: false,
+    writableEnded: false,
+    writableNeedDrain: false,
+    chunks: [],
+    setHeader: jest.fn(function (key, value) {
+      this.headers[key] = value
+    }),
+    flushHeaders: jest.fn(function () {
+      this.headersSent = true
+    }),
+    flush: jest.fn(),
+    write: jest.fn(function (chunk) {
+      this.headersSent = true
+      this.chunks.push(String(chunk))
+      return true
+    }),
+    end: jest.fn(function () {
+      this.writableEnded = true
+    })
+  }
+}
 
 function createPngBuffer() {
   return Buffer.concat([
@@ -260,5 +288,127 @@ describe('openaiImageRequestHelper', () => {
     expect(() => streamObserver.feed('12345678901234567')).toThrow(
       expect.objectContaining({ code: 'stream_too_large' })
     )
+  })
+})
+
+describe('createImageStreamKeepAlive', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  test('establishes exact SSE headers after the delay and sends periodic comments', () => {
+    const res = createKeepAliveResponse()
+    const keepAlive = createImageStreamKeepAlive({ res, delayMs: 20000, intervalMs: 15000 })
+
+    keepAlive.armEarlyStart()
+    jest.advanceTimersByTime(19999)
+    expect(res.chunks).toEqual([])
+
+    jest.advanceTimersByTime(1)
+    expect(res.statusCode).toBe(200)
+    expect(res.headers).toEqual({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    })
+    expect(res.chunks).toEqual([': connected\n\n'])
+    expect(keepAlive.isEstablished()).toBe(true)
+    expect(keepAlive.wasEstablishedEarly()).toBe(true)
+
+    jest.advanceTimersByTime(15000)
+    expect(res.chunks).toEqual([': connected\n\n', ': keep-alive\n\n'])
+
+    keepAlive.stop()
+    keepAlive.stop()
+    jest.advanceTimersByTime(30000)
+    expect(res.chunks).toHaveLength(2)
+  })
+
+  test.each(['\n\n', '\r\n\r\n', '\r\n\n', '\n\r\n'])(
+    'recognizes the %p SSE event boundary',
+    (boundary) => {
+      const res = createKeepAliveResponse()
+      const keepAlive = createImageStreamKeepAlive({ res, intervalMs: 100 })
+      keepAlive.onClassicSseEstablished()
+      keepAlive.noteBytesWritten(`data: {}${boundary}`)
+
+      jest.advanceTimersByTime(100)
+
+      expect(res.chunks).toEqual([': keep-alive\n\n'])
+      keepAlive.stop()
+    }
+  )
+
+  test('does not insert a heartbeat into an event split across chunks', () => {
+    const res = createKeepAliveResponse()
+    const keepAlive = createImageStreamKeepAlive({ res, intervalMs: 100 })
+    keepAlive.onClassicSseEstablished()
+
+    keepAlive.noteBytesWritten('data: {"b64_json":"AAAA')
+    jest.advanceTimersByTime(100)
+    expect(res.chunks).toEqual([])
+
+    keepAlive.noteBytesWritten('"}\r')
+    jest.advanceTimersByTime(100)
+    expect(res.chunks).toEqual([])
+
+    keepAlive.noteBytesWritten('\n\r\n')
+    jest.advanceTimersByTime(100)
+    expect(res.chunks).toEqual([': keep-alive\n\n'])
+    keepAlive.stop()
+  })
+
+  test('skips heartbeats while the downstream needs drain or is closed', () => {
+    const res = createKeepAliveResponse()
+    const keepAlive = createImageStreamKeepAlive({ res, intervalMs: 100 })
+    keepAlive.onClassicSseEstablished()
+
+    res.writableNeedDrain = true
+    jest.advanceTimersByTime(100)
+    expect(res.chunks).toEqual([])
+
+    res.writableNeedDrain = false
+    res.destroyed = true
+    jest.advanceTimersByTime(100)
+    expect(res.chunks).toEqual([])
+    keepAlive.stop()
+  })
+
+  test('ends with a structured error only at a clean event boundary', () => {
+    const res = createKeepAliveResponse()
+    const keepAlive = createImageStreamKeepAlive({ res })
+    keepAlive.onClassicSseEstablished()
+
+    expect(
+      keepAlive.endWithErrorEvent({
+        error: { message: 'Rate limit exceeded', type: 'rate_limit_error', code: 'rate_limit' }
+      })
+    ).toBe(true)
+    expect(res.chunks).toEqual([
+      'event: error\ndata: {"error":{"message":"Rate limit exceeded","type":"rate_limit_error","code":"rate_limit"}}\n\n'
+    ])
+    expect(res.end).toHaveBeenCalledTimes(1)
+  })
+
+  test('ends a partial event without appending bytes', () => {
+    const res = createKeepAliveResponse()
+    const keepAlive = createImageStreamKeepAlive({ res })
+    keepAlive.onClassicSseEstablished()
+    keepAlive.noteBytesWritten('data: {"b64_json":"AAAA')
+
+    expect(
+      keepAlive.endAfterPartialEvent({
+        requestId: 'request-1',
+        endpoint: 'generations',
+        phase: 'upstream_error'
+      })
+    ).toBe(true)
+    expect(res.chunks).toEqual([])
+    expect(res.end).toHaveBeenCalledTimes(1)
   })
 })
