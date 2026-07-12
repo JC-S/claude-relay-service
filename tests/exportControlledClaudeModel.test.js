@@ -110,6 +110,10 @@ const {
   isExportControlledClaudeModel,
   isClaudeFableModel
 } = require('../src/utils/modelHelper')
+const {
+  CLAUDE_FAST_MODE_BETA,
+  CLAUDE_FAST_MODE_DISABLED_MESSAGE
+} = require('../src/utils/claudeFastModeGuard')
 
 function buildApp() {
   const app = express()
@@ -256,5 +260,97 @@ describe('export-controlled Claude model block', () => {
     expect(response.body.choices?.[0]?.message?.content).toBe('ok')
     expect(unifiedClaudeScheduler.selectAccountForApiKey).toHaveBeenCalled()
     expect(claudeRelayService.relayRequest).toHaveBeenCalled()
+  })
+})
+
+describe('Claude Fast Mode block', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    claudeRelayConfigService.isExportControlledClaudeModelBlockEnabled.mockResolvedValue(false)
+    unifiedClaudeScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'account_1',
+      accountType: 'claude-official'
+    })
+    claudeRelayService.relayRequest.mockResolvedValue(successfulClaudeResponse())
+    mockApiKeyData = {
+      id: 'key_1',
+      name: 'test key',
+      permissions: ['claude'],
+      enableModelRestriction: false,
+      restrictedModels: []
+    }
+  })
+
+  function expectFastModeError(response) {
+    expect(response.status).toBe(400)
+    expect(response.body).toEqual({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: CLAUDE_FAST_MODE_DISABLED_MESSAGE
+      }
+    })
+    expect(unifiedClaudeScheduler.selectAccountForApiKey).not.toHaveBeenCalled()
+    expect(claudeRelayService.relayRequest).not.toHaveBeenCalled()
+    expect(claudeRelayService.relayStreamRequestWithUsageCapture).not.toHaveBeenCalled()
+  }
+
+  test('blocks an Anthropic request with speed=fast before scheduling', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/messages')
+      .send({ ...claudeMessagesBody('claude-opus-4-8'), speed: 'fast', stream: true })
+
+    expectFastModeError(response)
+    expect(response.headers['content-type']).toMatch(/^application\/json/)
+  })
+
+  test('blocks an Anthropic request with the Fast Mode beta before scheduling', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/messages')
+      .set('anthropic-beta', `context-1m-2025-08-07,${CLAUDE_FAST_MODE_BETA}`)
+      .send(claudeMessagesBody('claude-opus-4-8'))
+
+    expectFastModeError(response)
+  })
+
+  test('blocks Fast Mode on count_tokens before scheduling', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/messages/count_tokens')
+      .send({ ...claudeMessagesBody('claude-opus-4-8'), speed: 'fast' })
+
+    expectFastModeError(response)
+  })
+
+  test('blocks Fast Mode on the OpenAI-compatible Claude route', async () => {
+    const response = await request(buildApp())
+      .post('/openai/claude/v1/chat/completions')
+      .send({
+        model: 'claude-opus-4-8',
+        messages: [{ role: 'user', content: 'test' }],
+        speed: 'fast'
+      })
+
+    expectFastModeError(response)
+  })
+
+  test('blocks Fast Mode on the legacy OpenAI-compatible completions route', async () => {
+    const response = await request(buildApp()).post('/openai/claude/v1/completions').send({
+      model: 'claude-opus-4-8',
+      prompt: 'test',
+      speed: 'fast'
+    })
+
+    expectFastModeError(response)
+  })
+
+  test('allows a standard Claude request to continue', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/messages')
+      .set('anthropic-beta', 'context-1m-2025-08-07')
+      .send({ ...claudeMessagesBody('claude-opus-4-8'), speed: 'standard' })
+
+    expect(response.status).toBe(200)
+    expect(unifiedClaudeScheduler.selectAccountForApiKey).toHaveBeenCalledTimes(1)
+    expect(claudeRelayService.relayRequest).toHaveBeenCalledTimes(1)
   })
 })

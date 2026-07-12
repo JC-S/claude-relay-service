@@ -104,6 +104,7 @@ jest.mock('../src/utils/logger', () => ({
 const apiKeyService = require('../src/services/apiKeyService')
 const claudeRelayConfigService = require('../src/services/claudeRelayConfigService')
 const unifiedClaudeScheduler = require('../src/services/scheduler/unifiedClaudeScheduler')
+const { handleAnthropicMessagesToGemini } = require('../src/services/anthropicGeminiBridgeService')
 const apiRoutes = require('../src/routes/api')
 
 const CLAUDE_PERMISSION_MESSAGE =
@@ -194,6 +195,23 @@ describe('user-facing English messages from Anthropic-compatible routes', () => 
     })
   })
 
+  test('does not apply the Claude Fast Mode block to a forced Gemini request', async () => {
+    mockApiKeyData.permissions = ['gemini']
+    handleAnthropicMessagesToGemini.mockImplementationOnce((_req, res) =>
+      res.status(200).json({ type: 'message', content: [] })
+    )
+
+    const response = await request(app)
+      .post('/api/v1/messages')
+      .set('x-test-vendor', 'antigravity')
+      .set('anthropic-beta', 'fast-mode-2026-02-01')
+      .send(messagesBody({ model: 'gemini-2.5-pro', speed: 'fast' }))
+
+    expect(response.status).toBe(200)
+    expect(handleAnthropicMessagesToGemini).toHaveBeenCalledTimes(1)
+    expect(unifiedClaudeScheduler.selectAccountForApiKey).not.toHaveBeenCalled()
+  })
+
   test('returns the model restriction message without changing the error type', async () => {
     mockApiKeyData.enableModelRestriction = true
     mockApiKeyData.restrictedModels = ['claude-sonnet-4-5']
@@ -225,7 +243,9 @@ describe('user-facing English messages from Anthropic-compatible routes', () => 
     async ({ vendor, permissions, message }) => {
       mockApiKeyData.permissions = permissions
       let pending = request(app).post('/api/v1/messages/count_tokens')
-      if (vendor) pending = pending.set('x-test-vendor', vendor)
+      if (vendor) {
+        pending = pending.set('x-test-vendor', vendor)
+      }
 
       const response = await pending.send(messagesBody())
 

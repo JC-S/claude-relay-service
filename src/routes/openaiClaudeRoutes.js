@@ -24,6 +24,10 @@ const {
   isExportControlledClaudeModel
 } = require('../utils/modelHelper')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
+const {
+  buildClaudeFastModeDisabledResponse,
+  isClaudeFastModeRequest
+} = require('../utils/claudeFastModeGuard')
 
 // 🔧 辅助函数：检查 API Key 权限
 function checkPermissions(apiKeyData, requiredPermission = 'claude') {
@@ -202,6 +206,15 @@ async function handleChatCompletion(req, res, apiKeyData) {
           code: 'permission_denied'
         }
       })
+    }
+
+    if (isClaudeFastModeRequest(req.body, req.headers)) {
+      logger.warn('Claude Fast Mode request blocked', {
+        keyId: apiKeyData?.id || null,
+        model: req.body?.model || null,
+        endpoint: req.originalUrl || req.path
+      })
+      return res.status(400).json(buildClaudeFastModeDisabledResponse())
     }
 
     // 记录原始请求
@@ -605,7 +618,8 @@ router.post('/v1/completions', authenticateApiKey, async (req, res) => {
       presence_penalty: originalBody.presence_penalty,
       frequency_penalty: originalBody.frequency_penalty,
       logit_bias: originalBody.logit_bias,
-      user: originalBody.user
+      user: originalBody.user,
+      speed: originalBody.speed
     }
 
     // 使用共享的处理函数

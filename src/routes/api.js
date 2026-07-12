@@ -28,6 +28,10 @@ const { sanitizeUpstreamError } = require('../utils/errorSanitizer')
 const { dumpAnthropicMessagesRequest } = require('../utils/anthropicRequestDump')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
 const {
+  buildClaudeFastModeDisabledResponse,
+  isClaudeFastModeRequest
+} = require('../utils/claudeFastModeGuard')
+const {
   handleAnthropicMessagesToGemini,
   handleAnthropicCountTokensToGemini
 } = require('../services/anthropicGeminiBridgeService')
@@ -175,6 +179,15 @@ async function handleMessagesRequest(req, res) {
         error: 'Invalid request',
         message: 'Request body must be a valid JSON object'
       })
+    }
+
+    if (requiredService === 'claude' && isClaudeFastModeRequest(req.body, req.headers)) {
+      logger.warn('Claude Fast Mode request blocked', {
+        keyId: req.apiKey?.id || null,
+        model: req.body.model || null,
+        endpoint: req.originalUrl || req.path
+      })
+      return res.status(400).json(buildClaudeFastModeDisabledResponse())
     }
 
     if (!req.body.messages || !Array.isArray(req.body.messages)) {
@@ -1707,6 +1720,15 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
           requiredService === 'gemini' ? GEMINI_PERMISSION_MESSAGE : CLAUDE_PERMISSION_MESSAGE
       }
     })
+  }
+
+  if (requiredService === 'claude' && isClaudeFastModeRequest(req.body, req.headers)) {
+    logger.warn('Claude Fast Mode request blocked', {
+      keyId: req.apiKey?.id || null,
+      model: req.body?.model || null,
+      endpoint: req.originalUrl || req.path
+    })
+    return res.status(400).json(buildClaudeFastModeDisabledResponse())
   }
 
   if (requiredService === 'gemini') {
