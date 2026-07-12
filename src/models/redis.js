@@ -830,6 +830,7 @@ class RedisClient {
       'enableIpWhitelist',
       'disableGptFastMode',
       'enableGeneralOpenAIEndpoint',
+      'enableGeneralOpenAIImages',
       'enableGeneralPromptCacheAssist',
       'enableClaudeThinkingSignatureLossyFallback',
       'enableOpenAIResponsesCodexAdaptation',
@@ -858,6 +859,9 @@ class RedisClient {
     }
     if (parsed.enableGeneralOpenAIEndpoint === undefined) {
       parsed.enableGeneralOpenAIEndpoint = false
+    }
+    if (parsed.enableGeneralOpenAIImages === undefined) {
+      parsed.enableGeneralOpenAIImages = false
     }
     if (parsed.enableGeneralPromptCacheAssist === undefined) {
       parsed.enableGeneralPromptCacheAssist = false
@@ -1184,7 +1188,8 @@ class RedisClient {
     isLongContextRequest = false, // 新增：是否为 1M 上下文请求（超过200k）
     realCost = 0, // 真实费用（官方API费用）
     ratedCost = 0, // 计费费用（应用倍率后）
-    serviceTier = null
+    serviceTier = null,
+    imageUsage = null
   ) {
     const key = `usage:${keyId}`
     const now = new Date()
@@ -1230,9 +1235,47 @@ class RedisClient {
     const coreTokens = finalInputTokens + finalOutputTokens
     const isPriorityServiceTier =
       typeof serviceTier === 'string' && serviceTier.toLowerCase() === 'priority'
+    const normalizedImageUsage =
+      imageUsage && typeof imageUsage === 'object'
+        ? {
+            textInputTokens: Math.max(0, Math.trunc(Number(imageUsage.textInputTokens) || 0)),
+            imageInputTokens: Math.max(0, Math.trunc(Number(imageUsage.imageInputTokens) || 0)),
+            imageOutputTokens: Math.max(0, Math.trunc(Number(imageUsage.imageOutputTokens) || 0))
+          }
+        : null
 
     // 使用Pipeline优化性能
     const pipeline = this.client.pipeline()
+
+    if (normalizedImageUsage) {
+      const imageModelStats = [
+        modelDaily,
+        modelMonthly,
+        modelHourly,
+        keyModelDaily,
+        keyModelMonthly,
+        keyModelHourly,
+        `usage:${keyId}:model:alltime:${normalizedModel}`
+      ]
+      for (const statKey of imageModelStats) {
+        pipeline.hincrby(statKey, 'textInputTokens', normalizedImageUsage.textInputTokens)
+        pipeline.hincrby(statKey, 'imageInputTokens', normalizedImageUsage.imageInputTokens)
+        pipeline.hincrby(statKey, 'imageOutputTokens', normalizedImageUsage.imageOutputTokens)
+        if (isPriorityServiceTier) {
+          pipeline.hincrby(statKey, 'priorityTextInputTokens', normalizedImageUsage.textInputTokens)
+          pipeline.hincrby(
+            statKey,
+            'priorityImageInputTokens',
+            normalizedImageUsage.imageInputTokens
+          )
+          pipeline.hincrby(
+            statKey,
+            'priorityImageOutputTokens',
+            normalizedImageUsage.imageOutputTokens
+          )
+        }
+      }
+    }
 
     // 现有的统计保持不变
     // 核心token统计（保持向后兼容）
@@ -1540,7 +1583,8 @@ class RedisClient {
     ephemeral1hTokens = 0,
     model = 'unknown',
     isLongContextRequest = false,
-    serviceTier = null
+    serviceTier = null,
+    imageUsage = null
   ) {
     const now = new Date()
     const today = getDateStringInTimezone(now)
@@ -1577,6 +1621,14 @@ class RedisClient {
     const coreTokens = finalInputTokens + finalOutputTokens
     const isPriorityServiceTier =
       typeof serviceTier === 'string' && serviceTier.toLowerCase() === 'priority'
+    const normalizedImageUsage =
+      imageUsage && typeof imageUsage === 'object'
+        ? {
+            textInputTokens: Math.max(0, Math.trunc(Number(imageUsage.textInputTokens) || 0)),
+            imageInputTokens: Math.max(0, Math.trunc(Number(imageUsage.imageInputTokens) || 0)),
+            imageOutputTokens: Math.max(0, Math.trunc(Number(imageUsage.imageOutputTokens) || 0))
+          }
+        : null
 
     // 构建统计操作数组
     const operations = [
@@ -1714,6 +1766,53 @@ class RedisClient {
       this.client.del(`account_usage:daily:index:${today}:empty`),
       this.client.del(`account_usage:model:daily:index:${today}:empty`)
     ]
+
+    if (normalizedImageUsage) {
+      const accountModelKeys = [accountModelDaily, accountModelMonthly, accountModelHourly]
+      for (const statKey of accountModelKeys) {
+        operations.push(
+          this.client.hincrby(statKey, 'textInputTokens', normalizedImageUsage.textInputTokens),
+          this.client.hincrby(statKey, 'imageInputTokens', normalizedImageUsage.imageInputTokens),
+          this.client.hincrby(statKey, 'imageOutputTokens', normalizedImageUsage.imageOutputTokens)
+        )
+        if (isPriorityServiceTier) {
+          operations.push(
+            this.client.hincrby(
+              statKey,
+              'priorityTextInputTokens',
+              normalizedImageUsage.textInputTokens
+            ),
+            this.client.hincrby(
+              statKey,
+              'priorityImageInputTokens',
+              normalizedImageUsage.imageInputTokens
+            ),
+            this.client.hincrby(
+              statKey,
+              'priorityImageOutputTokens',
+              normalizedImageUsage.imageOutputTokens
+            )
+          )
+        }
+      }
+      operations.push(
+        this.client.hincrby(
+          accountHourly,
+          `model:${normalizedModel}:textInputTokens`,
+          normalizedImageUsage.textInputTokens
+        ),
+        this.client.hincrby(
+          accountHourly,
+          `model:${normalizedModel}:imageInputTokens`,
+          normalizedImageUsage.imageInputTokens
+        ),
+        this.client.hincrby(
+          accountHourly,
+          `model:${normalizedModel}:imageOutputTokens`,
+          normalizedImageUsage.imageOutputTokens
+        )
+      )
+    }
 
     // 如果是 1M 上下文请求，添加额外的统计
     if (isLongContextRequest) {
@@ -2161,6 +2260,7 @@ class RedisClient {
     const fieldName = (name) =>
       fieldPrefix ? `${fieldPrefix}${name.charAt(0).toUpperCase()}${name.slice(1)}` : name
     const readInt = (name) => parseInt(modelUsage[fieldName(name)] || 0)
+    const hasField = (name) => Object.prototype.hasOwnProperty.call(modelUsage, fieldName(name))
     const usage = {
       input_tokens: readInt('inputTokens'),
       output_tokens: readInt('outputTokens'),
@@ -2174,6 +2274,19 @@ class RedisClient {
       usage.cache_creation = {
         ephemeral_5m_input_tokens: eph5m,
         ephemeral_1h_input_tokens: eph1h
+      }
+    }
+
+    if (
+      hasField('textInputTokens') ||
+      hasField('imageInputTokens') ||
+      hasField('imageOutputTokens')
+    ) {
+      usage.image_usage = {
+        textInputTokens: readInt('textInputTokens'),
+        imageInputTokens: readInt('imageInputTokens'),
+        imageOutputTokens: readInt('imageOutputTokens'),
+        estimated: false
       }
     }
 
@@ -2204,6 +2317,27 @@ class RedisClient {
       usage.cache_creation = {
         ephemeral_5m_input_tokens: eph5m,
         ephemeral_1h_input_tokens: eph1h
+      }
+    }
+
+    if (totalUsage.image_usage || usageToSubtract.image_usage) {
+      usage.image_usage = {
+        textInputTokens: Math.max(
+          0,
+          (totalUsage.image_usage?.textInputTokens || 0) -
+            (usageToSubtract.image_usage?.textInputTokens || 0)
+        ),
+        imageInputTokens: Math.max(
+          0,
+          (totalUsage.image_usage?.imageInputTokens || 0) -
+            (usageToSubtract.image_usage?.imageInputTokens || 0)
+        ),
+        imageOutputTokens: Math.max(
+          0,
+          (totalUsage.image_usage?.imageOutputTokens || 0) -
+            (usageToSubtract.image_usage?.imageOutputTokens || 0)
+        ),
+        estimated: false
       }
     }
 

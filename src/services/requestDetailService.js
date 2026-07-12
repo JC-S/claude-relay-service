@@ -146,6 +146,19 @@ function buildCostUsageFromRequestDetail(record = {}) {
     cache_read_input_tokens: cacheReadTokens
   }
 
+  if (
+    record.textInputTokens !== undefined ||
+    record.imageInputTokens !== undefined ||
+    record.imageOutputTokens !== undefined
+  ) {
+    usage.image_usage = {
+      textInputTokens: normalizeTokenValue(record.textInputTokens),
+      imageInputTokens: normalizeTokenValue(record.imageInputTokens),
+      imageOutputTokens: normalizeTokenValue(record.imageOutputTokens),
+      estimated: record.imageUsageBreakdownEstimated === true
+    }
+  }
+
   const ephemeral5mTokens = normalizeTokenValue(
     record.ephemeral5mTokens ?? record.cache_creation?.ephemeral_5m_input_tokens
   )
@@ -177,6 +190,9 @@ function buildCostBreakdownFromResult(costResult) {
   const ephemeral5m = getCostResultNumber(costResult, 'ephemeral5m', 'ephemeral5mCost')
   const ephemeral1h = getCostResultNumber(costResult, 'ephemeral1h', 'ephemeral1hCost')
   const total = getCostResultNumber(costResult, 'total', 'totalCost')
+  const textInput = getCostResultNumber(costResult, 'textInput')
+  const imageInput = getCostResultNumber(costResult, 'imageInput')
+  const imageOutput = getCostResultNumber(costResult, 'imageOutput')
 
   return {
     input,
@@ -186,6 +202,9 @@ function buildCostBreakdownFromResult(costResult) {
     cacheRead,
     ephemeral5m,
     ephemeral1h,
+    textInput,
+    imageInput,
+    imageOutput,
     total
   }
 }
@@ -756,6 +775,10 @@ class RequestDetailService {
     const outputTokens = normalizeNumber(detail.outputTokens)
     const cacheReadTokens = normalizeNumber(detail.cacheReadTokens)
     const cacheCreateTokens = normalizeNumber(detail.cacheCreateTokens)
+    const hasImageUsage =
+      detail.textInputTokens !== undefined ||
+      detail.imageInputTokens !== undefined ||
+      detail.imageOutputTokens !== undefined
     const totalTokens =
       normalizeNumber(detail.totalTokens) ||
       inputTokens + outputTokens + cacheReadTokens + cacheCreateTokens
@@ -780,6 +803,14 @@ class RequestDetailService {
       outputTokens,
       cacheReadTokens,
       cacheCreateTokens,
+      ...(hasImageUsage
+        ? {
+            textInputTokens: normalizeNumber(detail.textInputTokens),
+            imageInputTokens: normalizeNumber(detail.imageInputTokens),
+            imageOutputTokens: normalizeNumber(detail.imageOutputTokens),
+            imageUsageBreakdownEstimated: detail.imageUsageBreakdownEstimated === true
+          }
+        : {}),
       totalTokens,
       cost,
       realCost,

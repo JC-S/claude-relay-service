@@ -242,6 +242,107 @@ function normalizeOpenAIUsage(usageData = {}, options = {}) {
   }
 }
 
+function normalizeOpenAIImageUsage(usageData = {}, options = {}) {
+  const endpoint = options.endpoint === 'edits' ? 'edits' : 'generations'
+  const normalized = normalizeOpenAIUsage(usageData, options)
+  const usage = usageData && typeof usageData === 'object' ? usageData : {}
+  const inputDetails =
+    usage.input_tokens_details && typeof usage.input_tokens_details === 'object'
+      ? usage.input_tokens_details
+      : {}
+  const invalidSources = []
+
+  const readDetail = (key) => {
+    if (!hasOwn(inputDetails, key)) {
+      return { present: false, value: 0 }
+    }
+    const value = parseTokenCount(inputDetails[key])
+    if (value === null) {
+      invalidSources.push(`input_tokens_details.${key}`)
+      return { present: false, value: 0 }
+    }
+    return { present: true, value }
+  }
+
+  const textDetail = readDetail('text_tokens')
+  const imageDetail = readDetail('image_tokens')
+  const hasBreakdown = textDetail.present || imageDetail.present
+  let rawTextTokens = 0
+  let rawImageTokens = 0
+  let estimated = false
+
+  if (!hasBreakdown) {
+    estimated = true
+    if (endpoint === 'edits') {
+      rawImageTokens = normalized.totalInputTokens
+    } else {
+      rawTextTokens = normalized.totalInputTokens
+    }
+    warnOnce(
+      `image-breakdown-missing:${endpoint}`,
+      `OpenAI image ${endpoint} usage omitted text/image input details; using the configured estimated breakdown`
+    )
+  } else if (imageDetail.present) {
+    estimated = !textDetail.present
+    rawImageTokens = Math.min(imageDetail.value, normalized.totalInputTokens)
+    rawTextTokens = Math.max(0, normalized.totalInputTokens - rawImageTokens)
+  } else {
+    estimated = true
+    rawTextTokens = Math.min(textDetail.value, normalized.totalInputTokens)
+    rawImageTokens = Math.max(0, normalized.totalInputTokens - rawTextTokens)
+  }
+
+  const upstreamBreakdownTotal = textDetail.value + imageDetail.value
+  const breakdownConsistent =
+    !hasBreakdown || upstreamBreakdownTotal === normalized.totalInputTokens
+  if (hasBreakdown && !breakdownConsistent) {
+    estimated = true
+    warnOnce(
+      `image-breakdown-mismatch:${endpoint}`,
+      `OpenAI image input breakdown mismatch; total input remains authoritative ` +
+        `(input=${normalized.totalInputTokens}, text=${textDetail.value}, image=${imageDetail.value})`
+    )
+  }
+  if (options.logDiagnostics !== false && invalidSources.length > 0) {
+    warnOnce(
+      `invalid-image:${invalidSources.join(',')}`,
+      `Invalid OpenAI image usage token fields ignored: ${invalidSources.join(', ')}`
+    )
+  }
+
+  const includedCacheTokens = Math.max(0, normalized.totalInputTokens - normalized.inputTokens)
+  const textCacheTokens = Math.min(rawTextTokens, includedCacheTokens)
+  const imageCacheTokens = Math.min(
+    rawImageTokens,
+    Math.max(0, includedCacheTokens - textCacheTokens)
+  )
+  let textInputTokens = Math.max(0, rawTextTokens - textCacheTokens)
+  let imageInputTokens = Math.max(0, rawImageTokens - imageCacheTokens)
+
+  const netBreakdownTotal = textInputTokens + imageInputTokens
+  if (netBreakdownTotal !== normalized.inputTokens) {
+    imageInputTokens = Math.min(imageInputTokens, normalized.inputTokens)
+    textInputTokens = Math.max(0, normalized.inputTokens - imageInputTokens)
+  }
+
+  const imageUsage = {
+    textInputTokens,
+    imageInputTokens,
+    imageOutputTokens: normalized.outputTokens,
+    estimated
+  }
+
+  return {
+    ...normalized,
+    textInputTokens,
+    imageInputTokens,
+    imageOutputTokens: normalized.outputTokens,
+    imageUsageBreakdownEstimated: estimated,
+    image_usage: imageUsage,
+    isConsistent: normalized.isConsistent && breakdownConsistent
+  }
+}
+
 function formatOpenAIUsageForLog(normalizedUsage = {}) {
   const upstreamTotal =
     normalizedUsage.upstreamTotalTokens === null ||
@@ -263,5 +364,6 @@ function formatOpenAIUsageForLog(normalizedUsage = {}) {
 
 module.exports = {
   formatOpenAIUsageForLog,
-  normalizeOpenAIUsage
+  normalizeOpenAIUsage,
+  normalizeOpenAIImageUsage
 }

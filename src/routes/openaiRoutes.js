@@ -15,8 +15,18 @@ const ProxyHelper = require('../utils/proxyHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const { IncrementalSSEParser } = require('../utils/sseParser')
 const { getSafeMessage } = require('../utils/errorSanitizer')
-const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
-const { formatOpenAIUsageForLog, normalizeOpenAIUsage } = require('../utils/openaiUsageHelper')
+const { createRequestDetailMeta, sanitizeImageData } = require('../utils/requestDetailHelper')
+const {
+  formatOpenAIUsageForLog,
+  normalizeOpenAIUsage,
+  normalizeOpenAIImageUsage
+} = require('../utils/openaiUsageHelper')
+const {
+  IMAGE_MODEL,
+  MAX_UPSTREAM_BODY_BYTES,
+  MAX_UPSTREAM_RESPONSE_BYTES,
+  OpenAIImageSSEObserver
+} = require('../utils/openaiImageRequestHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { removeGptFastModeFromBody } = require('../utils/gptFastModeHelper')
 const openaiNicSelector = require('../utils/openaiNicSelector')
@@ -31,6 +41,11 @@ const GENERAL_OPENAI_UPSTREAM_UA_SOURCE_API_KEY_NAME = 'shenjc'
 const GENERAL_OPENAI_UPSTREAM_CODEX_VERSION_REDIS_KEY = 'openai:general:upstream_codex_tui_version'
 const GENERAL_OPENAI_UPSTREAM_DEFAULT_CODEX_VERSION = '0.135.0'
 const GENERAL_PROMPT_CACHE_KEY_MAX_LENGTH = 64
+const CODEX_IMAGE_ENDPOINTS = {
+  generations: 'https://chatgpt.com/backend-api/codex/images/generations',
+  edits: 'https://chatgpt.com/backend-api/codex/images/edits'
+}
+const MAX_IMAGE_ERROR_RESPONSE_BYTES = 2 * 1024 * 1024
 let generalOpenAIUpstreamCodexVersion = null
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
@@ -1905,6 +1920,604 @@ const handleResponses = async (req, res) => {
   }
 }
 
+function getUpstreamContentType(upstream) {
+  return String(upstream?.headers?.['content-type'] || '').toLowerCase()
+}
+
+function readBoundedImageStream(stream, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let totalBytes = 0
+    let settled = false
+
+    const cleanup = () => {
+      stream.removeListener('data', onData)
+      stream.removeListener('end', onEnd)
+      stream.removeListener('error', onError)
+    }
+    const settle = (callback, value) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      callback(value)
+    }
+    const onData = (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      totalBytes += buffer.length
+      if (totalBytes > maxBytes) {
+        const error = new Error('Upstream image response exceeded the size limit')
+        error.statusCode = 502
+        error.code = 'response_too_large'
+        stream.destroy()
+        settle(reject, error)
+        return
+      }
+      chunks.push(buffer)
+    }
+    const onEnd = () => settle(resolve, Buffer.concat(chunks))
+    const onError = (error) => settle(reject, error)
+
+    stream.on('data', onData)
+    stream.once('end', onEnd)
+    stream.once('error', onError)
+  })
+}
+
+function parseImageResponseBuffer(buffer, contentType = '') {
+  const text = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer || '')
+  if (contentType.includes('json') || /^\s*[[{]/.test(text)) {
+    try {
+      return JSON.parse(text)
+    } catch (_) {
+      return text
+    }
+  }
+  return text
+}
+
+async function readImageUpstreamPayload(upstream, maxBytes = MAX_IMAGE_ERROR_RESPONSE_BYTES) {
+  if (upstream?.data && typeof upstream.data.on === 'function') {
+    const buffer = await readBoundedImageStream(upstream.data, maxBytes)
+    return parseImageResponseBuffer(buffer, getUpstreamContentType(upstream))
+  }
+  return upstream?.data
+}
+
+function passImageDiagnosticHeaders(res, headers = {}) {
+  for (const key of ['openai-version', 'x-request-id', 'openai-processing-ms']) {
+    if (headers[key] !== undefined) {
+      res.setHeader(key, headers[key])
+    }
+  }
+}
+
+async function recordOpenAIImageUsage({ req, usageData, accountId, endpoint, stream, statusCode }) {
+  if (!usageData || typeof usageData !== 'object') {
+    return null
+  }
+
+  const normalizedUsage = normalizeOpenAIImageUsage(usageData, { endpoint })
+  const imageUsage = normalizedUsage.image_usage
+  const costs = await apiKeyService.recordUsage(
+    req.apiKey.id,
+    normalizedUsage.inputTokens,
+    normalizedUsage.outputTokens,
+    normalizedUsage.cacheCreateTokens,
+    normalizedUsage.cacheReadTokens,
+    IMAGE_MODEL,
+    accountId,
+    'openai',
+    null,
+    createRequestDetailMeta(req, {
+      requestBody: req._openAIImageRequestSnapshot,
+      stream,
+      statusCode
+    }),
+    imageUsage
+  )
+
+  logger.info(
+    `Recorded OpenAI image usage for ${endpoint}: ${formatOpenAIUsageForLog(normalizedUsage)}, ` +
+      `textInput=${imageUsage.textInputTokens}, imageInput=${imageUsage.imageInputTokens}, ` +
+      `imageOutput=${imageUsage.imageOutputTokens}, estimated=${imageUsage.estimated}`
+  )
+
+  await applyRateLimitTracking(
+    req,
+    {
+      inputTokens: normalizedUsage.inputTokens,
+      outputTokens: normalizedUsage.outputTokens,
+      cacheCreateTokens: normalizedUsage.cacheCreateTokens,
+      cacheReadTokens: normalizedUsage.cacheReadTokens
+    },
+    IMAGE_MODEL,
+    'openai-image',
+    'openai',
+    costs
+  )
+  return costs
+}
+
+function forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint }) {
+  return new Promise((resolve) => {
+    const observer = new OpenAIImageSSEObserver()
+    let usageData = null
+    let usageReported = false
+    let settled = false
+    let drainListener = null
+
+    const cleanup = () => {
+      upstream.data.removeListener('data', onData)
+      upstream.data.removeListener('end', onEnd)
+      upstream.data.removeListener('error', onError)
+      upstream.data.removeListener('close', onClose)
+      if (drainListener) {
+        res.removeListener('drain', drainListener)
+        drainListener = null
+      }
+    }
+
+    const recordUsageOnce = async () => {
+      if (usageReported || !usageData) {
+        return
+      }
+      usageReported = true
+      try {
+        await recordOpenAIImageUsage({
+          req,
+          usageData,
+          accountId,
+          endpoint,
+          stream: true,
+          statusCode: upstream.status
+        })
+      } catch (error) {
+        logger.error(`Failed to record OpenAI image stream usage: ${getSafeMessage(error)}`)
+      }
+    }
+
+    const settle = async ({ recordUsage = false, endResponse = true } = {}) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      if (recordUsage) {
+        await recordUsageOnce()
+      }
+      if (endResponse && !res.writableEnded && !res.destroyed) {
+        res.end()
+      }
+      resolve()
+    }
+
+    const observeEvents = (events) => {
+      for (const event of events) {
+        if (event?.usage) {
+          usageData = event.usage
+        }
+      }
+    }
+
+    const onData = (chunk) => {
+      try {
+        observeEvents(observer.feed(chunk))
+        if (res.destroyed || res.writableEnded) {
+          upstream.data.destroy()
+          void settle({ recordUsage: Boolean(usageData), endResponse: false })
+          return
+        }
+
+        if (!res.write(chunk)) {
+          upstream.data.pause()
+          if (!drainListener) {
+            drainListener = () => {
+              drainListener = null
+              if (!settled && !res.destroyed) {
+                upstream.data.resume()
+              }
+            }
+            res.once('drain', drainListener)
+          }
+        }
+      } catch (error) {
+        logger.error(
+          `OpenAI image stream processing failed (${error.code || 'stream_error'}): ${error.message}`
+        )
+        upstream.data.destroy()
+        void settle({ recordUsage: Boolean(usageData) })
+      }
+    }
+
+    const onEnd = () => {
+      try {
+        observeEvents(observer.finish())
+      } catch (error) {
+        logger.error(
+          `OpenAI image stream finalization failed (${error.code || 'stream_error'}): ${error.message}`
+        )
+      }
+      void settle({ recordUsage: true })
+    }
+    const onError = (error) => {
+      logger.error(`OpenAI image upstream stream error: ${getSafeMessage(error)}`)
+      void settle({ recordUsage: Boolean(usageData) })
+    }
+    const onClose = () => {
+      void settle({ recordUsage: Boolean(usageData) })
+    }
+
+    upstream.data.on('data', onData)
+    upstream.data.once('end', onEnd)
+    upstream.data.once('error', onError)
+    upstream.data.once('close', onClose)
+  })
+}
+
+async function recordOpenAIImageUpstreamError({ upstream, accountId, account, req, body }) {
+  const safeBody = sanitizeImageData(body)
+  const context = upstreamErrorHelper.logUpstreamErrorResponse({
+    provider: 'openai',
+    accountId,
+    accountType: 'openai',
+    accountName: account?.name || null,
+    statusCode: upstream.status,
+    statusText: upstream.statusText,
+    headers: upstream.headers,
+    body: safeBody,
+    phase: 'codex_images',
+    model: IMAGE_MODEL,
+    requestId: req.requestId,
+    extra: {
+      endpoint: req._openAIImageEndpoint,
+      upstreamNicIp: req.upstreamNicIp || null
+    }
+  })
+  await upstreamErrorHelper.recordErrorHistory(
+    accountId,
+    'openai',
+    upstream.status,
+    upstreamErrorHelper.classifyError(upstream.status) || 'upstream_error',
+    context
+  )
+}
+
+async function sendImageUpstreamPayload(res, upstream, payload) {
+  const contentType = getUpstreamContentType(upstream)
+  if (contentType) {
+    res.setHeader('Content-Type', contentType)
+  } else if (payload && typeof payload === 'object') {
+    res.setHeader('Content-Type', 'application/json')
+  } else {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+  }
+
+  if (payload && typeof payload === 'object' && !Buffer.isBuffer(payload)) {
+    return res.json(payload)
+  }
+  return res.send(payload === undefined || payload === null ? '' : payload)
+}
+
+const handleImages = async (req, res) => {
+  let upstream = null
+  let accountId = null
+  let accountType = 'openai'
+  let account = null
+  let sessionHash = null
+  let selectedLocalAddress = null
+  const abortController = new AbortController()
+
+  const cancelUpstream = () => {
+    if (!res.writableEnded) {
+      abortController.abort()
+      upstream?.data?.destroy?.()
+    }
+  }
+  const onRequestAborted = () => cancelUpstream()
+  const onResponseClosed = () => cancelUpstream()
+  req.once('aborted', onRequestAborted)
+  res.once('close', onResponseClosed)
+
+  try {
+    const apiKeyData = req.apiKey || {}
+    if (!checkOpenAIPermissions(apiKeyData)) {
+      return res.status(403).json({
+        error: {
+          message: 'This API key does not have permission to access OpenAI',
+          type: 'permission_denied',
+          code: 'permission_denied'
+        }
+      })
+    }
+
+    const endpoint = req._openAIImageEndpoint
+    const codexEndpoint = CODEX_IMAGE_ENDPOINTS[endpoint]
+    if (!codexEndpoint) {
+      return res.status(404).json({
+        error: {
+          message: 'Unsupported image endpoint',
+          type: 'invalid_request_error',
+          code: 'not_found'
+        }
+      })
+    }
+
+    await learnGeneralOpenAIUpstreamCodexVersion(apiKeyData, req.headers?.['user-agent'] || '')
+    const sessionId =
+      req.headers?.['session_id'] ||
+      req.headers?.['x-session-id'] ||
+      req.body?.session_id ||
+      req.body?.conversation_id ||
+      null
+    sessionHash = sessionId
+      ? crypto.createHash('sha256').update(String(sessionId)).digest('hex')
+      : null
+    const auth = await getOpenAIAuthToken(
+      apiKeyData,
+      sessionId,
+      IMAGE_MODEL,
+      req._openAISchedulerOptions || null
+    )
+    ;({ accountId, accountType, account } = auth)
+
+    if (accountType !== 'openai') {
+      return res.status(403).json({
+        error: {
+          message: 'GPT-Image-2 requires a native OpenAI OAuth account',
+          type: 'permission_denied',
+          code: 'account_type_not_supported'
+        }
+      })
+    }
+
+    const isStream = req._downstreamStream === true
+    const headers = buildCodexUpstreamHeaders({
+      incoming: req.headers || {},
+      accessToken: auth.accessToken,
+      accountHeader: account.accountId || account.chatgptUserId || accountId,
+      isStream,
+      body: req.body,
+      userAgentOverride: await getGeneralOpenAIUpstreamUserAgent()
+    })
+    const proxyAgent = createProxyAgent(auth.proxy)
+    const axiosConfig = {
+      headers,
+      timeout: config.requestTimeout || 600000,
+      validateStatus: () => true,
+      maxBodyLength: MAX_UPSTREAM_BODY_BYTES,
+      maxContentLength: MAX_UPSTREAM_RESPONSE_BYTES,
+      signal: abortController.signal
+    }
+
+    if (proxyAgent) {
+      axiosConfig.httpAgent = proxyAgent
+      axiosConfig.httpsAgent = proxyAgent
+      axiosConfig.proxy = false
+      if (isInterleaveNicEnabled(account)) {
+        logger.warn(
+          `OpenAI account ${accountId} has both proxy and NIC interleave enabled; proxy takes precedence`
+        )
+      }
+    }
+
+    const chooseAndApplyLocalAddress = async (reason) => {
+      const localAddress = await openaiNicSelector.chooseLocalAddress({
+        accountId,
+        sessionHash,
+        ttlHours: account.interleaveNicTtlHours,
+        disabledAddresses: account.interleaveNicDisabledAddresses
+      })
+      if (localAddress) {
+        axiosConfig.httpsAgent = getHttpsAgentForLocalAddress(localAddress, { stream: isStream })
+        axiosConfig.proxy = false
+        req.upstreamNicIp = localAddress
+        logger.info(
+          `OpenAI image NIC interleave ${reason} ${localAddress} for account ${accountId}`
+        )
+      }
+      return localAddress
+    }
+
+    if (!proxyAgent && isInterleaveNicEnabled(account)) {
+      selectedLocalAddress = await chooseAndApplyLocalAddress('selected')
+    }
+
+    const sendUpstreamRequest = () =>
+      axios.post(codexEndpoint, req.body, {
+        ...axiosConfig,
+        ...(isStream ? { responseType: 'stream' } : {})
+      })
+    const sendUpstreamRequestWithFallback = async () => {
+      try {
+        return await sendUpstreamRequest()
+      } catch (error) {
+        if (selectedLocalAddress && isLocalAddressNetworkError(error)) {
+          logger.warn(
+            `OpenAI image NIC ${selectedLocalAddress} unavailable for account ${accountId}; retrying with the default route`
+          )
+          await openaiNicSelector.clearBinding({ accountId, sessionHash })
+          selectedLocalAddress = null
+          delete req.upstreamNicIp
+          delete axiosConfig.httpsAgent
+          delete axiosConfig.proxy
+          return await sendUpstreamRequest()
+        }
+        throw error
+      }
+    }
+
+    upstream = await sendUpstreamRequestWithFallback()
+    let nicRateLimitRetryCount = 0
+    const maxNicRateLimitRetries =
+      !proxyAgent && isInterleaveNicEnabled(account)
+        ? Math.max(
+            0,
+            openaiNicSelector.getEnabledLocalAddresses(account.interleaveNicDisabledAddresses)
+              .length - 1
+          )
+        : 0
+
+    while (upstream.status === 429) {
+      const rawErrorData = await readImageUpstreamPayload(upstream)
+      const errorData = sanitizeImageData(rawErrorData)
+      const resetsInSeconds = Number(errorData?.error?.resets_in_seconds) || null
+      const nicCooldownDecision = await handleOpenAINicCooldownOnRateLimit({
+        account,
+        accountId,
+        req,
+        sessionHash,
+        selectedLocalAddress,
+        source:
+          nicRateLimitRetryCount === 0
+            ? 'HTTP 429 image'
+            : `HTTP 429 image retry ${nicRateLimitRetryCount}`,
+        resetsInSeconds,
+        errorData
+      })
+
+      if (!nicCooldownDecision.retryable || nicRateLimitRetryCount >= maxNicRateLimitRetries) {
+        if (!nicCooldownDecision.handled) {
+          if (!nicCooldownDecision.historyRecorded) {
+            await recordOpenAIRateLimitHistory(
+              accountId,
+              req,
+              'HTTP 429 image',
+              resetsInSeconds,
+              errorData
+            ).catch(() => {})
+          }
+          await unifiedOpenAIScheduler.markAccountRateLimited(
+            accountId,
+            'openai',
+            sessionHash,
+            resetsInSeconds
+          )
+        }
+        return res.status(429).json(buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds))
+      }
+
+      const previousLocalAddress = selectedLocalAddress
+      selectedLocalAddress = await chooseAndApplyLocalAddress('retrying with')
+      if (!selectedLocalAddress || selectedLocalAddress === previousLocalAddress) {
+        return res.status(429).json(buildOpenAIRateLimitErrorResponse(errorData, resetsInSeconds))
+      }
+      nicRateLimitRetryCount += 1
+      upstream = await sendUpstreamRequestWithFallback()
+    }
+
+    const codexUsageSnapshot = extractCodexUsageHeaders(upstream.headers)
+    if (codexUsageSnapshot) {
+      await openaiAccountService
+        .updateCodexUsageSnapshot(accountId, codexUsageSnapshot)
+        .catch((error) => logger.error(`Failed to update Codex usage snapshot: ${error.message}`))
+    }
+
+    if (upstream.status < 200 || upstream.status >= 300) {
+      const errorData = await readImageUpstreamPayload(upstream)
+      await recordOpenAIImageUpstreamError({
+        upstream,
+        accountId,
+        account,
+        req,
+        body: errorData
+      }).catch(() => {})
+
+      if (upstream.status === 401 || upstream.status === 402) {
+        const message =
+          errorData?.error?.message ||
+          errorData?.message ||
+          (typeof errorData === 'string' ? errorData : 'OpenAI account authorization failed')
+        await unifiedOpenAIScheduler
+          .markAccountUnauthorized(
+            accountId,
+            'openai',
+            sessionHash,
+            `OpenAI account authorization failed (${upstream.status}): ${message}`
+          )
+          .catch(() => {})
+      }
+
+      res.status(upstream.status)
+      passImageDiagnosticHeaders(res, upstream.headers)
+      return await sendImageUpstreamPayload(res, upstream, errorData)
+    }
+
+    if (await unifiedOpenAIScheduler.isAccountRateLimited(accountId)) {
+      await unifiedOpenAIScheduler.removeAccountRateLimit(accountId, 'openai')
+    }
+
+    res.status(upstream.status)
+    passImageDiagnosticHeaders(res, upstream.headers)
+    const upstreamContentType = getUpstreamContentType(upstream)
+    const upstreamIsSse = upstreamContentType.includes('text/event-stream')
+
+    if (isStream && upstreamIsSse) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.setHeader('X-Accel-Buffering', 'no')
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders()
+      }
+      await forwardOpenAIImageStream({ upstream, req, res, accountId, endpoint })
+      return undefined
+    }
+
+    let responseData = upstream.data
+    if (responseData && typeof responseData.on === 'function') {
+      if (isStream && !upstreamIsSse) {
+        logger.warn(
+          `OpenAI image upstream returned ${upstreamContentType || 'an unknown content type'} for a stream request`
+        )
+      }
+      const responseBuffer = await readBoundedImageStream(responseData, MAX_UPSTREAM_RESPONSE_BYTES)
+      responseData = parseImageResponseBuffer(responseBuffer, upstreamContentType)
+    }
+
+    if (responseData?.usage) {
+      try {
+        await recordOpenAIImageUsage({
+          req,
+          usageData: responseData.usage,
+          accountId,
+          endpoint,
+          stream: false,
+          statusCode: upstream.status
+        })
+      } catch (error) {
+        logger.error(`Failed to record OpenAI image usage: ${getSafeMessage(error)}`)
+      }
+    }
+    return await sendImageUpstreamPayload(res, upstream, responseData)
+  } catch (error) {
+    const status = Number(error.statusCode || error.response?.status) || 500
+    logger.error('Proxy to ChatGPT Codex images failed', {
+      message: getSafeMessage(error),
+      code: error.code || null,
+      status,
+      accountId,
+      endpoint: req._openAIImageEndpoint,
+      upstreamNicIp: req.upstreamNicIp || null
+    })
+    if (!res.headersSent && !res.destroyed) {
+      return res.status(status).json({
+        error: {
+          message:
+            status >= 500 ? 'Failed to process the upstream image request' : getSafeMessage(error),
+          type: status >= 500 ? 'server_error' : 'invalid_request_error',
+          code: error.code || 'upstream_error'
+        }
+      })
+    }
+    return undefined
+  } finally {
+    req.removeListener('aborted', onRequestAborted)
+    res.removeListener('close', onResponseClosed)
+  }
+}
+
 // 注册两个路由路径，都使用相同的处理函数
 router.post('/responses', authenticateApiKey, handleResponses)
 router.post('/v1/responses', authenticateApiKey, handleResponses)
@@ -1977,6 +2590,7 @@ router.get('/key-info', authenticateApiKey, async (req, res) => {
 
 module.exports = router
 module.exports.handleResponses = handleResponses
+module.exports.handleImages = handleImages
 module.exports.CODEX_CLI_INSTRUCTIONS = CODEX_CLI_INSTRUCTIONS
 module.exports._buildGeneralOpenAIUpstreamUserAgentForTest = buildGeneralOpenAIUpstreamUserAgent
 module.exports._resetGeneralOpenAIUpstreamUserAgentCacheForTest = () => {

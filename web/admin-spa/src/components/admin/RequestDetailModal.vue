@@ -127,11 +127,37 @@
                   formatNumber(detail.inputTokens)
                 }}</span>
               </div>
+              <div
+                v-if="hasImageUsage"
+                class="metric-row ml-4 text-xs text-gray-500 dark:text-gray-400"
+              >
+                <span>文本输入</span>
+                <span>{{ formatNumber(detail.textInputTokens) }}</span>
+              </div>
+              <div
+                v-if="hasImageUsage"
+                class="metric-row ml-4 text-xs text-gray-500 dark:text-gray-400"
+              >
+                <span>
+                  图片输入
+                  <span v-if="detail.imageUsageBreakdownEstimated" class="opacity-70"
+                    >（估算）</span
+                  >
+                </span>
+                <span>{{ formatNumber(detail.imageInputTokens) }}</span>
+              </div>
               <div class="metric-row">
                 <span>输出</span>
                 <span class="font-semibold text-green-600 dark:text-green-400">{{
                   formatNumber(detail.outputTokens)
                 }}</span>
+              </div>
+              <div
+                v-if="hasImageUsage"
+                class="metric-row ml-4 text-xs text-gray-500 dark:text-gray-400"
+              >
+                <span>图片输出</span>
+                <span>{{ formatNumber(detail.imageOutputTokens) }}</span>
               </div>
               <div class="metric-row">
                 <span>缓存读取</span>
@@ -240,6 +266,12 @@ const loading = ref(false)
 const detail = ref(null)
 const bodyPreviewEnabled = ref(false)
 const isMobileViewport = ref(false)
+const hasImageUsage = computed(
+  () =>
+    detail.value?.textInputTokens !== undefined ||
+    detail.value?.imageInputTokens !== undefined ||
+    detail.value?.imageOutputTokens !== undefined
+)
 
 const costBreakdown = computed(() => {
   const breakdown = detail.value?.realCostBreakdown || detail.value?.costBreakdown || {}

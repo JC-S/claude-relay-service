@@ -1275,6 +1275,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
       enableGeneralOpenAIEndpoint,
+      enableGeneralOpenAIImages,
       enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
@@ -1451,6 +1452,10 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: 'enableGeneralOpenAIEndpoint must be a boolean' })
     }
 
+    if (enableGeneralOpenAIImages !== undefined && typeof enableGeneralOpenAIImages !== 'boolean') {
+      return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
+    }
+
     if (
       enableGeneralPromptCacheAssist !== undefined &&
       typeof enableGeneralPromptCacheAssist !== 'boolean'
@@ -1548,6 +1553,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
           : 0,
       disableGptFastMode: disableGptFastMode === true,
       enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
+      enableGeneralOpenAIImages: enableGeneralOpenAIImages === true,
       enableGeneralPromptCacheAssist: enableGeneralPromptCacheAssist === true,
       enableClaudeThinkingSignatureLossyFallback:
         enableClaudeThinkingSignatureLossyFallback === true,
@@ -1756,6 +1762,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       icon,
       serviceRates,
       enableGeneralOpenAIEndpoint,
+      enableGeneralOpenAIImages,
       enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback
     } = req.body
@@ -1822,6 +1829,10 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: 'enableGeneralOpenAIEndpoint must be a boolean' })
     }
 
+    if (enableGeneralOpenAIImages !== undefined && typeof enableGeneralOpenAIImages !== 'boolean') {
+      return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
+    }
+
     if (
       enableGeneralPromptCacheAssist !== undefined &&
       typeof enableGeneralPromptCacheAssist !== 'boolean'
@@ -1878,6 +1889,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           icon,
           serviceRates,
           enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
+          enableGeneralOpenAIImages: enableGeneralOpenAIImages === true,
           enableGeneralPromptCacheAssist: enableGeneralPromptCacheAssist === true,
           enableClaudeThinkingSignatureLossyFallback:
             enableClaudeThinkingSignatureLossyFallback === true
@@ -1971,6 +1983,12 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
       typeof updates.disableGptFastMode !== 'boolean'
     ) {
       return res.status(400).json({ error: 'disableGptFastMode must be a boolean' })
+    }
+    if (
+      updates.enableGeneralOpenAIImages !== undefined &&
+      typeof updates.enableGeneralOpenAIImages !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
     }
     if (
       updates.enableGeneralPromptCacheAssist !== undefined &&
@@ -2086,6 +2104,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         }
         if (updates.disableGptFastMode !== undefined) {
           finalUpdates.disableGptFastMode = updates.disableGptFastMode
+        }
+        if (updates.enableGeneralOpenAIImages !== undefined) {
+          finalUpdates.enableGeneralOpenAIImages = updates.enableGeneralOpenAIImages
         }
         if (updates.enableGeneralPromptCacheAssist !== undefined) {
           finalUpdates.enableGeneralPromptCacheAssist = updates.enableGeneralPromptCacheAssist
@@ -2248,6 +2269,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       disableGptFastMode,
       enableGeneralOpenAIEndpoint,
+      enableGeneralOpenAIImages,
       enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
@@ -2494,6 +2516,13 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'enableGeneralOpenAIEndpoint must be a boolean' })
       }
       updates.enableGeneralOpenAIEndpoint = enableGeneralOpenAIEndpoint
+    }
+
+    if (enableGeneralOpenAIImages !== undefined) {
+      if (typeof enableGeneralOpenAIImages !== 'boolean') {
+        return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
+      }
+      updates.enableGeneralOpenAIImages = enableGeneralOpenAIImages
     }
 
     if (enableGeneralPromptCacheAssist !== undefined) {

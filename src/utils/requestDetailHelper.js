@@ -9,6 +9,8 @@ const DEFAULT_MAX_DEPTH = 6
 const DEFAULT_MAX_TOTAL_CHARS = 12000
 const ENCRYPTED_CONTENT_KEY = 'encrypted_content'
 const TOOLS_KEY = 'tools'
+const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i
+const IMAGE_DATA_KEY_PATTERN = /(?:^|\.|\])b64_json$/i
 const PREVIEW_TRUNCATION_SUFFIX_PATTERN = /\.\.\.\[(?:truncated )?(\d+) chars\]$/
 const OPENAI_RELATED_ACCOUNT_TYPES = new Set(['openai', 'openai-responses', 'azure-openai'])
 const GPT_56_CACHE_WRITE_MODELS = new Set([
@@ -80,6 +82,50 @@ function getValueCharLength(value) {
 
 function createOmittedValue(value) {
   return `...[${getValueCharLength(value)} chars]`
+}
+
+function createImageOmittedValue(value) {
+  if (Buffer.isBuffer(value)) {
+    return `[image data omitted, ${value.length} bytes]`
+  }
+  return `[image data omitted, ${getValueCharLength(value)} chars]`
+}
+
+function isImageDataString(value, keyPath = '') {
+  return (
+    typeof value === 'string' &&
+    (IMAGE_DATA_KEY_PATTERN.test(keyPath) || IMAGE_DATA_URL_PATTERN.test(value.trim()))
+  )
+}
+
+function sanitizeImageData(value, keyPath = '', seen = new WeakSet()) {
+  if (isImageDataString(value, keyPath)) {
+    return createImageOmittedValue(value)
+  }
+  if (Buffer.isBuffer(value)) {
+    return createImageOmittedValue(value)
+  }
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+  if (seen.has(value)) {
+    return '[Circular]'
+  }
+  seen.add(value)
+
+  if (Array.isArray(value)) {
+    return value.map((item, index) => sanitizeImageData(item, `${keyPath}[${index}]`, seen))
+  }
+
+  const sanitized = {}
+  for (const [key, childValue] of Object.entries(value)) {
+    const childPath = keyPath ? `${keyPath}.${key}` : key
+    sanitized[key] =
+      key.toLowerCase() === 'b64_json'
+        ? createImageOmittedValue(childValue)
+        : sanitizeImageData(childValue, childPath, seen)
+  }
+  return sanitized
 }
 
 function normalizeNonEmptyString(value) {
@@ -406,6 +452,9 @@ function sanitizeValue(value, ctx) {
   }
 
   if (typeof value === 'string') {
+    if (isImageDataString(value, keyPath)) {
+      return createImageOmittedValue(value)
+    }
     if (SENSITIVE_KEY_PATTERN.test(keyPath)) {
       return maskSensitiveValue(value)
     }
@@ -456,6 +505,10 @@ function sanitizeValue(value, ctx) {
     const result = {}
     for (const [key, childValue] of Object.entries(value)) {
       const childPath = keyPath ? `${keyPath}.${key}` : key
+      if (key.toLowerCase() === 'b64_json') {
+        result[key] = createImageOmittedValue(childValue)
+        continue
+      }
       if (key === ENCRYPTED_CONTENT_KEY) {
         result[key] = createOmittedValue(childValue)
         continue
@@ -696,6 +749,7 @@ function calculateCacheHitRate(
 
 module.exports = {
   sanitizeRequestBodySnapshot,
+  sanitizeImageData,
   extractRequestReasoningInfo,
   resolveRequestDetailReasoning,
   createRequestDetailMeta,

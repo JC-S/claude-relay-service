@@ -475,6 +475,90 @@ describe('requestDetailService', () => {
     )
   })
 
+  test('recomputes retained GPT-Image-2 details with the stored image breakdown', async () => {
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: true
+    })
+    CostCalculator.calculateCost.mockReturnValue({
+      costs: {
+        input: 0.0009,
+        output: 0.12,
+        cacheCreate: 0,
+        cacheRead: 0,
+        textInput: 0.0001,
+        imageInput: 0.0008,
+        imageOutput: 0.12,
+        total: 0.1209
+      },
+      debug: { usedFallbackPricing: false, pricingSource: 'dynamic' },
+      usingDynamicPricing: true
+    })
+
+    const storedRecord = JSON.stringify({
+      requestId: 'req_image',
+      timestamp: '2026-04-07T12:00:00.000Z',
+      endpoint: '/general/v1/images/edits',
+      method: 'POST',
+      apiKeyId: 'key_image',
+      accountId: 'acct_image',
+      accountType: 'openai',
+      model: 'gpt-image-2',
+      inputTokens: 120,
+      outputTokens: 4000,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
+      textInputTokens: 20,
+      imageInputTokens: 100,
+      imageOutputTokens: 4000,
+      imageUsageBreakdownEstimated: false,
+      totalTokens: 4120,
+      cost: 0,
+      realCost: 0
+    })
+    redis.getClient.mockReturnValue({
+      zrangebyscore: jest.fn().mockResolvedValue(['req_image', '1775563200000']),
+      mget: jest.fn().mockResolvedValue([storedRecord])
+    })
+
+    const result = await requestDetailService.listRequestDetails({
+      startDate: '2026-04-07T00:00:00.000Z',
+      endDate: '2026-04-07T23:59:59.000Z'
+    })
+
+    expect(CostCalculator.calculateCost).toHaveBeenCalledWith(
+      {
+        input_tokens: 120,
+        output_tokens: 4000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        image_usage: {
+          textInputTokens: 20,
+          imageInputTokens: 100,
+          imageOutputTokens: 4000,
+          estimated: false
+        }
+      },
+      'gpt-image-2',
+      null
+    )
+    expect(result.records[0]).toEqual(
+      expect.objectContaining({
+        textInputTokens: 20,
+        imageInputTokens: 100,
+        imageOutputTokens: 4000,
+        cost: 0.1209,
+        costRecomputed: true,
+        realCostBreakdown: expect.objectContaining({
+          textInput: 0.0001,
+          imageInput: 0.0008,
+          imageOutput: 0.12
+        })
+      })
+    )
+  })
+
   test('listRequestDetails still exposes retained data when capture is disabled', async () => {
     claudeRelayConfigService.getConfig.mockResolvedValue({
       requestDetailCaptureEnabled: false,

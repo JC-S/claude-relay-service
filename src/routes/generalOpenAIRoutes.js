@@ -6,6 +6,8 @@ const modelService = require('../services/modelService')
 const CodexToOpenAIConverter = require('../services/codexToOpenAI')
 const openaiRoutes = require('./openaiRoutes')
 const logger = require('../utils/logger')
+const CostCalculator = require('../utils/costCalculator')
+const { IMAGE_MODEL, prepareOpenAIImageRequest } = require('../utils/openaiImageRequestHelper')
 
 const router = express.Router()
 const OPENAI_OAUTH_ONLY_OPTIONS = { allowedAccountTypes: ['openai'] }
@@ -447,11 +449,91 @@ router.get('/v1/models', (req, res) => {
     models = models.filter((model) => !req.apiKey.restrictedModels.includes(model.id))
   }
 
+  if (
+    req.apiKey.enableGeneralOpenAIImages === true &&
+    !isModelRestricted(req.apiKey, IMAGE_MODEL) &&
+    !models.some((model) => model.id === IMAGE_MODEL)
+  ) {
+    models = [
+      ...models,
+      {
+        id: IMAGE_MODEL,
+        object: 'model',
+        created: 1776729600,
+        owned_by: 'openai'
+      }
+    ]
+  }
+
   return res.json({
     object: 'list',
     data: models
   })
 })
+
+async function handleGeneralImageRequest(req, res, endpoint) {
+  let cleanup = async () => {}
+  try {
+    if (req.apiKey.enableGeneralOpenAIImages !== true) {
+      return sendOpenAIError(
+        res,
+        403,
+        'This API key is not allowed to access GPT-Image-2 endpoints'
+      )
+    }
+
+    const prepared = await prepareOpenAIImageRequest(req, { endpoint })
+    ;({ cleanup } = prepared)
+    if (isModelRestricted(req.apiKey, IMAGE_MODEL)) {
+      return sendOpenAIError(
+        res,
+        403,
+        `Model ${IMAGE_MODEL} is not allowed for this API key`,
+        'invalid_request_error',
+        'model_not_allowed'
+      )
+    }
+
+    try {
+      CostCalculator.getValidatedImagePricing(IMAGE_MODEL)
+    } catch (error) {
+      logger.warn(`GPT-Image-2 pricing preflight failed: ${error.message}`)
+      return sendOpenAIError(
+        res,
+        503,
+        'Pricing is temporarily unavailable for GPT-Image-2',
+        'server_error',
+        'pricing_unavailable'
+      )
+    }
+
+    req.body = prepared.body
+    req._downstreamStream = prepared.stream
+    req._openAIImageEndpoint = endpoint
+    req._openAIImageRequestSnapshot = prepared.requestSnapshot
+    return await openaiRoutes.handleImages(req, res)
+  } catch (error) {
+    const status = Number(error.statusCode) || 500
+    logger.warn(`General OpenAI image request failed (${endpoint}, ${status}): ${error.message}`)
+    if (!res.headersSent) {
+      return sendOpenAIError(
+        res,
+        status,
+        status >= 500 && !error.statusCode ? 'Internal server error' : error.message,
+        error.type || (status >= 500 ? 'server_error' : 'invalid_request_error'),
+        error.code || (status >= 500 ? 'internal_error' : 'invalid_request')
+      )
+    }
+    return undefined
+  } finally {
+    await cleanup()
+  }
+}
+
+router.post('/v1/images/generations', (req, res) =>
+  handleGeneralImageRequest(req, res, 'generations')
+)
+router.post('/v1/images/edits', (req, res) => handleGeneralImageRequest(req, res, 'edits'))
 
 router.post(GENERAL_RESPONSES_COMPAT_PATHS, async (req, res) => {
   try {

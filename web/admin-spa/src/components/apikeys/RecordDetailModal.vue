@@ -67,11 +67,35 @@
                 {{ formatNumber(record?.inputTokens) }}
               </span>
             </li>
+            <li
+              v-if="hasImageUsage"
+              class="ml-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"
+            >
+              <span>文本输入</span>
+              <span>{{ formatNumber(record?.textInputTokens) }}</span>
+            </li>
+            <li
+              v-if="hasImageUsage"
+              class="ml-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"
+            >
+              <span>
+                图片输入
+                <span v-if="record?.imageUsageBreakdownEstimated" class="opacity-70">（估算）</span>
+              </span>
+              <span>{{ formatNumber(record?.imageInputTokens) }}</span>
+            </li>
             <li class="flex items-center justify-between">
               <span class="text-gray-500 dark:text-gray-400">输出 Token</span>
               <span class="font-semibold text-green-600 dark:text-green-400">
                 {{ formatNumber(record?.outputTokens) }}
               </span>
+            </li>
+            <li
+              v-if="hasImageUsage"
+              class="ml-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"
+            >
+              <span>图片输出</span>
+              <span>{{ formatNumber(record?.imageOutputTokens) }}</span>
             </li>
             <li class="flex items-center justify-between">
               <span class="text-gray-500 dark:text-gray-400">缓存创建</span>
@@ -170,6 +194,13 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 const emitClose = () => emit('close')
+
+const hasImageUsage = computed(
+  () =>
+    props.record?.textInputTokens !== undefined ||
+    props.record?.imageInputTokens !== undefined ||
+    props.record?.imageOutputTokens !== undefined
+)
 
 const formattedTime = computed(() => {
   if (!props.record?.timestamp) return '未知时间'

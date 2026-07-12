@@ -255,6 +255,101 @@ describe('apiKeyService v2 billing', () => {
     expect(result.realCost).toBeCloseTo(0.7475, 10)
   })
 
+  test('recordUsage propagates GPT-Image-2 token breakdown to every billing sink', async () => {
+    const imageUsage = {
+      textInputTokens: 20,
+      imageInputTokens: 100,
+      imageOutputTokens: 4000,
+      estimated: false
+    }
+    CostCalculator.calculateCost.mockReturnValue({
+      costs: {
+        total: 0.1209,
+        input: 0.0009,
+        output: 0.12,
+        cacheCreate: 0,
+        cacheRead: 0,
+        textInput: 0.0001,
+        imageInput: 0.0008,
+        imageOutput: 0.12
+      }
+    })
+
+    await apiKeyService.recordUsage(
+      CHILD_ID,
+      120,
+      4000,
+      0,
+      0,
+      'gpt-image-2',
+      'acct-1',
+      'openai',
+      null,
+      { requestId: 'image-request-1' },
+      imageUsage
+    )
+
+    expect(CostCalculator.calculateCost).toHaveBeenCalledWith(
+      {
+        input_tokens: 120,
+        output_tokens: 4000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        image_usage: imageUsage
+      },
+      'gpt-image-2',
+      null
+    )
+    expect(redis.incrementTokenUsage).toHaveBeenCalledWith(
+      CHILD_ID,
+      4120,
+      120,
+      4000,
+      0,
+      0,
+      'gpt-image-2',
+      0,
+      0,
+      false,
+      0.1209,
+      expect.any(Number),
+      null,
+      imageUsage
+    )
+    expect(redis.incrementAccountUsage).toHaveBeenCalledWith(
+      'acct-1',
+      4120,
+      120,
+      4000,
+      0,
+      0,
+      0,
+      0,
+      'gpt-image-2',
+      false,
+      null,
+      imageUsage
+    )
+    expect(redis.addUsageRecord).toHaveBeenCalledWith(
+      CHILD_ID,
+      expect.objectContaining({
+        textInputTokens: 20,
+        imageInputTokens: 100,
+        imageOutputTokens: 4000,
+        imageUsageBreakdownEstimated: false,
+        costBreakdown: expect.objectContaining({ imageOutput: 0.12 })
+      })
+    )
+    expect(requestDetailService.captureRequestDetail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        textInputTokens: 20,
+        imageInputTokens: 100,
+        imageOutputTokens: 4000,
+        imageUsageBreakdownEstimated: false
+      })
+    )
+  })
+
   // 3. recordUsageWithDetails：同样把倍率后成本写入父总账
   test('recordUsageWithDetails also rolls up rated cost to parent total', async () => {
     CostCalculator.calculateCost.mockReturnValue({

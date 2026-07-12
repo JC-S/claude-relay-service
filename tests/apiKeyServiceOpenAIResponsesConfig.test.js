@@ -103,6 +103,7 @@ describe('apiKeyService openai responses config', () => {
     expect(storedKeyData.enableIpWhitelist).toBe('false')
     expect(storedKeyData.ipWhitelist).toBe('[]')
     expect(storedKeyData.enableGeneralOpenAIEndpoint).toBe('false')
+    expect(storedKeyData.enableGeneralOpenAIImages).toBe('false')
     expect(storedKeyData.enableGeneralPromptCacheAssist).toBe('false')
     expect(storedKeyData.enableClaudeThinkingSignatureLossyFallback).toBe('false')
 
@@ -112,6 +113,7 @@ describe('apiKeyService openai responses config', () => {
     expect(result.enableIpWhitelist).toBe(false)
     expect(result.ipWhitelist).toEqual([])
     expect(result.enableGeneralOpenAIEndpoint).toBe(false)
+    expect(result.enableGeneralOpenAIImages).toBe(false)
     expect(result.enableGeneralPromptCacheAssist).toBe(false)
     expect(result.enableClaudeThinkingSignatureLossyFallback).toBe(false)
   })
@@ -133,6 +135,7 @@ describe('apiKeyService openai responses config', () => {
       enableIpWhitelist: true,
       ipWhitelist: ['203.0.113.10', '203.0.113.0/24'],
       enableGeneralOpenAIEndpoint: true,
+      enableGeneralOpenAIImages: true,
       enableGeneralPromptCacheAssist: true,
       enableClaudeThinkingSignatureLossyFallback: true
     })
@@ -146,6 +149,7 @@ describe('apiKeyService openai responses config', () => {
     expect(storedKeyData.enableIpWhitelist).toBe('true')
     expect(storedKeyData.ipWhitelist).toBe(JSON.stringify(['203.0.113.10', '203.0.113.0/24']))
     expect(storedKeyData.enableGeneralOpenAIEndpoint).toBe('true')
+    expect(storedKeyData.enableGeneralOpenAIImages).toBe('true')
     expect(storedKeyData.enableGeneralPromptCacheAssist).toBe('true')
     expect(storedKeyData.enableClaudeThinkingSignatureLossyFallback).toBe('true')
   })
@@ -178,6 +182,7 @@ describe('apiKeyService openai responses config', () => {
       enableOpenAIResponsesPayloadRules: 'true',
       enableIpWhitelist: 'true',
       enableGeneralOpenAIEndpoint: 'true',
+      enableGeneralOpenAIImages: 'true',
       enableGeneralPromptCacheAssist: 'true',
       enableClaudeThinkingSignatureLossyFallback: 'true',
       ipWhitelist: JSON.stringify(['203.0.113.10']),
@@ -192,6 +197,7 @@ describe('apiKeyService openai responses config', () => {
     expect(result.enableOpenAIResponsesPayloadRules).toBe(true)
     expect(result.enableIpWhitelist).toBe(true)
     expect(result.enableGeneralOpenAIEndpoint).toBe(true)
+    expect(result.enableGeneralOpenAIImages).toBe(true)
     expect(result.enableGeneralPromptCacheAssist).toBe(true)
     expect(result.enableClaudeThinkingSignatureLossyFallback).toBe(true)
     expect(result.ipWhitelist).toEqual(['203.0.113.10'])

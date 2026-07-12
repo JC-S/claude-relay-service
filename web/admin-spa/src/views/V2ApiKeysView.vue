@@ -686,11 +686,37 @@
                     {{ formatNumber(activeRecord.inputTokens || 0) }}
                   </span>
                 </li>
+                <li
+                  v-if="hasActiveRecordImageUsage"
+                  class="ml-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"
+                >
+                  <span>文本输入</span>
+                  <span>{{ formatNumber(activeRecord.textInputTokens || 0) }}</span>
+                </li>
+                <li
+                  v-if="hasActiveRecordImageUsage"
+                  class="ml-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"
+                >
+                  <span>
+                    图片输入
+                    <span v-if="activeRecord.imageUsageBreakdownEstimated" class="opacity-70"
+                      >（估算）</span
+                    >
+                  </span>
+                  <span>{{ formatNumber(activeRecord.imageInputTokens || 0) }}</span>
+                </li>
                 <li class="flex items-center justify-between">
                   <span class="text-gray-500 dark:text-gray-400">输出 Token</span>
                   <span class="font-semibold text-green-600 dark:text-green-400">
                     {{ formatNumber(activeRecord.outputTokens || 0) }}
                   </span>
+                </li>
+                <li
+                  v-if="hasActiveRecordImageUsage"
+                  class="ml-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"
+                >
+                  <span>图片输出</span>
+                  <span>{{ formatNumber(activeRecord.imageOutputTokens || 0) }}</span>
                 </li>
                 <li class="flex items-center justify-between">
                   <span class="text-gray-500 dark:text-gray-400">缓存创建</span>
@@ -982,6 +1008,12 @@ const timelineLoaded = ref(false)
 // 单条请求详情弹窗（不含任何账户信息）
 const showRecordModal = ref(false)
 const activeRecord = ref(null)
+const hasActiveRecordImageUsage = computed(
+  () =>
+    activeRecord.value?.textInputTokens !== undefined ||
+    activeRecord.value?.imageInputTokens !== undefined ||
+    activeRecord.value?.imageOutputTokens !== undefined
+)
 
 // ConfirmModal
 const showConfirmModal = ref(false)

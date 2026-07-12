@@ -158,6 +158,16 @@ router.get('/keys/:keyId/usage-records', async (req, res) => {
         model: displayRecord.model || 'unknown',
         inputTokens: Number(record.inputTokens) || 0,
         outputTokens: Number(record.outputTokens) || 0,
+        ...(record.textInputTokens !== undefined ||
+        record.imageInputTokens !== undefined ||
+        record.imageOutputTokens !== undefined
+          ? {
+              textInputTokens: Number(record.textInputTokens) || 0,
+              imageInputTokens: Number(record.imageInputTokens) || 0,
+              imageOutputTokens: Number(record.imageOutputTokens) || 0,
+              imageUsageBreakdownEstimated: record.imageUsageBreakdownEstimated === true
+            }
+          : {}),
         cacheCreateTokens: Number(record.cacheCreateTokens) || 0,
         cacheReadTokens: Number(record.cacheReadTokens) || 0,
         totalTokens: Number(record.totalTokens) || 0,

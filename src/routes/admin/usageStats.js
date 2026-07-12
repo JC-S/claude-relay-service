@@ -2762,6 +2762,18 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
           }
         }
       }
+      if (
+        record.textInputTokens !== undefined ||
+        record.imageInputTokens !== undefined ||
+        record.imageOutputTokens !== undefined
+      ) {
+        usage.image_usage = {
+          textInputTokens: Number(record.textInputTokens) || 0,
+          imageInputTokens: Number(record.imageInputTokens) || 0,
+          imageOutputTokens: Number(record.imageOutputTokens) || 0,
+          estimated: record.imageUsageBreakdownEstimated === true
+        }
+      }
       return usage
     }
 
@@ -2915,6 +2927,16 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
         accountTypeName: accountTypeNames[resolvedAccountType] || '未知渠道',
         inputTokens: usage.input_tokens,
         outputTokens: usage.output_tokens,
+        ...(record.textInputTokens !== undefined ||
+        record.imageInputTokens !== undefined ||
+        record.imageOutputTokens !== undefined
+          ? {
+              textInputTokens: Number(record.textInputTokens) || 0,
+              imageInputTokens: Number(record.imageInputTokens) || 0,
+              imageOutputTokens: Number(record.imageOutputTokens) || 0,
+              imageUsageBreakdownEstimated: record.imageUsageBreakdownEstimated === true
+            }
+          : {}),
         cacheCreateTokens: usage.cache_creation_input_tokens,
         cacheReadTokens: usage.cache_read_input_tokens,
         ephemeral5mTokens: record.ephemeral5mTokens || 0,
@@ -3089,6 +3111,18 @@ router.get('/accounts/:accountId/usage-records', authenticateAdmin, async (req, 
           }
         }
       }
+      if (
+        record.textInputTokens !== undefined ||
+        record.imageInputTokens !== undefined ||
+        record.imageOutputTokens !== undefined
+      ) {
+        usage.image_usage = {
+          textInputTokens: Number(record.textInputTokens) || 0,
+          imageInputTokens: Number(record.imageInputTokens) || 0,
+          imageOutputTokens: Number(record.imageOutputTokens) || 0,
+          estimated: record.imageUsageBreakdownEstimated === true
+        }
+      }
       return usage
     }
 
@@ -3257,6 +3291,16 @@ router.get('/accounts/:accountId/usage-records', authenticateAdmin, async (req, 
         accountTypeName: accountTypeNames[record.accountType] || '未知渠道',
         inputTokens: usage.input_tokens,
         outputTokens: usage.output_tokens,
+        ...(record.textInputTokens !== undefined ||
+        record.imageInputTokens !== undefined ||
+        record.imageOutputTokens !== undefined
+          ? {
+              textInputTokens: Number(record.textInputTokens) || 0,
+              imageInputTokens: Number(record.imageInputTokens) || 0,
+              imageOutputTokens: Number(record.imageOutputTokens) || 0,
+              imageUsageBreakdownEstimated: record.imageUsageBreakdownEstimated === true
+            }
+          : {}),
         cacheCreateTokens: usage.cache_creation_input_tokens,
         cacheReadTokens: usage.cache_read_input_tokens,
         ephemeral5mTokens: record.ephemeral5mTokens || 0,

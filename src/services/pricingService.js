@@ -66,6 +66,20 @@ class PricingService {
       }
     }
 
+    this.localModelPricingFallbacks = {
+      'gpt-image-2': {
+        cache_read_input_token_cost: 0.00000125,
+        input_cost_per_image_token: 0.000008,
+        input_cost_per_token: 0.000005,
+        litellm_provider: 'openai',
+        mode: 'image_generation',
+        output_cost_per_image_token: 0.00003,
+        output_cost_per_token: 0.00001,
+        supported_endpoints: ['/v1/images/generations', '/v1/images/edits'],
+        supports_vision: true
+      }
+    }
+
     this.localPricingAliases = {
       'claude-opus-4-8': 'claude-opus-4-7',
       'claude-fable-5': {
@@ -79,6 +93,8 @@ class PricingService {
     if (!pricingData || typeof pricingData !== 'object') {
       return pricingData
     }
+
+    this.applyLocalModelPricingFallbacks(pricingData)
 
     for (const [modelName, override] of Object.entries(this.localPricingOverrides)) {
       const pricing = pricingData[modelName]
@@ -111,6 +127,45 @@ class PricingService {
     }
 
     this.applyLocalPricingAliases(pricingData)
+
+    return pricingData
+  }
+
+  applyLocalModelPricingFallbacks(pricingData = this.pricingData) {
+    if (!pricingData || typeof pricingData !== 'object') {
+      return pricingData
+    }
+
+    for (const [modelName, defaults] of Object.entries(this.localModelPricingFallbacks)) {
+      const pricing =
+        pricingData[modelName] && typeof pricingData[modelName] === 'object'
+          ? pricingData[modelName]
+          : {}
+      const fallbackFields = new Set(
+        Array.isArray(pricing.local_pricing_fallback_fields)
+          ? pricing.local_pricing_fallback_fields
+          : []
+      )
+
+      for (const [field, fallbackValue] of Object.entries(defaults)) {
+        const currentValue = pricing[field]
+        const isPriceField = this.isPricingField(field)
+        const isValid = isPriceField
+          ? typeof currentValue === 'number' && Number.isFinite(currentValue) && currentValue >= 0
+          : currentValue !== undefined && currentValue !== null
+
+        if (!isValid) {
+          pricing[field] = Array.isArray(fallbackValue) ? [...fallbackValue] : fallbackValue
+          fallbackFields.add(field)
+        }
+      }
+
+      if (fallbackFields.size > 0) {
+        pricing.local_pricing_fallback_fields = [...fallbackFields].sort()
+        pricing.local_pricing_fallback_reason = 'local_missing_field_fallback'
+      }
+      pricingData[modelName] = pricing
+    }
 
     return pricingData
   }

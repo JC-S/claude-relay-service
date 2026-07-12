@@ -666,4 +666,66 @@ describe('PricingService - Long Context Pricing', () => {
       expect(pricing.output_cost_per_token).toBe(0.000055)
     })
   })
+
+  describe('GPT-Image-2 本地缺字段 fallback', () => {
+    it('只补缺失或非法字段，并保留远端合法零价', () => {
+      pricingService.pricingData = {
+        'gpt-image-2': {
+          input_cost_per_token: 0,
+          input_cost_per_image_token: Number.NaN,
+          output_cost_per_image_token: 0.000031,
+          cache_read_input_token_cost: -1,
+          litellm_provider: 'openai'
+        }
+      }
+
+      const pricing = pricingService.getModelPricing('gpt-image-2')
+
+      expect(pricing.input_cost_per_token).toBe(0)
+      expect(pricing.input_cost_per_image_token).toBe(0.000008)
+      expect(pricing.output_cost_per_image_token).toBe(0.000031)
+      expect(pricing.cache_read_input_token_cost).toBe(0.00000125)
+      expect(pricing.output_cost_per_token).toBe(0.00001)
+      expect(pricing.local_pricing_fallback_fields).toEqual(
+        expect.arrayContaining([
+          'input_cost_per_image_token',
+          'cache_read_input_token_cost',
+          'output_cost_per_token'
+        ])
+      )
+      expect(pricing.local_pricing_fallback_fields).not.toContain('input_cost_per_token')
+      expect(pricing.local_pricing_fallback_fields).not.toContain('output_cost_per_image_token')
+    })
+
+    it('creates a complete GPT-Image-2 price entry when the remote model is absent', () => {
+      pricingService.pricingData = {}
+
+      const pricing = pricingService.getModelPricing('gpt-image-2')
+
+      expect(pricing).toEqual(
+        expect.objectContaining({
+          input_cost_per_token: 0.000005,
+          input_cost_per_image_token: 0.000008,
+          output_cost_per_token: 0.00001,
+          output_cost_per_image_token: 0.00003,
+          cache_read_input_token_cost: 0.00000125,
+          mode: 'image_generation'
+        })
+      )
+      expect(pricing.supported_endpoints).toEqual(['/v1/images/generations', '/v1/images/edits'])
+    })
+
+    it('includes GPT-Image-2 in the repository fallback file', () => {
+      const fallbackPricing = JSON.parse(realFs.readFileSync(fallbackPath, 'utf8'))
+
+      expect(fallbackPricing['gpt-image-2']).toEqual(
+        expect.objectContaining({
+          input_cost_per_token: 0.000005,
+          input_cost_per_image_token: 0.000008,
+          output_cost_per_image_token: 0.00003,
+          cache_read_input_token_cost: 0.00000125
+        })
+      )
+    })
+  })
 })

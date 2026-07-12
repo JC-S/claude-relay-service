@@ -419,6 +419,7 @@ describe('apiKeyService v2 lifecycle fixes', () => {
       serviceRates: '{"claude":1.2}',
       disableGptFastMode: 'true',
       enableGeneralOpenAIEndpoint: 'true',
+      enableGeneralOpenAIImages: 'true',
       enableOpenAIResponsesCodexAdaptation: '',
       dailyCostLimit: '777',
       totalCostLimit: '888'
@@ -471,6 +472,7 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     expect(children[0].serviceRates).toEqual({ claude: 1.2 })
     expect(children[0].disableGptFastMode).toBe(true)
     expect(children[0].enableGeneralOpenAIEndpoint).toBe(true)
+    expect(children[0].enableGeneralOpenAIImages).toBe(true)
     expect(children[0].enableOpenAIResponsesCodexAdaptation).toBe(true)
     // 子 key 自有字段不被父账号覆盖
     expect(children[0].name).toBe('A')

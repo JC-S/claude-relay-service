@@ -174,6 +174,41 @@ describe('GET /admin/v2/keys/:keyId/usage-records', () => {
     )
   })
 
+  test('returns image token details without exposing upstream account fields', async () => {
+    redis.getUsageRecords.mockResolvedValue([
+      {
+        timestamp: '2026-01-01T00:00:00.000Z',
+        model: 'gpt-image-2',
+        inputTokens: 120,
+        outputTokens: 4000,
+        textInputTokens: 20,
+        imageInputTokens: 100,
+        imageOutputTokens: 4000,
+        imageUsageBreakdownEstimated: true,
+        totalTokens: 4120,
+        cost: 0.1209,
+        costBreakdown: { total: 0.1209, input: 0.0009, output: 0.12 },
+        accountId: 'must-not-leak',
+        accountType: 'openai'
+      }
+    ])
+
+    const res = createResponse()
+    await handler(createReq(), res)
+    const item = res.body.data[0]
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        textInputTokens: 20,
+        imageInputTokens: 100,
+        imageOutputTokens: 4000,
+        imageUsageBreakdownEstimated: true
+      })
+    )
+    expect(item).not.toHaveProperty('accountId')
+    expect(item).not.toHaveProperty('accountType')
+  })
+
   // 3. GPT priority → 展示为 "xxx (fast)"，且不返回 serviceTier
   test('GPT priority record is displayed as fast model name without serviceTier', async () => {
     redis.getUsageRecords.mockResolvedValue([

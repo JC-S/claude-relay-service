@@ -827,8 +827,33 @@
                 </span>
                 <span class="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">
                   开启后，该 API Key 可访问
-                  /general/v1/models、/general/v1/chat/completions、/general/v1/responses。该入口仅调度
+                  /general/v1/models、/general/v1/chat/completions、/general/v1/responses，以及单独授权的图片接口。该入口仅调度
                   OpenAI OAuth 账号，暂不检查客户端类型。
+                </span>
+              </span>
+            </label>
+
+            <label
+              :class="[
+                'mt-3 flex items-start gap-3',
+                form.enableGeneralOpenAIEndpoint
+                  ? 'cursor-pointer'
+                  : 'cursor-not-allowed opacity-60'
+              ]"
+            >
+              <input
+                v-model="form.enableGeneralOpenAIImages"
+                class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                :disabled="!form.enableGeneralOpenAIEndpoint"
+                type="checkbox"
+              />
+              <span class="flex-1">
+                <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  允许 GPT-Image-2 图片接口
+                </span>
+                <span class="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                  允许该 API Key 通过 /general/v1/images/generations 和 /general/v1/images/edits
+                  使用 GPT-Image-2。
                 </span>
               </span>
             </label>
@@ -1294,6 +1319,7 @@ const form = reactive({
   enableIpWhitelist: false,
   ipWhitelistInput: '',
   enableGeneralOpenAIEndpoint: false,
+  enableGeneralOpenAIImages: false,
   enableGeneralPromptCacheAssist: false,
   enableClaudeThinkingSignatureLossyFallback: false,
   tags: []
@@ -1738,6 +1764,7 @@ const createApiKey = async () => {
       enableIpWhitelist: form.enableIpWhitelist,
       ipWhitelist,
       enableGeneralOpenAIEndpoint: form.enableGeneralOpenAIEndpoint,
+      enableGeneralOpenAIImages: form.enableGeneralOpenAIImages,
       enableGeneralPromptCacheAssist: form.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback
     }

@@ -216,6 +216,7 @@ const V2_INHERIT_CONFIG_FIELDS = [
   'serviceRates',
   'disableGptFastMode',
   'enableGeneralOpenAIEndpoint',
+  'enableGeneralOpenAIImages',
   'enableGeneralPromptCacheAssist',
   'enableClaudeThinkingSignatureLossyFallback',
   'enableOpenAIResponsesCodexAdaptation',
@@ -229,6 +230,7 @@ const V2_ADMIN_BOOLEAN_INHERIT_FIELDS = new Set([
   'enableIpWhitelist',
   'disableGptFastMode',
   'enableGeneralOpenAIEndpoint',
+  'enableGeneralOpenAIImages',
   'enableGeneralPromptCacheAssist',
   'enableClaudeThinkingSignatureLossyFallback',
   'enableOpenAIResponsesCodexAdaptation',
@@ -396,6 +398,7 @@ class ApiKeyService {
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       disableGptFastMode = false,
       enableGeneralOpenAIEndpoint = false,
+      enableGeneralOpenAIImages = false,
       enableGeneralPromptCacheAssist = false,
       enableClaudeThinkingSignatureLossyFallback = false,
       enableOpenAIResponsesCodexAdaptation = true,
@@ -466,6 +469,7 @@ class ApiKeyService {
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       disableGptFastMode: String(disableGptFastMode === true),
       enableGeneralOpenAIEndpoint: String(enableGeneralOpenAIEndpoint === true),
+      enableGeneralOpenAIImages: String(enableGeneralOpenAIImages === true),
       enableGeneralPromptCacheAssist: String(enableGeneralPromptCacheAssist === true),
       enableClaudeThinkingSignatureLossyFallback: String(
         enableClaudeThinkingSignatureLossyFallback === true
@@ -560,6 +564,7 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       ),
+      enableGeneralOpenAIImages: parseBooleanWithDefault(keyData.enableGeneralOpenAIImages, false),
       enableGeneralPromptCacheAssist: parseBooleanWithDefault(
         keyData.enableGeneralPromptCacheAssist,
         false
@@ -801,6 +806,10 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       )
+      const enableGeneralOpenAIImages = parseBooleanWithDefault(
+        keyData.enableGeneralOpenAIImages,
+        false
+      )
       const enableGeneralPromptCacheAssist = parseBooleanWithDefault(
         keyData.enableGeneralPromptCacheAssist,
         false
@@ -851,6 +860,7 @@ class ApiKeyService {
           serviceRates,
           disableGptFastMode,
           enableGeneralOpenAIEndpoint,
+          enableGeneralOpenAIImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
@@ -982,6 +992,10 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       )
+      const enableGeneralOpenAIImages = parseBooleanWithDefault(
+        keyData.enableGeneralOpenAIImages,
+        false
+      )
       const enableGeneralPromptCacheAssist = parseBooleanWithDefault(
         keyData.enableGeneralPromptCacheAssist,
         false
@@ -1051,6 +1065,7 @@ class ApiKeyService {
           usage,
           disableGptFastMode,
           enableGeneralOpenAIEndpoint,
+          enableGeneralOpenAIImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
@@ -1336,6 +1351,10 @@ class ApiKeyService {
         key.disableGptFastMode = parseBooleanWithDefault(key.disableGptFastMode, false)
         key.enableGeneralOpenAIEndpoint = parseBooleanWithDefault(
           key.enableGeneralOpenAIEndpoint,
+          false
+        )
+        key.enableGeneralOpenAIImages = parseBooleanWithDefault(
+          key.enableGeneralOpenAIImages,
           false
         )
         key.enableGeneralPromptCacheAssist = parseBooleanWithDefault(
@@ -1655,6 +1674,10 @@ class ApiKeyService {
           key.enableGeneralOpenAIEndpoint,
           false
         )
+        key.enableGeneralOpenAIImages = parseBooleanWithDefault(
+          key.enableGeneralOpenAIImages,
+          false
+        )
         key.enableGeneralPromptCacheAssist = parseBooleanWithDefault(
           key.enableGeneralPromptCacheAssist,
           false
@@ -1904,6 +1927,7 @@ class ApiKeyService {
         'weeklyResetHour', // 周费用重置时 (0-23)
         'disableGptFastMode',
         'enableGeneralOpenAIEndpoint',
+        'enableGeneralOpenAIImages',
         'enableGeneralPromptCacheAssist',
         'enableClaudeThinkingSignatureLossyFallback',
         'enableOpenAIResponsesCodexAdaptation',
@@ -1952,6 +1976,7 @@ class ApiKeyService {
             field === 'isActivated' ||
             field === 'disableGptFastMode' ||
             field === 'enableGeneralOpenAIEndpoint' ||
+            field === 'enableGeneralOpenAIImages' ||
             field === 'enableGeneralPromptCacheAssist' ||
             field === 'enableClaudeThinkingSignatureLossyFallback' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
@@ -2287,24 +2312,40 @@ class ApiKeyService {
     accountId = null,
     accountType = null,
     serviceTier = null,
-    requestMeta = null
+    requestMeta = null,
+    imageUsage = null
   ) {
     try {
       const finalizedRequestMeta = finalizeRequestDetailMeta(requestMeta)
       const totalTokens = inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens
+      const normalizedImageUsage =
+        imageUsage && typeof imageUsage === 'object'
+          ? (() => {
+              const imageInputTokens = Math.min(
+                Math.max(0, Math.trunc(Number(inputTokens) || 0)),
+                Math.max(0, Math.trunc(Number(imageUsage.imageInputTokens) || 0))
+              )
+              return {
+                textInputTokens: Math.max(0, inputTokens - imageInputTokens),
+                imageInputTokens,
+                imageOutputTokens: Math.max(0, Math.trunc(Number(outputTokens) || 0)),
+                estimated: imageUsage.estimated === true
+              }
+            })()
+          : null
 
       // 计算费用
       const CostCalculator = require('../utils/costCalculator')
-      const costInfo = CostCalculator.calculateCost(
-        {
-          input_tokens: inputTokens,
-          output_tokens: outputTokens,
-          cache_creation_input_tokens: cacheCreateTokens,
-          cache_read_input_tokens: cacheReadTokens
-        },
-        model,
-        serviceTier
-      )
+      const costUsage = {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_creation_input_tokens: cacheCreateTokens,
+        cache_read_input_tokens: cacheReadTokens
+      }
+      if (normalizedImageUsage) {
+        costUsage.image_usage = normalizedImageUsage
+      }
+      const costInfo = CostCalculator.calculateCost(costUsage, model, serviceTier)
 
       // 检查是否为 1M 上下文请求
       let isLongContextRequest = false
@@ -2322,7 +2363,7 @@ class ApiKeyService {
       }
 
       // 记录API Key级别的使用统计（包含费用）
-      await redis.incrementTokenUsage(
+      const tokenUsageArgs = [
         keyId,
         totalTokens,
         inputTokens,
@@ -2336,7 +2377,11 @@ class ApiKeyService {
         realCost,
         ratedCost,
         serviceTier
-      )
+      ]
+      if (normalizedImageUsage) {
+        tokenUsageArgs.push(normalizedImageUsage)
+      }
+      await redis.incrementTokenUsage(...tokenUsageArgs)
 
       // 记录费用统计到每日/每月汇总
       if (realCost > 0) {
@@ -2373,7 +2418,7 @@ class ApiKeyService {
 
         // 记录账户级别的使用统计（只统计实际处理请求的账户）
         if (accountId) {
-          await redis.incrementAccountUsage(
+          const accountUsageArgs = [
             accountId,
             totalTokens,
             inputTokens,
@@ -2385,7 +2430,11 @@ class ApiKeyService {
             model,
             isLongContextRequest,
             serviceTier
-          )
+          ]
+          if (normalizedImageUsage) {
+            accountUsageArgs.push(normalizedImageUsage)
+          }
+          await redis.incrementAccountUsage(...accountUsageArgs)
           logger.database(
             `📊 Recorded account usage: ${accountId} - ${totalTokens} tokens (API Key: ${keyId})`
           )
@@ -2420,7 +2469,15 @@ class ApiKeyService {
         costBreakdown: costInfo?.costs || undefined,
         realCostBreakdown: costInfo?.costs || undefined,
         isLongContext: isLongContextRequest,
-        parentKeyId: keyData?.parentKeyId || null
+        parentKeyId: keyData?.parentKeyId || null,
+        ...(normalizedImageUsage
+          ? {
+              textInputTokens: normalizedImageUsage.textInputTokens,
+              imageInputTokens: normalizedImageUsage.imageInputTokens,
+              imageOutputTokens: normalizedImageUsage.imageOutputTokens,
+              imageUsageBreakdownEstimated: normalizedImageUsage.estimated
+            }
+          : {})
       }
 
       await redis.addUsageRecord(keyId, usageRecord)
@@ -2802,6 +2859,10 @@ class ApiKeyService {
       outputTokens: usageRecord.outputTokens || 0,
       cacheReadTokens: usageRecord.cacheReadTokens || 0,
       cacheCreateTokens: usageRecord.cacheCreateTokens || 0,
+      textInputTokens: usageRecord.textInputTokens,
+      imageInputTokens: usageRecord.imageInputTokens,
+      imageOutputTokens: usageRecord.imageOutputTokens,
+      imageUsageBreakdownEstimated: usageRecord.imageUsageBreakdownEstimated === true,
       totalTokens: usageRecord.totalTokens || 0,
       cost: usageRecord.cost || 0,
       realCost: usageRecord.realCost || usageRecord.cost || 0,
@@ -3114,6 +3175,10 @@ class ApiKeyService {
         disableGptFastMode: parseBooleanWithDefault(keyData.disableGptFastMode, false),
         enableGeneralOpenAIEndpoint: parseBooleanWithDefault(
           keyData.enableGeneralOpenAIEndpoint,
+          false
+        ),
+        enableGeneralOpenAIImages: parseBooleanWithDefault(
+          keyData.enableGeneralOpenAIImages,
           false
         ),
         enableGeneralPromptCacheAssist: parseBooleanWithDefault(

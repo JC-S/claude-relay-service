@@ -1446,6 +1446,7 @@ const authenticateApiKey = async (req, res, next) => {
       totalCost: validation.keyData.totalCost,
       disableGptFastMode: validation.keyData.disableGptFastMode,
       enableGeneralOpenAIEndpoint: validation.keyData.enableGeneralOpenAIEndpoint,
+      enableGeneralOpenAIImages: validation.keyData.enableGeneralOpenAIImages,
       enableGeneralPromptCacheAssist: validation.keyData.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback:
         validation.keyData.enableClaudeThinkingSignatureLossyFallback,

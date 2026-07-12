@@ -153,6 +153,7 @@ describe('authenticateApiKey Claude Code version gate', () => {
   test('passes general prompt cache assist toggle to req.apiKey', async () => {
     mockValidApiKey({
       enableGeneralOpenAIEndpoint: true,
+      enableGeneralOpenAIImages: true,
       enableGeneralPromptCacheAssist: true
     })
     const req = createReq('claude-cli/2.1.150 (external, cli)')
@@ -163,6 +164,7 @@ describe('authenticateApiKey Claude Code version gate', () => {
 
     expect(next).toHaveBeenCalled()
     expect(req.apiKey.enableGeneralOpenAIEndpoint).toBe(true)
+    expect(req.apiKey.enableGeneralOpenAIImages).toBe(true)
     expect(req.apiKey.enableGeneralPromptCacheAssist).toBe(true)
   })
 

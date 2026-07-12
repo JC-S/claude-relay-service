@@ -131,7 +131,7 @@
               <div class="flex items-center gap-2 font-medium text-gray-900 dark:text-gray-100">
                 <span>{{ model.name }}</span>
                 <span
-                  v-if="model.aliasOf"
+                  v-if="model.aliasOf || model.localFallbackFields.length > 0"
                   class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
                 >
                   本地
@@ -142,12 +142,18 @@
             <td
               class="whitespace-nowrap px-3 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300"
             >
-              {{ formatPrice(model.inputCost) }}
+              <div>{{ formatPrice(model.inputCost) }}</div>
+              <div v-if="model.imageInputCost !== null" class="mt-0.5">
+                image: {{ formatPrice(model.imageInputCost) }}
+              </div>
             </td>
             <td
               class="whitespace-nowrap px-3 py-2.5 text-right font-mono text-gray-700 dark:text-gray-300"
             >
-              {{ formatPrice(model.outputCost) }}
+              <div>{{ formatPrice(model.outputCost) }}</div>
+              <div v-if="model.imageOutputCost !== null" class="mt-0.5">
+                image: {{ formatPrice(model.imageOutputCost) }}
+              </div>
             </td>
             <td
               class="hidden whitespace-nowrap px-3 py-2.5 text-right font-mono text-gray-500 dark:text-gray-400 md:table-cell"
@@ -228,10 +234,23 @@ const toRowFromPricing = (name, data, useField = (suffix) => suffix) => ({
   provider: detectProvider(name),
   inputCost: (data[useField('input_cost_per_token')] || 0) * 1e6,
   outputCost: (data[useField('output_cost_per_token')] || 0) * 1e6,
+  imageInputCost:
+    typeof data[useField('input_cost_per_image_token')] === 'number' &&
+    Number.isFinite(data[useField('input_cost_per_image_token')])
+      ? data[useField('input_cost_per_image_token')] * 1e6
+      : null,
+  imageOutputCost:
+    typeof data[useField('output_cost_per_image_token')] === 'number' &&
+    Number.isFinite(data[useField('output_cost_per_image_token')])
+      ? data[useField('output_cost_per_image_token')] * 1e6
+      : null,
   cacheCreateCost: (data[useField('cache_creation_input_token_cost')] || 0) * 1e6,
   cacheReadCost: (data[useField('cache_read_input_token_cost')] || 0) * 1e6,
   maxTokens: data.max_tokens || data.max_output_tokens || 0,
-  aliasOf: data.pricing_alias_of || ''
+  aliasOf: data.pricing_alias_of || '',
+  localFallbackFields: Array.isArray(data.local_pricing_fallback_fields)
+    ? data.local_pricing_fallback_fields
+    : []
 })
 
 const allModels = computed(() => {

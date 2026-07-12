@@ -68,6 +68,21 @@ describe('requestDetailHelper', () => {
     expect(snapshot.reasoning.encrypted_content).toBe('...[512 chars]')
   })
 
+  test('sanitizeRequestBodySnapshot omits image base64 and data URLs before truncation', () => {
+    const rawImage = 'data:image/png;base64,' + 'A'.repeat(512)
+    const snapshot = sanitizeRequestBodySnapshot({
+      data: [{ b64_json: 'B'.repeat(512) }],
+      images: [{ image_url: rawImage }]
+    })
+    const serialized = JSON.stringify(snapshot)
+
+    expect(snapshot.data[0].b64_json).toBe('[image data omitted, 512 chars]')
+    expect(snapshot.images[0].image_url).toBe(`[image data omitted, ${rawImage.length} chars]`)
+    expect(serialized).not.toContain('data:image/png;base64,')
+    expect(serialized).not.toContain('A'.repeat(80))
+    expect(serialized).not.toContain('B'.repeat(80))
+  })
+
   test('sanitizeRequestBodySnapshot keeps only tool type and name', () => {
     const snapshot = sanitizeRequestBodySnapshot({
       tools: [

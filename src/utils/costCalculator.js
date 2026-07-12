@@ -3,6 +3,15 @@ const logger = require('./logger')
 
 const warnedDetailedPricingFallbackModels = new Set()
 
+class ImagePricingUnavailableError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'ImagePricingUnavailableError'
+    this.code = 'pricing_unavailable'
+    this.statusCode = 503
+  }
+}
+
 // Claude模型价格配置 (USD per 1M tokens) - 备用定价
 const MODEL_PRICING = {
   // Claude 3.5 Sonnet
@@ -139,6 +148,125 @@ class CostCalculator {
       `💰 Missing detailed pricing for model ${warnKey}; using fallback pricing ` +
         `(hasPricing=${result?.hasPricing === true}, cacheCreation=${hasDetailedCache}, longContext=${isLongContextModel})`
     )
+  }
+
+  static getValidatedImagePricing(model = 'gpt-image-2') {
+    const pricingData = pricingService.getModelPricing(model)
+    const requiredFields = [
+      'input_cost_per_token',
+      'input_cost_per_image_token',
+      'output_cost_per_image_token',
+      'cache_read_input_token_cost'
+    ]
+    const missingFields = requiredFields.filter(
+      (field) => !this.isFiniteNumber(pricingData?.[field]) || Number(pricingData?.[field]) < 0
+    )
+    if (missingFields.length > 0) {
+      throw new ImagePricingUnavailableError(
+        `Pricing is unavailable for ${model}: missing ${missingFields.join(', ')}`
+      )
+    }
+
+    return {
+      model,
+      pricingData,
+      fallbackFields: Array.isArray(pricingData.local_pricing_fallback_fields)
+        ? [...pricingData.local_pricing_fallback_fields]
+        : []
+    }
+  }
+
+  static buildImageCostResult(usage, model = 'gpt-image-2') {
+    const { pricingData, fallbackFields } = this.getValidatedImagePricing(model)
+    const imageUsage = usage?.image_usage || {}
+    const inputTokens = Math.max(0, Math.trunc(Number(usage.input_tokens) || 0))
+    const outputTokens = Math.max(0, Math.trunc(Number(usage.output_tokens) || 0))
+    const cacheCreateTokens = Math.max(
+      0,
+      Math.trunc(Number(usage.cache_creation_input_tokens) || 0)
+    )
+    const cacheReadTokens = Math.max(0, Math.trunc(Number(usage.cache_read_input_tokens) || 0))
+    let imageInputTokens = Math.min(
+      inputTokens,
+      Math.max(0, Math.trunc(Number(imageUsage.imageInputTokens) || 0))
+    )
+    let textInputTokens = Math.max(0, Math.trunc(Number(imageUsage.textInputTokens) || 0))
+    if (textInputTokens + imageInputTokens !== inputTokens) {
+      imageInputTokens = Math.min(imageInputTokens, inputTokens)
+      textInputTokens = Math.max(0, inputTokens - imageInputTokens)
+    }
+    const imageOutputTokens = outputTokens
+
+    const textInputPrice = pricingData.input_cost_per_token
+    const imageInputPrice = pricingData.input_cost_per_image_token
+    const imageOutputPrice = pricingData.output_cost_per_image_token
+    const cacheReadPrice = pricingData.cache_read_input_token_cost
+    const cacheCreatePrice = this.isFiniteNumber(pricingData.cache_creation_input_token_cost)
+      ? pricingData.cache_creation_input_token_cost
+      : textInputPrice
+
+    const textInputCost = textInputTokens * textInputPrice
+    const imageInputCost = imageInputTokens * imageInputPrice
+    const inputCost = textInputCost + imageInputCost
+    const imageOutputCost = imageOutputTokens * imageOutputPrice
+    const cacheCreateCost = cacheCreateTokens * cacheCreatePrice
+    const cacheReadCost = cacheReadTokens * cacheReadPrice
+    const totalCost = inputCost + imageOutputCost + cacheCreateCost + cacheReadCost
+
+    const pricing = {
+      input: textInputPrice * 1000000,
+      imageInput: imageInputPrice * 1000000,
+      output: (pricingData.output_cost_per_token || 0) * 1000000,
+      imageOutput: imageOutputPrice * 1000000,
+      cacheWrite: cacheCreatePrice * 1000000,
+      cacheRead: cacheReadPrice * 1000000
+    }
+    const costs = {
+      input: inputCost,
+      output: imageOutputCost,
+      cacheCreate: cacheCreateCost,
+      cacheWrite: cacheCreateCost,
+      cacheRead: cacheReadCost,
+      ephemeral5m: 0,
+      ephemeral1h: 0,
+      textInput: textInputCost,
+      imageInput: imageInputCost,
+      imageOutput: imageOutputCost,
+      total: totalCost
+    }
+
+    return {
+      model,
+      pricing,
+      usingDynamicPricing: true,
+      usage: {
+        inputTokens,
+        outputTokens,
+        cacheCreateTokens,
+        cacheReadTokens,
+        textInputTokens,
+        imageInputTokens,
+        imageOutputTokens,
+        imageUsageBreakdownEstimated: imageUsage.estimated === true,
+        totalTokens: inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens
+      },
+      costs,
+      formatted: Object.fromEntries(
+        Object.entries(costs).map(([key, value]) => [key, this.formatCost(value)])
+      ),
+      debug: {
+        isOpenAIModel: true,
+        hasCacheCreatePrice: this.isFiniteNumber(pricingData.cache_creation_input_token_cost),
+        cacheCreateTokens,
+        cacheWritePriceUsed: pricing.cacheWrite,
+        isLongContextModel: false,
+        isLongContextRequest: false,
+        usedFallbackPricing: fallbackFields.length > 0,
+        pricingSource: fallbackFields.length > 0 ? 'dynamic-with-local-fallback' : 'dynamic',
+        localFallbackFields: fallbackFields,
+        imageUsageBreakdownEstimated: imageUsage.estimated === true
+      }
+    }
   }
 
   static buildDetailedPricingResult(usage, model, result) {
@@ -316,6 +444,10 @@ class CostCalculator {
    * @returns {Object} 费用详情
    */
   static calculateCost(usage, model = 'unknown', serviceTier = null) {
+    if (usage?.image_usage && typeof usage.image_usage === 'object') {
+      return this.buildImageCostResult(usage, model)
+    }
+
     // 如果 usage 包含详细的 cache_creation 对象或是 1M 模型，优先使用 pricingService
     if (this.isDetailedPricingRequest(usage, model)) {
       const result = pricingService.calculateCost(usage, model, serviceTier)
@@ -356,6 +488,19 @@ class CostCalculator {
       usage.cache_creation = {
         ephemeral_5m_input_tokens: eph5m,
         ephemeral_1h_input_tokens: eph1h
+      }
+    }
+
+    if (
+      aggregatedUsage.textInputTokens !== undefined ||
+      aggregatedUsage.imageInputTokens !== undefined ||
+      aggregatedUsage.imageOutputTokens !== undefined
+    ) {
+      usage.image_usage = {
+        textInputTokens: aggregatedUsage.textInputTokens || 0,
+        imageInputTokens: aggregatedUsage.imageInputTokens || 0,
+        imageOutputTokens: aggregatedUsage.imageOutputTokens || 0,
+        estimated: aggregatedUsage.imageUsageBreakdownEstimated === true
       }
     }
 
@@ -442,5 +587,7 @@ class CostCalculator {
     }
   }
 }
+
+CostCalculator.ImagePricingUnavailableError = ImagePricingUnavailableError
 
 module.exports = CostCalculator
