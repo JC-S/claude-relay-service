@@ -10,6 +10,12 @@ const serviceRatesService = require('../services/serviceRatesService')
 const modelsConfig = require('../../config/models')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { splitModelStatsByFastMode } = require('../utils/modelVariantHelper')
+const {
+  buildUsagePayloadFromStats,
+  createModelUsageStats,
+  mergeModelUsageStats,
+  sumModelUsageTokens
+} = require('../utils/modelUsageStatsHelper')
 const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
 const {
   sanitizeMaxTokens,
@@ -19,52 +25,6 @@ const {
 } = require('../services/apiKeyConnectivityTestService')
 
 const router = express.Router()
-
-function createModelUsageStats() {
-  return {
-    requests: 0,
-    priorityRequests: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheCreateTokens: 0,
-    cacheReadTokens: 0,
-    ephemeral5mTokens: 0,
-    ephemeral1hTokens: 0,
-    allTokens: 0,
-    priorityInputTokens: 0,
-    priorityOutputTokens: 0,
-    priorityCacheCreateTokens: 0,
-    priorityCacheReadTokens: 0,
-    priorityEphemeral5mTokens: 0,
-    priorityEphemeral1hTokens: 0,
-    realCostMicro: 0,
-    ratedCostMicro: 0,
-    hasStoredCost: false
-  }
-}
-
-function mergeModelUsageStats(stats, data) {
-  stats.requests += parseInt(data.requests) || 0
-  stats.priorityRequests += parseInt(data.priorityRequests) || 0
-  stats.inputTokens += parseInt(data.inputTokens) || 0
-  stats.outputTokens += parseInt(data.outputTokens) || 0
-  stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
-  stats.cacheReadTokens += parseInt(data.cacheReadTokens) || 0
-  stats.ephemeral5mTokens += parseInt(data.ephemeral5mTokens) || 0
-  stats.ephemeral1hTokens += parseInt(data.ephemeral1hTokens) || 0
-  stats.allTokens += parseInt(data.allTokens) || 0
-  stats.priorityInputTokens += parseInt(data.priorityInputTokens) || 0
-  stats.priorityOutputTokens += parseInt(data.priorityOutputTokens) || 0
-  stats.priorityCacheCreateTokens += parseInt(data.priorityCacheCreateTokens) || 0
-  stats.priorityCacheReadTokens += parseInt(data.priorityCacheReadTokens) || 0
-  stats.priorityEphemeral5mTokens += parseInt(data.priorityEphemeral5mTokens) || 0
-  stats.priorityEphemeral1hTokens += parseInt(data.priorityEphemeral1hTokens) || 0
-  if ('realCostMicro' in data || 'ratedCostMicro' in data) {
-    stats.realCostMicro += parseInt(data.realCostMicro) || 0
-    stats.ratedCostMicro += parseInt(data.ratedCostMicro) || 0
-    stats.hasStoredCost = true
-  }
-}
 
 function calculateModelCostFromStats(model, stats) {
   return reconcileStoredModelCost(
@@ -81,19 +41,8 @@ function buildDisplayModelStats(model, stats) {
   const splitEntries = splitModelStatsByFastMode(model, stats, createModelUsageStats)
 
   for (const entry of splitEntries) {
-    const usage = {
-      input_tokens: parseInt(entry.stats.inputTokens) || 0,
-      output_tokens: parseInt(entry.stats.outputTokens) || 0,
-      cache_creation_input_tokens: parseInt(entry.stats.cacheCreateTokens) || 0,
-      cache_read_input_tokens: parseInt(entry.stats.cacheReadTokens) || 0
-    }
-
-    if ((entry.stats.ephemeral5mTokens || 0) > 0 || (entry.stats.ephemeral1hTokens || 0) > 0) {
-      usage.cache_creation = {
-        ephemeral_5m_input_tokens: parseInt(entry.stats.ephemeral5mTokens) || 0,
-        ephemeral_1h_input_tokens: parseInt(entry.stats.ephemeral1hTokens) || 0
-      }
-    }
+    const usage = buildUsagePayloadFromStats(entry.stats)
+    const allTokens = sumModelUsageTokens(entry.stats)
 
     const costData =
       splitEntries.length > 1 || entry.serviceTier === 'priority'
@@ -109,12 +58,14 @@ function buildDisplayModelStats(model, stats) {
       outputTokens: parseInt(entry.stats.outputTokens) || 0,
       cacheCreateTokens: parseInt(entry.stats.cacheCreateTokens) || 0,
       cacheReadTokens: parseInt(entry.stats.cacheReadTokens) || 0,
-      allTokens:
-        parseInt(entry.stats.allTokens) ||
-        (parseInt(entry.stats.inputTokens) || 0) +
-          (parseInt(entry.stats.outputTokens) || 0) +
-          (parseInt(entry.stats.cacheCreateTokens) || 0) +
-          (parseInt(entry.stats.cacheReadTokens) || 0),
+      allTokens,
+      ...(usage.image_usage
+        ? {
+            textInputTokens: usage.image_usage.textInputTokens,
+            imageInputTokens: usage.image_usage.imageInputTokens,
+            imageOutputTokens: usage.image_usage.imageOutputTokens
+          }
+        : {}),
       costs: costData.costs,
       formatted: costData.formatted,
       pricing: costData.pricing,

@@ -1,4 +1,9 @@
 const FAST_MODEL_SUFFIX = ' (fast)'
+const IMAGE_PRIORITY_STAT_FIELDS = [
+  ['textInputTokens', 'priorityTextInputTokens'],
+  ['imageInputTokens', 'priorityImageInputTokens'],
+  ['imageOutputTokens', 'priorityImageOutputTokens']
+]
 
 function toNumber(value) {
   const num = Number(value)
@@ -59,7 +64,10 @@ function hasPriorityUsageStats(stats = {}) {
     toNumber(stats.priorityCacheCreateTokens) > 0 ||
     toNumber(stats.priorityCacheReadTokens) > 0 ||
     toNumber(stats.priorityEphemeral5mTokens) > 0 ||
-    toNumber(stats.priorityEphemeral1hTokens) > 0
+    toNumber(stats.priorityEphemeral1hTokens) > 0 ||
+    toNumber(stats.priorityTextInputTokens) > 0 ||
+    toNumber(stats.priorityImageInputTokens) > 0 ||
+    toNumber(stats.priorityImageOutputTokens) > 0
   )
 }
 
@@ -97,6 +105,12 @@ function splitModelStatsByFastMode(model, stats = {}, createEmptyStats) {
     ['ephemeral5mTokens', 'priorityEphemeral5mTokens'],
     ['ephemeral1hTokens', 'priorityEphemeral1hTokens']
   ]
+
+  for (const fields of IMAGE_PRIORITY_STAT_FIELDS) {
+    if (fields.some((field) => Object.prototype.hasOwnProperty.call(stats, field))) {
+      statFields.push(fields)
+    }
+  }
 
   for (const [field, priorityField] of statFields) {
     const total = toNumber(stats[field])

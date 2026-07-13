@@ -19,6 +19,12 @@ const {
   applyDisplayModelToRecord,
   splitModelStatsByFastMode
 } = require('../../utils/modelVariantHelper')
+const {
+  buildUsagePayloadFromStats,
+  createModelUsageStats,
+  mergeModelUsageStats,
+  sumModelUsageTokens
+} = require('../../utils/modelUsageStatsHelper')
 const { normalizeIpWhitelist } = require('../../utils/ipWhitelistHelper')
 
 const router = express.Router()
@@ -109,71 +115,6 @@ async function getUsageDataByIndex(indexKey, keyPattern, scanPattern) {
   return result
 }
 
-function createModelUsageStats() {
-  return {
-    requests: 0,
-    priorityRequests: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheCreateTokens: 0,
-    cacheReadTokens: 0,
-    ephemeral5mTokens: 0,
-    ephemeral1hTokens: 0,
-    priorityInputTokens: 0,
-    priorityOutputTokens: 0,
-    priorityCacheCreateTokens: 0,
-    priorityCacheReadTokens: 0,
-    priorityEphemeral5mTokens: 0,
-    priorityEphemeral1hTokens: 0,
-    realCostMicro: 0,
-    ratedCostMicro: 0,
-    hasStoredCost: false
-  }
-}
-
-function mergeModelUsageStats(stats, data) {
-  stats.requests += parseInt(data.requests) || 0
-  stats.priorityRequests += parseInt(data.priorityRequests) || 0
-  stats.inputTokens += parseInt(data.inputTokens) || 0
-  stats.outputTokens += parseInt(data.outputTokens) || 0
-  stats.cacheCreateTokens += parseInt(data.cacheCreateTokens) || 0
-  stats.cacheReadTokens += parseInt(data.cacheReadTokens) || 0
-  stats.ephemeral5mTokens += parseInt(data.ephemeral5mTokens) || 0
-  stats.ephemeral1hTokens += parseInt(data.ephemeral1hTokens) || 0
-  stats.priorityInputTokens += parseInt(data.priorityInputTokens) || 0
-  stats.priorityOutputTokens += parseInt(data.priorityOutputTokens) || 0
-  stats.priorityCacheCreateTokens += parseInt(data.priorityCacheCreateTokens) || 0
-  stats.priorityCacheReadTokens += parseInt(data.priorityCacheReadTokens) || 0
-  stats.priorityEphemeral5mTokens += parseInt(data.priorityEphemeral5mTokens) || 0
-  stats.priorityEphemeral1hTokens += parseInt(data.priorityEphemeral1hTokens) || 0
-
-  if ('realCostMicro' in data || 'ratedCostMicro' in data) {
-    stats.realCostMicro += parseInt(data.realCostMicro) || 0
-    stats.ratedCostMicro += parseInt(data.ratedCostMicro) || 0
-    stats.hasStoredCost = true
-  }
-}
-
-function buildUsagePayloadFromStats(stats) {
-  const usage = {
-    input_tokens: parseInt(stats.inputTokens) || 0,
-    output_tokens: parseInt(stats.outputTokens) || 0,
-    cache_creation_input_tokens: parseInt(stats.cacheCreateTokens) || 0,
-    cache_read_input_tokens: parseInt(stats.cacheReadTokens) || 0
-  }
-
-  const eph5m = parseInt(stats.ephemeral5mTokens) || 0
-  const eph1h = parseInt(stats.ephemeral1hTokens) || 0
-  if (eph5m > 0 || eph1h > 0) {
-    usage.cache_creation = {
-      ephemeral_5m_input_tokens: eph5m,
-      ephemeral_1h_input_tokens: eph1h
-    }
-  }
-
-  return usage
-}
-
 function calculateModelCostFromStats(model, stats) {
   return reconcileStoredModelCost(
     redis.calculateModelCostFromStats(CostCalculator, stats, model),
@@ -190,6 +131,7 @@ function buildDisplayModelStats(model, stats, period) {
 
   for (const entry of splitEntries) {
     const usage = buildUsagePayloadFromStats(entry.stats)
+    const allTokens = sumModelUsageTokens(entry.stats)
     const costData =
       splitEntries.length > 1 || entry.serviceTier === 'priority'
         ? CostCalculator.calculateCost(usage, entry.rawModel, entry.serviceTier)
@@ -205,12 +147,14 @@ function buildDisplayModelStats(model, stats, period) {
       outputTokens: usage.output_tokens,
       cacheCreateTokens: usage.cache_creation_input_tokens,
       cacheReadTokens: usage.cache_read_input_tokens,
-      allTokens:
-        parseInt(entry.stats.allTokens) ||
-        usage.input_tokens +
-          usage.output_tokens +
-          usage.cache_creation_input_tokens +
-          usage.cache_read_input_tokens,
+      allTokens,
+      ...(usage.image_usage
+        ? {
+            textInputTokens: usage.image_usage.textInputTokens,
+            imageInputTokens: usage.image_usage.imageInputTokens,
+            imageOutputTokens: usage.image_usage.imageOutputTokens
+          }
+        : {}),
       costs: costData.costs,
       formatted: costData.formatted,
       pricing: costData.pricing,
