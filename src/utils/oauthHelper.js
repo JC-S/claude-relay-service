@@ -53,6 +53,43 @@ const buildOAuthErrorMessage = (status, errorData) => {
   return errorMessage
 }
 
+/**
+ * Convert Anthropic's relative Refresh Token lifetime to an absolute ISO timestamp.
+ * @param {number|string} refreshTokenExpiresIn - Remaining lifetime in seconds
+ * @param {number} receivedAtMs - Response receipt time in milliseconds
+ * @returns {string|null} ISO timestamp, or null when the upstream value is invalid
+ */
+function resolveRefreshTokenExpiresAt(refreshTokenExpiresIn, receivedAtMs = Date.now()) {
+  if (
+    (typeof refreshTokenExpiresIn !== 'number' && typeof refreshTokenExpiresIn !== 'string') ||
+    (typeof refreshTokenExpiresIn === 'string' && refreshTokenExpiresIn.trim() === '')
+  ) {
+    return null
+  }
+
+  const expiresInSeconds = Number(refreshTokenExpiresIn)
+  const receivedAt = Number(receivedAtMs)
+  if (!Number.isFinite(expiresInSeconds) || expiresInSeconds < 0 || !Number.isFinite(receivedAt)) {
+    return null
+  }
+
+  const expiresAtMs = receivedAt + expiresInSeconds * 1000
+  if (!Number.isFinite(expiresAtMs)) {
+    return null
+  }
+
+  const expiresAt = new Date(expiresAtMs)
+  if (Number.isNaN(expiresAt.getTime())) {
+    return null
+  }
+
+  try {
+    return expiresAt.toISOString()
+  } catch (_error) {
+    return null
+  }
+}
+
 // Cookie自动授权配置常量
 const COOKIE_OAUTH_CONFIG = {
   CLAUDE_AI_URL: 'https://claude.ai',
@@ -277,6 +314,11 @@ async function exchangeCodeForTokens(authorizationCode, codeVerifier, state, pro
       organization: organizationInfo,
       account: accountInfo,
       extInfo
+    }
+
+    const refreshTokenExpiresAt = resolveRefreshTokenExpiresAt(data.refresh_token_expires_in)
+    if (refreshTokenExpiresAt) {
+      result.refreshTokenExpiresAt = refreshTokenExpiresAt
     }
 
     // 如果响应中包含套餐信息，添加到返回结果中
@@ -558,18 +600,22 @@ async function exchangeSetupTokenCode(authorizationCode, codeVerifier, state, pr
  * @returns {object} claudeAiOauth格式的数据
  */
 function formatClaudeCredentials(tokenData) {
-  return {
-    claudeAiOauth: {
-      accessToken: tokenData.accessToken,
-      refreshToken: tokenData.refreshToken,
-      expiresAt: tokenData.expiresAt,
-      scopes: tokenData.scopes,
-      isMax: tokenData.isMax,
-      organization: tokenData.organization || null,
-      account: tokenData.account || null,
-      extInfo: tokenData.extInfo || null
-    }
+  const claudeAiOauth = {
+    accessToken: tokenData.accessToken,
+    refreshToken: tokenData.refreshToken,
+    expiresAt: tokenData.expiresAt,
+    scopes: tokenData.scopes,
+    isMax: tokenData.isMax,
+    organization: tokenData.organization || null,
+    account: tokenData.account || null,
+    extInfo: tokenData.extInfo || null
   }
+
+  if (tokenData.refreshTokenExpiresAt) {
+    claudeAiOauth.refreshTokenExpiresAt = tokenData.refreshTokenExpiresAt
+  }
+
+  return { claudeAiOauth }
 }
 
 /**
@@ -894,6 +940,7 @@ module.exports = {
   generateSetupTokenParams,
   exchangeCodeForTokens,
   exchangeSetupTokenCode,
+  resolveRefreshTokenExpiresAt,
   parseCallbackUrl,
   formatClaudeCredentials,
   extractExtInfo,

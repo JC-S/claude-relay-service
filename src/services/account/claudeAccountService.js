@@ -18,6 +18,7 @@ const tokenRefreshService = require('../tokenRefreshService')
 const LRUCache = require('../../utils/lruCache')
 const { formatDateWithTimezone, getISOStringWithTimezone } = require('../../utils/dateHelper')
 const { isOpus45OrNewer, RATE_LIMITED_MODEL_FAMILIES } = require('../../utils/modelHelper')
+const { resolveRefreshTokenExpiresAt } = require('../../utils/oauthHelper')
 const {
   parseBooleanLike,
   normalizeOptionalNonNegativeInteger,
@@ -168,6 +169,10 @@ class ClaudeAccountService {
             : '',
         // 账户订阅到期时间
         subscriptionExpiresAt: expiresAt || '',
+        // Claude Refresh Token 的绝对到期时间
+        refreshTokenExpiresAt: this._normalizeRefreshTokenExpiresAt(
+          claudeAiOauth.refreshTokenExpiresAt
+        ),
         // 扩展信息
         extInfo: normalizedExtInfo ? JSON.stringify(normalizedExtInfo) : '',
         // 账户级用户消息串行队列限制
@@ -208,6 +213,7 @@ class ClaudeAccountService {
         subscriptionInfo: subscriptionInfo ? JSON.stringify(subscriptionInfo) : '',
         // 账户订阅到期时间
         subscriptionExpiresAt: expiresAt || '',
+        refreshTokenExpiresAt: '',
         // 扩展信息
         extInfo: normalizedExtInfo ? JSON.stringify(normalizedExtInfo) : '',
         // 账户级用户消息串行队列限制
@@ -260,6 +266,7 @@ class ClaudeAccountService {
         accountData.subscriptionExpiresAt && accountData.subscriptionExpiresAt !== ''
           ? accountData.subscriptionExpiresAt
           : null,
+      refreshTokenExpiresAt: accountData.refreshTokenExpiresAt || null,
       scopes: claudeAiOauth ? claudeAiOauth.scopes : [],
       autoStopOnWarning,
       useUnifiedUserAgent,
@@ -363,7 +370,12 @@ class ClaudeAccountService {
           dataKeys: response.data ? Object.keys(response.data) : []
         })
 
-        const { access_token, refresh_token, expires_in } = response.data
+        const { access_token, refresh_token, expires_in, refresh_token_expires_in } = response.data
+        const returnedRefreshToken =
+          typeof refresh_token === 'string' && refresh_token ? refresh_token : null
+        const refreshTokenRotated =
+          returnedRefreshToken !== null && returnedRefreshToken !== refreshToken
+        const refreshTokenExpiresAt = resolveRefreshTokenExpiresAt(refresh_token_expires_in)
 
         // 检查是否有套餐信息
         if (
@@ -388,7 +400,14 @@ class ClaudeAccountService {
 
         // 更新账户数据
         accountData.accessToken = this._encryptSensitiveData(access_token)
-        accountData.refreshToken = this._encryptSensitiveData(refresh_token)
+        if (returnedRefreshToken) {
+          accountData.refreshToken = this._encryptSensitiveData(returnedRefreshToken)
+        }
+        if (refreshTokenExpiresAt) {
+          accountData.refreshTokenExpiresAt = refreshTokenExpiresAt
+        } else if (refreshTokenRotated) {
+          accountData.refreshTokenExpiresAt = ''
+        }
         accountData.expiresAt = (Date.now() + expires_in * 1000).toString()
         accountData.lastRefreshAt = new Date().toISOString()
         accountData.status = 'active'
@@ -623,6 +642,10 @@ class ClaudeAccountService {
               account.subscriptionExpiresAt && account.subscriptionExpiresAt !== ''
                 ? account.subscriptionExpiresAt
                 : null,
+            refreshTokenExpiresAt:
+              account.refreshTokenExpiresAt && account.refreshTokenExpiresAt !== ''
+                ? account.refreshTokenExpiresAt
+                : null,
             // 添加 scopes 字段用于判断认证方式
             // 处理空字符串的情况，避免返回 ['']
             scopes: account.scopes && account.scopes.trim() ? account.scopes.split(' ') : [],
@@ -825,6 +848,9 @@ class ClaudeAccountService {
               updatedData.refreshToken = this._encryptSensitiveData(value.refreshToken)
               updatedData.expiresAt = value.expiresAt.toString()
               updatedData.scopes = value.scopes.join(' ')
+              updatedData.refreshTokenExpiresAt = this._normalizeRefreshTokenExpiresAt(
+                value.refreshTokenExpiresAt
+              )
               updatedData.status = 'active'
               updatedData.errorMessage = ''
               updatedData.lastRefreshAt = new Date().toISOString()
@@ -1264,6 +1290,29 @@ class ClaudeAccountService {
       logger.debug('🌐 No proxy configured for Claude request')
     }
     return proxyAgent
+  }
+
+  _normalizeRefreshTokenExpiresAt(value) {
+    if (
+      value === null ||
+      value === undefined ||
+      value === '' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'string' && value.trim() === '')
+    ) {
+      return ''
+    }
+
+    const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value)
+    if (Number.isNaN(parsed.getTime())) {
+      return ''
+    }
+
+    try {
+      return parsed.toISOString()
+    } catch (_error) {
+      return ''
+    }
   }
 
   // 🔐 加密敏感数据

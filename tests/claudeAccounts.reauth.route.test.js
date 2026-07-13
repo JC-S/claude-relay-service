@@ -72,6 +72,7 @@ describe('Claude OAuth account reauth admin route', () => {
           accessToken: 'new_access',
           refreshToken: 'new_refresh',
           expiresAt: 1770000000000,
+          refreshTokenExpiresAt: '2026-08-10T00:00:00.000Z',
           scopes: ['user:profile', 'user:inference'],
           extInfo: { org_uuid: 'org_1' }
         }
@@ -87,11 +88,35 @@ describe('Claude OAuth account reauth admin route', () => {
         accessToken: 'new_access',
         refreshToken: 'new_refresh',
         expiresAt: 1770000000000,
+        refreshTokenExpiresAt: '2026-08-10T00:00:00.000Z',
         scopes: ['user:profile', 'user:inference'],
         extInfo: { org_uuid: 'org_1' }
       }
     })
     expect(claudeAccountService.resetAccountStatus).toHaveBeenCalledWith('claude_1')
+  })
+
+  test('forwards an OAuth authorization result without an expiry so the service can clear it', async () => {
+    const response = await request(app)
+      .post('/admin/claude-accounts/claude_1/reauth')
+      .send({
+        claudeAiOauth: {
+          accessToken: 'new_access',
+          refreshToken: 'new_refresh',
+          expiresAt: 1770000000000,
+          scopes: ['user:profile', 'user:inference']
+        }
+      })
+
+    expect(response.status).toBe(200)
+    expect(claudeAccountService.updateAccount).toHaveBeenCalledWith('claude_1', {
+      claudeAiOauth: {
+        accessToken: 'new_access',
+        refreshToken: 'new_refresh',
+        expiresAt: 1770000000000,
+        scopes: ['user:profile', 'user:inference']
+      }
+    })
   })
 
   test('rejects non-OAuth target account', async () => {
