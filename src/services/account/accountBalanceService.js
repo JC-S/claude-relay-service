@@ -4,6 +4,9 @@ const logger = require('../../utils/logger')
 const CostCalculator = require('../../utils/costCalculator')
 const { isBalanceScriptEnabled } = require('../../utils/featureFlags')
 
+const CODEX_WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
+const CODEX_WINDOW_DURATION_TOLERANCE_MINUTES = 1
+
 class AccountBalanceService {
   constructor(options = {}) {
     this.redis = options.redis || redis
@@ -808,7 +811,12 @@ class AccountBalanceService {
     }
 
     const resetMs = Date.parse(resetAt)
-    if (!Number.isFinite(resetMs) || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
+    if (
+      !Number.isFinite(resetMs) ||
+      !Number.isFinite(windowMinutes) ||
+      Math.abs(windowMinutes - CODEX_WEEKLY_WINDOW_MINUTES) >
+        CODEX_WINDOW_DURATION_TOLERANCE_MINUTES
+    ) {
       return null
     }
 

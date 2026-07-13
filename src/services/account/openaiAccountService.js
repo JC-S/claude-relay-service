@@ -36,6 +36,13 @@ const CODEX_TEST_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
 // OAuth 测试默认模型，跟随 config/models.js 中 OPENAI_CODEX_TEST_MODELS 列表第一项
 const DEFAULT_OAUTH_TEST_MODEL = OPENAI_CODEX_TEST_MODELS[0]?.value || 'gpt-5.4'
 
+// Upstream may move a known window into a different slot when another limit is disabled.
+// Match only known durations so an unrelated long window (for example 30 days) is not treated
+// as the weekly quota.
+const CODEX_FIVE_HOUR_WINDOW_MINUTES = 5 * 60
+const CODEX_WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
+const CODEX_WINDOW_DURATION_TOLERANCE_MINUTES = 1
+
 // 🧹 定期清理缓存（每10分钟）
 setInterval(
   () => {
@@ -52,6 +59,99 @@ function toNumberOrNull(value) {
 
   const num = Number(value)
   return Number.isFinite(num) ? num : null
+}
+
+function normalizeCodexUsageSnapshot(usageSnapshot) {
+  if (!usageSnapshot || typeof usageSnapshot !== 'object') {
+    return null
+  }
+
+  const sourceWindows = ['primary', 'secondary']
+    .map((source) => {
+      const usedPercent = toNumberOrNull(usageSnapshot[`${source}UsedPercent`])
+      const resetAfterSeconds = toNumberOrNull(usageSnapshot[`${source}ResetAfterSeconds`])
+      const rawWindowMinutes = toNumberOrNull(usageSnapshot[`${source}WindowMinutes`])
+
+      if (
+        rawWindowMinutes !== null &&
+        rawWindowMinutes <= 0 &&
+        (usedPercent === null || usedPercent === 0) &&
+        (resetAfterSeconds === null || resetAfterSeconds === 0)
+      ) {
+        return null
+      }
+
+      const windowMinutes =
+        rawWindowMinutes !== null && rawWindowMinutes > 0 ? rawWindowMinutes : null
+
+      if (usedPercent === null && resetAfterSeconds === null && windowMinutes === null) {
+        return null
+      }
+
+      return {
+        source,
+        usedPercent,
+        resetAfterSeconds,
+        windowMinutes
+      }
+    })
+    .filter(Boolean)
+
+  const canonicalWindows = {}
+  const windowsWithoutKnownDuration = []
+
+  for (const windowData of sourceWindows) {
+    const isFiveHourWindow =
+      windowData.windowMinutes !== null &&
+      Math.abs(windowData.windowMinutes - CODEX_FIVE_HOUR_WINDOW_MINUTES) <=
+        CODEX_WINDOW_DURATION_TOLERANCE_MINUTES
+    const isWeeklyWindow =
+      windowData.windowMinutes !== null &&
+      Math.abs(windowData.windowMinutes - CODEX_WEEKLY_WINDOW_MINUTES) <=
+        CODEX_WINDOW_DURATION_TOLERANCE_MINUTES
+
+    if (!isFiveHourWindow && !isWeeklyWindow) {
+      windowsWithoutKnownDuration.push(windowData)
+      continue
+    }
+
+    const target = isWeeklyWindow ? 'secondary' : 'primary'
+    if (!canonicalWindows[target]) {
+      canonicalWindows[target] = windowData
+    }
+  }
+
+  // Older or unrelated windows keep their positional semantics.
+  for (const windowData of windowsWithoutKnownDuration) {
+    const fallbackTarget = canonicalWindows[windowData.source]
+      ? windowData.source === 'primary'
+        ? 'secondary'
+        : 'primary'
+      : windowData.source
+    if (!canonicalWindows[fallbackTarget]) {
+      canonicalWindows[fallbackTarget] = windowData
+    }
+  }
+
+  const normalized = {}
+  for (const [target, windowData] of Object.entries(canonicalWindows)) {
+    if (windowData.usedPercent !== null) {
+      normalized[`${target}UsedPercent`] = windowData.usedPercent
+    }
+    if (windowData.resetAfterSeconds !== null) {
+      normalized[`${target}ResetAfterSeconds`] = windowData.resetAfterSeconds
+    }
+    if (windowData.windowMinutes !== null) {
+      normalized[`${target}WindowMinutes`] = windowData.windowMinutes
+    }
+  }
+
+  const primaryOverSecondaryPercent = toNumberOrNull(usageSnapshot.primaryOverSecondaryPercent)
+  if (primaryOverSecondaryPercent !== null) {
+    normalized.primaryOverSecondaryPercent = primaryOverSecondaryPercent
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : null
 }
 
 function normalizeBooleanString(value, defaultValue = false) {
@@ -123,13 +223,27 @@ function computeResetMeta(updatedAt, resetAfterSeconds) {
 function buildCodexUsageSnapshot(accountData) {
   const updatedAt = accountData.codexUsageUpdatedAt
 
-  const primaryUsedPercent = toNumberOrNull(accountData.codexPrimaryUsedPercent)
-  const primaryResetAfterSeconds = toNumberOrNull(accountData.codexPrimaryResetAfterSeconds)
-  const primaryWindowMinutes = toNumberOrNull(accountData.codexPrimaryWindowMinutes)
-  const secondaryUsedPercent = toNumberOrNull(accountData.codexSecondaryUsedPercent)
-  const secondaryResetAfterSeconds = toNumberOrNull(accountData.codexSecondaryResetAfterSeconds)
-  const secondaryWindowMinutes = toNumberOrNull(accountData.codexSecondaryWindowMinutes)
-  const overSecondaryPercent = toNumberOrNull(accountData.codexPrimaryOverSecondaryLimitPercent)
+  const normalizedSnapshot = normalizeCodexUsageSnapshot({
+    primaryUsedPercent: accountData.codexPrimaryUsedPercent,
+    primaryResetAfterSeconds: accountData.codexPrimaryResetAfterSeconds,
+    primaryWindowMinutes: accountData.codexPrimaryWindowMinutes,
+    secondaryUsedPercent: accountData.codexSecondaryUsedPercent,
+    secondaryResetAfterSeconds: accountData.codexSecondaryResetAfterSeconds,
+    secondaryWindowMinutes: accountData.codexSecondaryWindowMinutes,
+    primaryOverSecondaryPercent: accountData.codexPrimaryOverSecondaryLimitPercent
+  })
+
+  if (!normalizedSnapshot) {
+    return null
+  }
+
+  const primaryUsedPercent = toNumberOrNull(normalizedSnapshot.primaryUsedPercent)
+  const primaryResetAfterSeconds = toNumberOrNull(normalizedSnapshot.primaryResetAfterSeconds)
+  const primaryWindowMinutes = toNumberOrNull(normalizedSnapshot.primaryWindowMinutes)
+  const secondaryUsedPercent = toNumberOrNull(normalizedSnapshot.secondaryUsedPercent)
+  const secondaryResetAfterSeconds = toNumberOrNull(normalizedSnapshot.secondaryResetAfterSeconds)
+  const secondaryWindowMinutes = toNumberOrNull(normalizedSnapshot.secondaryWindowMinutes)
+  const overSecondaryPercent = toNumberOrNull(normalizedSnapshot.primaryOverSecondaryPercent)
 
   const hasPrimaryData =
     primaryUsedPercent !== null ||
@@ -140,7 +254,7 @@ function buildCodexUsageSnapshot(accountData) {
     secondaryResetAfterSeconds !== null ||
     secondaryWindowMinutes !== null
 
-  if (!updatedAt && !hasPrimaryData && !hasSecondaryData) {
+  if (!hasPrimaryData && !hasSecondaryData) {
     return null
   }
 
@@ -149,20 +263,24 @@ function buildCodexUsageSnapshot(accountData) {
 
   return {
     updatedAt,
-    primary: {
-      usedPercent: primaryUsedPercent,
-      resetAfterSeconds: primaryResetAfterSeconds,
-      windowMinutes: primaryWindowMinutes,
-      resetAt: primaryMeta.resetAt,
-      remainingSeconds: primaryMeta.remainingSeconds
-    },
-    secondary: {
-      usedPercent: secondaryUsedPercent,
-      resetAfterSeconds: secondaryResetAfterSeconds,
-      windowMinutes: secondaryWindowMinutes,
-      resetAt: secondaryMeta.resetAt,
-      remainingSeconds: secondaryMeta.remainingSeconds
-    },
+    primary: hasPrimaryData
+      ? {
+          usedPercent: primaryUsedPercent,
+          resetAfterSeconds: primaryResetAfterSeconds,
+          windowMinutes: primaryWindowMinutes,
+          resetAt: primaryMeta.resetAt,
+          remainingSeconds: primaryMeta.remainingSeconds
+        }
+      : null,
+    secondary: hasSecondaryData
+      ? {
+          usedPercent: secondaryUsedPercent,
+          resetAfterSeconds: secondaryResetAfterSeconds,
+          windowMinutes: secondaryWindowMinutes,
+          resetAt: secondaryMeta.resetAt,
+          remainingSeconds: secondaryMeta.remainingSeconds
+        }
+      : null,
     primaryOverSecondaryPercent: overSecondaryPercent
   }
 }
@@ -1278,8 +1396,12 @@ async function updateAccountUsage(accountId, tokens = 0) {
 // 为了兼容性，保留recordUsage作为updateAccountUsage的别名
 const recordUsage = updateAccountUsage
 
-async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
-  if (!usageSnapshot || typeof usageSnapshot !== 'object') {
+async function updateCodexUsageSnapshot(accountId, usageSnapshot, options = {}) {
+  const hasCompleteWindowLayout = ['primaryWindowMinutes', 'secondaryWindowMinutes'].every(
+    (key) => toNumberOrNull(usageSnapshot?.[key]) !== null
+  )
+  const normalizedSnapshot = normalizeCodexUsageSnapshot(usageSnapshot)
+  if (!normalizedSnapshot) {
     return
   }
 
@@ -1294,17 +1416,16 @@ async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
   }
 
   const updates = {}
-  let hasPayload = false
 
   for (const [key, field] of Object.entries(fieldMap)) {
-    if (usageSnapshot[key] !== undefined && usageSnapshot[key] !== null) {
-      updates[field] = String(usageSnapshot[key])
-      hasPayload = true
+    if (normalizedSnapshot[key] !== undefined && normalizedSnapshot[key] !== null) {
+      updates[field] = String(normalizedSnapshot[key])
+    } else if (
+      options.replace === true ||
+      (hasCompleteWindowLayout && key !== 'primaryOverSecondaryPercent')
+    ) {
+      updates[field] = ''
     }
-  }
-
-  if (!hasPayload) {
-    return
   }
 
   updates.codexUsageUpdatedAt = new Date().toISOString()
@@ -1328,6 +1449,11 @@ function buildCodexUsageSnapshotFromWhamUsage(data, nowSeconds = Math.floor(Date
   }
 
   const resetAfterSeconds = (windowData) => {
+    const directResetAfter = toFiniteNumber(windowData?.reset_after_seconds)
+    if (directResetAfter !== null) {
+      return Math.max(0, Math.round(directResetAfter))
+    }
+
     const resetAt = toFiniteNumber(windowData?.reset_at)
     if (resetAt === null) {
       return null
@@ -1335,29 +1461,33 @@ function buildCodexUsageSnapshotFromWhamUsage(data, nowSeconds = Math.floor(Date
     return Math.max(0, Math.round(resetAt - nowSeconds))
   }
 
-  const primaryWindow = rateLimit.primary_window || {}
-  const secondaryWindow = rateLimit.secondary_window || {}
-  const primaryUsedPercent = toFiniteNumber(primaryWindow.used_percent)
-  const secondaryUsedPercent = toFiniteNumber(secondaryWindow.used_percent)
-  const primaryResetAfterSeconds = resetAfterSeconds(primaryWindow)
-  const secondaryResetAfterSeconds = resetAfterSeconds(secondaryWindow)
+  const appendWindow = (snapshot, prefix, windowData) => {
+    if (!windowData || typeof windowData !== 'object') {
+      return
+    }
+
+    const usedPercent = toFiniteNumber(windowData.used_percent)
+    const resetSeconds = resetAfterSeconds(windowData)
+    const limitWindowSeconds = toFiniteNumber(windowData.limit_window_seconds)
+    const limitWindowMinutes = toFiniteNumber(windowData.limit_window_minutes)
+    const windowMinutes = limitWindowSeconds !== null ? limitWindowSeconds / 60 : limitWindowMinutes
+
+    if (usedPercent !== null) {
+      snapshot[`${prefix}UsedPercent`] = usedPercent
+    }
+    if (resetSeconds !== null) {
+      snapshot[`${prefix}ResetAfterSeconds`] = resetSeconds
+    }
+    if (windowMinutes !== null) {
+      snapshot[`${prefix}WindowMinutes`] = windowMinutes
+    }
+  }
 
   const snapshot = {}
+  appendWindow(snapshot, 'primary', rateLimit.primary_window)
+  appendWindow(snapshot, 'secondary', rateLimit.secondary_window)
 
-  if (primaryUsedPercent !== null) {
-    snapshot.primaryUsedPercent = primaryUsedPercent
-  }
-  if (primaryResetAfterSeconds !== null) {
-    snapshot.primaryResetAfterSeconds = primaryResetAfterSeconds
-  }
-  if (secondaryUsedPercent !== null) {
-    snapshot.secondaryUsedPercent = secondaryUsedPercent
-  }
-  if (secondaryResetAfterSeconds !== null) {
-    snapshot.secondaryResetAfterSeconds = secondaryResetAfterSeconds
-  }
-
-  return Object.keys(snapshot).length > 0 ? snapshot : null
+  return normalizeCodexUsageSnapshot(snapshot)
 }
 
 async function fetchCodexUsage(accountId, options = {}) {
@@ -1474,7 +1604,7 @@ async function fetchCodexUsage(accountId, options = {}) {
       return null
     }
 
-    await updateCodexUsageSnapshot(accountId, snapshot)
+    await updateCodexUsageSnapshot(accountId, snapshot, { replace: true })
     logger.debug(`📊 Updated OpenAI Codex usage snapshot for account ${accountId}`)
     return snapshot
   } catch (error) {

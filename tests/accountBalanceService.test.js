@@ -257,6 +257,30 @@ describe('AccountBalanceService', () => {
     })
   })
 
+  it('should not treat a non-weekly Codex window as weekly cost', async () => {
+    const mockRedis = buildMockRedis()
+    const service = new AccountBalanceService({ redis: mockRedis, logger: mockLogger })
+    service._computeMonthlyCost = jest.fn().mockResolvedValue(0)
+    service._computeTotalCost = jest.fn().mockResolvedValue(0)
+
+    const account = {
+      id: 'openai-oauth-monthly-window',
+      openaiOauth: '[ENCRYPTED]',
+      schedulable: true,
+      codexUsage: {
+        secondary: {
+          resetAt: '2026-06-21T12:00:00.000Z',
+          windowMinutes: 43200
+        }
+      }
+    }
+
+    const statistics = await service._computeLocalStatistics(account.id, account, 'openai')
+
+    expect(statistics.weeklyCost).toBeUndefined()
+    expect(mockRedis.batchGetAccountPeriodCost).not.toHaveBeenCalled()
+  })
+
   it('should not include weekly cost when OAuth quota window is missing', async () => {
     const mockRedis = buildMockRedis()
     const service = new AccountBalanceService({ redis: mockRedis, logger: mockLogger })

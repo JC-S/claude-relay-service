@@ -128,7 +128,7 @@ describe('openaiAccountService.fetchCodexUsage', () => {
     jest.resetModules()
   })
 
-  test('fetches wham usage with decrypted access token and writes relative reset seconds', async () => {
+  test('fetches both 5-hour and weekly windows with decrypted access token', async () => {
     const { service, axiosMock, redisMock } = loadOpenAIAccountService({
       id: 'acct-1',
       name: 'Codex Account',
@@ -147,10 +147,12 @@ describe('openaiAccountService.fetchCodexUsage', () => {
         rate_limit: {
           primary_window: {
             used_percent: 12.5,
+            limit_window_seconds: 5 * 60 * 60,
             reset_at: nowSeconds + 3600
           },
           secondary_window: {
             used_percent: 34.5,
+            limit_window_seconds: 7 * 24 * 60 * 60,
             reset_at: nowSeconds + 7200
           }
         }
@@ -160,8 +162,10 @@ describe('openaiAccountService.fetchCodexUsage', () => {
     await expect(service.fetchCodexUsage('acct-1', { timeoutMs: 1234 })).resolves.toEqual({
       primaryUsedPercent: 12.5,
       primaryResetAfterSeconds: 3600,
+      primaryWindowMinutes: 300,
       secondaryUsedPercent: 34.5,
-      secondaryResetAfterSeconds: 7200
+      secondaryResetAfterSeconds: 7200,
+      secondaryWindowMinutes: 10080
     })
 
     expect(axiosMock.get).toHaveBeenCalledWith(
@@ -186,11 +190,186 @@ describe('openaiAccountService.fetchCodexUsage', () => {
       expect.objectContaining({
         codexPrimaryUsedPercent: '12.5',
         codexPrimaryResetAfterSeconds: '3600',
+        codexPrimaryWindowMinutes: '300',
         codexSecondaryUsedPercent: '34.5',
         codexSecondaryResetAfterSeconds: '7200',
+        codexSecondaryWindowMinutes: '10080',
         codexUsageUpdatedAt: expect.any(String)
       })
     )
+  })
+
+  test('maps a weekly-only primary window to weekly usage and clears stale 5-hour data', async () => {
+    const { service, axiosMock, redisMock } = loadOpenAIAccountService({
+      id: 'acct-1',
+      name: 'Codex Account',
+      accountId: 'chatgpt-account-1',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      codexPrimaryUsedPercent: '88',
+      codexPrimaryResetAfterSeconds: '900',
+      codexPrimaryWindowMinutes: '300'
+    })
+    redisMock.__setAccount({
+      accessToken: service.encrypt('plain-access-token'),
+      refreshToken: service.encrypt('plain-refresh-token')
+    })
+
+    axiosMock.get.mockResolvedValue({
+      status: 200,
+      data: {
+        rate_limit: {
+          primary_window: {
+            used_percent: 41.25,
+            limit_window_seconds: 7 * 24 * 60 * 60,
+            reset_after_seconds: 345600
+          },
+          secondary_window: {
+            used_percent: 0,
+            limit_window_seconds: 0,
+            reset_after_seconds: 0
+          }
+        }
+      }
+    })
+
+    await expect(service.fetchCodexUsage('acct-1')).resolves.toEqual({
+      secondaryUsedPercent: 41.25,
+      secondaryResetAfterSeconds: 345600,
+      secondaryWindowMinutes: 10080
+    })
+
+    expect(redisMock.__client.hset).toHaveBeenCalledWith(
+      'openai:account:acct-1',
+      expect.objectContaining({
+        codexPrimaryUsedPercent: '',
+        codexPrimaryResetAfterSeconds: '',
+        codexPrimaryWindowMinutes: '',
+        codexSecondaryUsedPercent: '41.25',
+        codexSecondaryResetAfterSeconds: '345600',
+        codexSecondaryWindowMinutes: '10080',
+        codexUsageUpdatedAt: expect.any(String)
+      })
+    )
+    expect(redisMock.__getAccount()).toEqual(
+      expect.objectContaining({
+        codexPrimaryUsedPercent: '',
+        codexPrimaryResetAfterSeconds: '',
+        codexPrimaryWindowMinutes: '',
+        codexSecondaryUsedPercent: '41.25',
+        codexSecondaryResetAfterSeconds: '345600',
+        codexSecondaryWindowMinutes: '10080'
+      })
+    )
+  })
+
+  test('normalizes duration-aware response-header snapshots before persisting them', async () => {
+    const { service, redisMock } = loadOpenAIAccountService({
+      id: 'acct-1',
+      name: 'Codex Account'
+    })
+
+    await service.updateCodexUsageSnapshot('acct-1', {
+      primaryUsedPercent: 27,
+      primaryResetAfterSeconds: 86400,
+      primaryWindowMinutes: 10080
+    })
+
+    expect(redisMock.__client.hset).toHaveBeenCalledWith(
+      'openai:account:acct-1',
+      expect.objectContaining({
+        codexSecondaryUsedPercent: '27',
+        codexSecondaryResetAfterSeconds: '86400',
+        codexSecondaryWindowMinutes: '10080',
+        codexUsageUpdatedAt: expect.any(String)
+      })
+    )
+    expect(redisMock.__client.hset.mock.calls[0][1]).not.toHaveProperty('codexPrimaryUsedPercent')
+  })
+
+  test('replaces disabled windows when response headers contain a complete window layout', async () => {
+    const { service, redisMock } = loadOpenAIAccountService({
+      id: 'acct-1',
+      name: 'Codex Account',
+      codexPrimaryUsedPercent: '88',
+      codexPrimaryResetAfterSeconds: '900',
+      codexPrimaryWindowMinutes: '300'
+    })
+
+    await service.updateCodexUsageSnapshot('acct-1', {
+      primaryUsedPercent: 27,
+      primaryResetAfterSeconds: 86400,
+      primaryWindowMinutes: 10080,
+      secondaryUsedPercent: 0,
+      secondaryResetAfterSeconds: 0,
+      secondaryWindowMinutes: 0
+    })
+
+    expect(redisMock.__client.hset).toHaveBeenCalledWith(
+      'openai:account:acct-1',
+      expect.objectContaining({
+        codexPrimaryUsedPercent: '',
+        codexPrimaryResetAfterSeconds: '',
+        codexPrimaryWindowMinutes: '',
+        codexSecondaryUsedPercent: '27',
+        codexSecondaryResetAfterSeconds: '86400',
+        codexSecondaryWindowMinutes: '10080',
+        codexUsageUpdatedAt: expect.any(String)
+      })
+    )
+  })
+
+  test('keeps an unrelated long window in its original slot', async () => {
+    const { service, redisMock } = loadOpenAIAccountService({
+      id: 'acct-1',
+      name: 'Codex Account'
+    })
+
+    await service.updateCodexUsageSnapshot('acct-1', {
+      primaryUsedPercent: 6,
+      primaryResetAfterSeconds: 2592000,
+      primaryWindowMinutes: 43200
+    })
+
+    expect(redisMock.__client.hset).toHaveBeenCalledWith(
+      'openai:account:acct-1',
+      expect.objectContaining({
+        codexPrimaryUsedPercent: '6',
+        codexPrimaryResetAfterSeconds: '2592000',
+        codexPrimaryWindowMinutes: '43200',
+        codexUsageUpdatedAt: expect.any(String)
+      })
+    )
+    expect(redisMock.__client.hset.mock.calls[0][1]).not.toHaveProperty('codexSecondaryUsedPercent')
+  })
+
+  test('normalizes an existing weekly-only Redis snapshot and ignores a zero disabled slot', async () => {
+    const { service } = loadOpenAIAccountService({
+      id: 'acct-1',
+      name: 'Codex Account',
+      isActive: 'true',
+      codexPrimaryUsedPercent: '6',
+      codexPrimaryResetAfterSeconds: '585867',
+      codexPrimaryWindowMinutes: '10080',
+      codexSecondaryUsedPercent: '0',
+      codexSecondaryResetAfterSeconds: '0',
+      codexSecondaryWindowMinutes: '0',
+      codexUsageUpdatedAt: '2026-06-17T10:00:00.000Z'
+    })
+
+    const overview = await service.getAccountOverview('acct-1')
+
+    expect(overview.codexUsage).toEqual({
+      updatedAt: '2026-06-17T10:00:00.000Z',
+      primary: null,
+      secondary: {
+        usedPercent: 6,
+        resetAfterSeconds: 585867,
+        windowMinutes: 10080,
+        resetAt: '2026-06-24T04:44:27.000Z',
+        remainingSeconds: 585867
+      },
+      primaryOverSecondaryPercent: null
+    })
   })
 
   test('returns null without calling upstream when chatgpt account id is missing', async () => {
