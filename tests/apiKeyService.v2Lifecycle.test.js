@@ -140,6 +140,24 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     jest.restoreAllMocks()
   })
 
+  test.each([
+    ['all', ['claude', 'gemini', 'openai']],
+    ['', ['claude', 'gemini', 'openai']],
+    ['["claude"]', ['claude']],
+    ['["openai","droid"]', ['openai']],
+    ['claude,gemini', ['claude', 'gemini']]
+  ])(
+    'getV2AccountSummary maps test services from permissions %p',
+    async (permissions, expected) => {
+      mockActiveParent({ permissions })
+      redis.getV2ParentTotalCost.mockResolvedValue(0)
+
+      const summary = await apiKeyService.getV2AccountSummary(PARENT_ID)
+
+      expect(summary.testServices).toEqual(expected)
+    }
+  )
+
   // ── F1 ──────────────────────────────────────────────────────────────────────
 
   // 1. 升级时清除原 expiresAt，防止 cleanup 定时任务日后禁用父账号

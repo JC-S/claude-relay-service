@@ -12,6 +12,11 @@ const {
   validateStatsTimeRange,
   ApiKeyStatsValidationError
 } = require('../../services/apiKeyStatsService')
+const {
+  validateV2ConnectivityTestParams,
+  runApiKeyConnectivityTest
+} = require('../../services/apiKeyConnectivityTestService')
+const { getRequestIp } = require('../../utils/ipWhitelistHelper')
 const logger = require('../../utils/logger')
 
 const router = express.Router()
@@ -211,6 +216,86 @@ router.post('/keys/:keyId/secret/reveal', async (req, res) => {
     }
     logger.error('Failed to reveal v2 child API key secret:', error)
     return res.status(500).json({ error: 'Reveal failed', message: error.message })
+  }
+})
+
+// 🧪 使用当前账号下的子 key 测试真实转发链路；明文仅在服务端解密和使用
+router.post('/keys/:keyId/connectivity-test', async (req, res) => {
+  const parentKeyId = req.v2Account.parentKeyId
+  const { keyId } = req.params
+
+  try {
+    const child = await apiKeyService.assertV2ChildOwnership(parentKeyId, keyId)
+    if (child.isActive !== true && child.isActive !== 'true') {
+      return res.status(409).json({
+        error: 'API key disabled',
+        message: 'This API key is disabled'
+      })
+    }
+
+    const params = validateV2ConnectivityTestParams({
+      service: req.body?.service,
+      model: req.body?.model,
+      prompt: req.body?.prompt,
+      maxTokens: req.body?.maxTokens
+    })
+    const plaintextApiKey = await apiKeyService.getV2ChildPlaintext(parentKeyId, keyId)
+    const validation = await apiKeyService.validateApiKeyForStats(plaintextApiKey)
+
+    if (!validation.valid) {
+      return res.status(409).json({
+        error: 'API key unavailable',
+        message: validation.error || 'This API key cannot be used for testing'
+      })
+    }
+    if (!apiKeyService.hasPermission(validation.keyData.permissions, params.service)) {
+      return res.status(403).json({
+        error: 'Permission denied',
+        message: `This API key does not have ${params.service} permission`
+      })
+    }
+
+    const clientIp = getRequestIp(req)
+    logger.api(
+      `🧪 V2 child key test started: parent=${parentKeyId} child=${keyId} service=${params.service} model=${params.model} ip=${clientIp}`
+    )
+    await runApiKeyConnectivityTest({
+      ...params,
+      apiKey: plaintextApiKey,
+      responseStream: res,
+      clientIp
+    })
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'Not found', message: 'API key not found' })
+    }
+    if (error.code === 'VALIDATION_ERROR') {
+      return res.status(400).json({ error: 'Invalid test parameters', message: error.message })
+    }
+    if (error.code === 'PLAINTEXT_UNAVAILABLE') {
+      return res.status(409).json({
+        error: 'Plaintext unavailable',
+        message: 'This legacy API key cannot be tested online. Please create a new child API key.'
+      })
+    }
+    if (error.code === 'PLAINTEXT_DECRYPT_FAILED') {
+      logger.error(`Failed to decrypt v2 child API key for connectivity test: ${keyId}`)
+      return res.status(500).json({
+        error: 'Decrypt failed',
+        message: 'Failed to prepare the API key for testing. Please contact the administrator.'
+      })
+    }
+
+    logger.error(`❌ V2 child API key connectivity test failed: ${keyId}`, error)
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Test failed', message: 'Internal server error' })
+    }
+    if (!res.destroyed && !res.writableEnded) {
+      res.write(
+        `data: ${JSON.stringify({ type: 'test_complete', success: false, error: 'Internal server error' })}\n\n`
+      )
+      res.end()
+    }
   }
 })
 

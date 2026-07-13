@@ -70,6 +70,44 @@
             </div>
           </div>
 
+          <!-- [v2-apikey] 子 API Key 与服务选择 -->
+          <div v-if="mode === 'v2-apikey'" class="mb-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                子 API Key
+              </label>
+              <select
+                v-model="selectedChildKeyId"
+                class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                :disabled="state.testStatus.value === 'testing'"
+                @change="handleChildKeyChange"
+              >
+                <option v-for="key in childKeys" :key="key.id" :value="key.id">
+                  {{ key.name }} · {{ key.maskedKey || '****' }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                测试服务
+              </label>
+              <select
+                v-model="selectedService"
+                class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                :disabled="state.testStatus.value === 'testing'"
+                @change="handleServiceChange"
+              >
+                <option
+                  v-for="service in serviceOptions"
+                  :key="service.value"
+                  :value="service.value"
+                >
+                  {{ service.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+
           <!-- 测试信息 -->
           <div class="mb-4 space-y-2">
             <!-- [account] 平台类型 -->
@@ -102,7 +140,7 @@
               </span>
             </div>
             <!-- [apikey] 测试端点 -->
-            <div v-if="mode === 'apikey'" class="flex items-center justify-between text-sm">
+            <div v-if="isKeyMode" class="flex items-center justify-between text-sm">
               <span class="text-gray-500 dark:text-gray-400">测试端点</span>
               <span
                 class="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-500/20 dark:text-blue-300"
@@ -126,12 +164,13 @@
               </div>
             </div>
             <!-- [apikey] 最大输出 Token -->
-            <div v-if="mode === 'apikey'" class="text-sm">
+            <div v-if="isKeyMode" class="text-sm">
               <div class="mb-1 flex items-center justify-between">
                 <span class="text-gray-500 dark:text-gray-400">最大输出 Token</span>
                 <select
                   v-model="maxTokens"
                   class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                  :disabled="state.testStatus.value === 'testing'"
                 >
                   <option v-for="opt in maxTokensOptions" :key="opt.value" :value="opt.value">
                     {{ opt.label }}
@@ -149,13 +188,14 @@
           </div>
 
           <!-- [apikey] 提示词输入 -->
-          <div v-if="mode === 'apikey'" class="mb-4">
+          <div v-if="isKeyMode" class="mb-4">
             <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
               提示词
             </label>
             <textarea
               v-model="testPrompt"
               class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+              :disabled="state.testStatus.value === 'testing'"
               placeholder="输入测试提示词..."
               rows="2"
             />
@@ -282,20 +322,22 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import { APP_CONFIG } from '@/utils/tools'
+import { APP_CONFIG, V2_IMPERSONATION_TOKEN_KEY } from '@/utils/tools'
 import { getModelsApi } from '@/utils/http_apis'
 import { useTestState } from '@/utils/useTestState'
 import ModelSelector from '@/components/common/ModelSelector.vue'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
-  mode: { type: String, default: 'account' }, // 'account' | 'apikey'
+  mode: { type: String, default: 'account' }, // 'account' | 'apikey' | 'v2-apikey'
   // account 模式
   account: { type: Object, default: null },
   // apikey 模式
   apiKeyValue: { type: String, default: '' },
   apiKeyName: { type: String, default: '' },
-  serviceType: { type: String, default: 'claude' }
+  serviceType: { type: String, default: 'claude' },
+  childKeys: { type: Array, default: () => [] },
+  allowedServices: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['close'])
@@ -303,6 +345,8 @@ const state = useTestState()
 
 // ========== 模型相关 ==========
 const selectedModel = ref('')
+const selectedChildKeyId = ref('')
+const selectedService = ref('')
 const modelsFromApi = ref({ claude: [], gemini: [], openai: [], platforms: {} })
 
 const loadModels = async () => {
@@ -324,8 +368,7 @@ const availableModels = computed(() => {
     }
     return modelsFromApi.value.platforms?.[platform] || []
   }
-  // apikey 模式
-  return modelsFromApi.value[props.serviceType] || []
+  return modelsFromApi.value[effectiveServiceType.value] || []
 })
 
 // 各平台回退默认模型（模型列表未加载时使用）
@@ -394,8 +437,17 @@ const apikeyServiceConfigs = {
   }
 }
 
+const isKeyMode = computed(() => ['apikey', 'v2-apikey'].includes(props.mode))
+const effectiveServiceType = computed(() =>
+  props.mode === 'v2-apikey' ? selectedService.value : props.serviceType
+)
 const apikeyServiceConfig = computed(
-  () => apikeyServiceConfigs[props.serviceType] || apikeyServiceConfigs.claude
+  () => apikeyServiceConfigs[effectiveServiceType.value] || apikeyServiceConfigs.claude
+)
+const serviceOptions = computed(() =>
+  props.allowedServices
+    .filter((service) => apikeyServiceConfigs[service])
+    .map((service) => ({ value: service, label: apikeyServiceConfigs[service].name }))
 )
 
 const maskedApiKey = computed(() => {
@@ -405,7 +457,13 @@ const maskedApiKey = computed(() => {
   return key.substring(0, 6) + '****' + key.substring(key.length - 4)
 })
 
-const disableTest = computed(() => props.mode === 'apikey' && !props.apiKeyValue)
+const disableTest = computed(() => {
+  if (props.mode === 'apikey') return !props.apiKeyValue
+  if (props.mode === 'v2-apikey') {
+    return !selectedChildKeyId.value || !selectedService.value || !selectedModel.value
+  }
+  return false
+})
 
 // ========== account 模式 - 平台信息 ==========
 const platformConfigs = {
@@ -499,6 +557,7 @@ const modalTitle = computed(() =>
 )
 const modalSubtitle = computed(() => {
   if (props.mode === 'account') return props.account?.name || '未知账户'
+  if (props.mode === 'v2-apikey') return '选择子 API Key 测试真实转发链路'
   return props.apiKeyName || '当前 API Key'
 })
 
@@ -558,6 +617,22 @@ const startTest = () => {
         headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
       }
     )
+  } else if (props.mode === 'v2-apikey') {
+    const token =
+      sessionStorage.getItem(V2_IMPERSONATION_TOKEN_KEY) || localStorage.getItem('authToken')
+    state.sendTestRequest(
+      `${APP_CONFIG.apiPrefix}/admin/v2/keys/${selectedChildKeyId.value}/connectivity-test`,
+      {
+        service: selectedService.value,
+        model: selectedModel.value,
+        prompt: testPrompt.value,
+        maxTokens: maxTokens.value
+      },
+      {
+        useSSE: true,
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      }
+    )
   } else {
     const endpoint = `${APP_CONFIG.apiPrefix}/apiStats${apikeyServiceConfig.value.endpoint}`
     state.sendTestRequest(
@@ -580,14 +655,27 @@ const handleClose = () => {
   emit('close')
 }
 
+const handleChildKeyChange = () => {
+  state.resetState()
+}
+
+const handleServiceChange = () => {
+  state.resetState()
+  selectedModel.value = defaultModel.value
+}
+
 // ========== 监听 ==========
 watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
       state.resetState()
+      if (props.mode === 'v2-apikey') {
+        selectedChildKeyId.value = props.childKeys[0]?.id || ''
+        selectedService.value = serviceOptions.value[0]?.value || ''
+      }
       selectedModel.value = defaultModel.value
-      if (props.mode === 'apikey') {
+      if (isKeyMode.value) {
         testPrompt.value = 'hi'
         maxTokens.value = 1000
       }
@@ -596,8 +684,16 @@ watch(
 )
 
 watch(
-  () => [props.account, props.serviceType],
+  () => [props.account, props.serviceType, props.childKeys, props.allowedServices],
   () => {
+    if (props.mode === 'v2-apikey' && props.show) {
+      if (!props.childKeys.some((key) => key.id === selectedChildKeyId.value)) {
+        selectedChildKeyId.value = props.childKeys[0]?.id || ''
+      }
+      if (!props.allowedServices.includes(selectedService.value)) {
+        selectedService.value = serviceOptions.value[0]?.value || ''
+      }
+    }
     selectedModel.value = defaultModel.value
   },
   { deep: true }

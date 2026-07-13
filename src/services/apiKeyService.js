@@ -13,6 +13,8 @@ const requestBodyRuleService = require('./requestBodyRuleService')
 const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
 const { encrypt, decrypt } = require('../utils/commonHelper')
 
+const CONNECTIVITY_TEST_SERVICES = ['claude', 'gemini', 'openai']
+
 const ACCOUNT_TYPE_CONFIG = {
   claude: { prefix: 'claude:account:' },
   'claude-console': { prefix: 'claude_console_account:' },
@@ -3936,7 +3938,10 @@ class ApiKeyService {
       weeklyFableCostLimit,
       weeklyFableCost,
       weeklyResetDay,
-      weeklyResetHour
+      weeklyResetHour,
+      testServices: CONNECTIVITY_TEST_SERVICES.filter((service) =>
+        hasPermission(keyData.permissions, service)
+      )
     }
   }
 

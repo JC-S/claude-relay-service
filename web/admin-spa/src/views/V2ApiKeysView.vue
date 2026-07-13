@@ -109,6 +109,14 @@
       </div>
       <div class="flex items-center gap-2">
         <button
+          class="rounded-xl bg-cyan-100 px-4 py-2 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-cyan-900/30 dark:text-cyan-300 dark:hover:bg-cyan-900/50"
+          :disabled="!canOpenConnectivityTest"
+          :title="connectivityTestButtonTitle"
+          @click="showConnectivityTestModal = true"
+        >
+          <i class="fas fa-vial mr-2" />测试
+        </button>
+        <button
           class="rounded-xl bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
           @click="openAccountIpWhitelistModal"
         >
@@ -882,6 +890,14 @@
       </div>
     </Teleport>
 
+    <UnifiedTestModal
+      :allowed-services="testServices"
+      :child-keys="testableKeys"
+      mode="v2-apikey"
+      :show="showConnectivityTestModal"
+      @close="showConnectivityTestModal = false"
+    />
+
     <ConfirmModal
       :cancel-text="confirmConfig.cancelText"
       :confirm-text="confirmConfig.confirmText"
@@ -912,6 +928,7 @@ import {
 } from '@/utils/http_apis'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import CustomDropdown from '@/components/common/CustomDropdown.vue'
+import UnifiedTestModal from '@/components/common/UnifiedTestModal.vue'
 
 const loading = ref(true)
 const defaultAccount = () => ({
@@ -925,10 +942,28 @@ const defaultAccount = () => ({
   weeklyFableCostLimit: 0,
   weeklyFableCost: 0,
   weeklyResetDay: 1,
-  weeklyResetHour: 0
+  weeklyResetHour: 0,
+  testServices: []
 })
 const account = ref(defaultAccount())
 const keys = ref([])
+const showConnectivityTestModal = ref(false)
+const testableKeys = computed(() =>
+  keys.value
+    .filter((key) => key.isActive && !key.isDeleted)
+    .map((key) => ({ id: key.id, name: key.name, maskedKey: key.maskedKey }))
+)
+const testServices = computed(() =>
+  Array.isArray(account.value.testServices) ? account.value.testServices : []
+)
+const canOpenConnectivityTest = computed(
+  () => testableKeys.value.length > 0 && testServices.value.length > 0
+)
+const connectivityTestButtonTitle = computed(() => {
+  if (testableKeys.value.length === 0) return '没有可用于测试的子 API Key'
+  if (testServices.value.length === 0) return '当前账号没有可测试的服务'
+  return '测试子 API Key 模型连通性'
+})
 const rangeStats = ref({})
 const rangeStatsLoading = ref(false)
 let rangeStatsRequestSeq = 0
