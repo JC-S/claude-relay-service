@@ -360,7 +360,7 @@ class ClaudeAccountService {
       )
 
       if (response.status === 200) {
-        // 记录完整的响应数据到专门的认证详细日志
+        // 记录不含凭据的认证响应摘要
         logger.authDetail('Token refresh response', response.data)
 
         // 记录简化版本到主日志

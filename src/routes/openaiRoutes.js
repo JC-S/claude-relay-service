@@ -16,6 +16,7 @@ const ProxyHelper = require('../utils/proxyHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const { IncrementalSSEParser } = require('../utils/sseParser')
 const { getSafeMessage } = require('../utils/errorSanitizer')
+const { summarizeErrorForLog } = require('../utils/logSanitizer')
 const { createRequestDetailMeta, sanitizeImageData } = require('../utils/requestDetailHelper')
 const {
   formatOpenAIUsageForLog,
@@ -1868,7 +1869,13 @@ const handleResponses = async (req, res) => {
     req.on('close', cleanup)
     req.on('aborted', cleanup)
   } catch (error) {
-    logger.error('Proxy to ChatGPT codex/responses failed:', error)
+    logger.error('Proxy to ChatGPT codex/responses failed', {
+      ...summarizeErrorForLog(error),
+      accountId,
+      accountType,
+      model: req.body?.model,
+      upstreamNicIp: req.upstreamNicIp || null
+    })
     // 优先使用主动设置的 statusCode，然后是上游响应的状态码，最后默认 500
     const status = error.statusCode || error.response?.status || 500
 

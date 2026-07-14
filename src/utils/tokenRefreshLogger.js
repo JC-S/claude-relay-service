@@ -1,18 +1,28 @@
 const winston = require('winston')
 const path = require('path')
 const fs = require('fs')
-const { maskToken } = require('./tokenMask')
+const { sanitizeLogValue } = require('./logSanitizer')
 
 // 确保日志目录存在
 const logDir = path.join(process.cwd(), 'logs')
 if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true })
+  fs.mkdirSync(logDir, { recursive: true, mode: 0o700 })
 }
+
+const sanitizeTokenRefreshFormat = winston.format((info) => {
+  const sanitized = sanitizeLogValue(info)
+  for (const key of Object.keys(info)) {
+    delete info[key]
+  }
+  Object.assign(info, sanitized)
+  return info
+})()
 
 // 创建专用的 token 刷新日志记录器
 const tokenRefreshLogger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
+    sanitizeTokenRefreshFormat,
     winston.format.timestamp({
       format: 'YYYY-MM-DD HH:mm:ss.SSS'
     }),
@@ -25,14 +35,16 @@ const tokenRefreshLogger = winston.createLogger({
       filename: path.join(logDir, 'token-refresh.log'),
       maxsize: 10 * 1024 * 1024, // 10MB
       maxFiles: 30, // 保留30天
-      tailable: true
+      tailable: true,
+      options: { flags: 'a', mode: 0o600 }
     }),
     // 错误单独记录
     new winston.transports.File({
       filename: path.join(logDir, 'token-refresh-error.log'),
       level: 'error',
       maxsize: 10 * 1024 * 1024,
-      maxFiles: 30
+      maxFiles: 30,
+      options: { flags: 'a', mode: 0o600 }
     })
   ],
   // 错误处理
@@ -48,11 +60,15 @@ if (process.env.NODE_ENV !== 'production') {
   )
 }
 
+function writeTokenRefreshLog(level, payload) {
+  tokenRefreshLogger[level](sanitizeLogValue(payload))
+}
+
 /**
  * 记录 token 刷新开始
  */
 function logRefreshStart(accountId, accountName, platform = 'claude', reason = '') {
-  tokenRefreshLogger.info({
+  writeTokenRefreshLog('info', {
     event: 'token_refresh_start',
     accountId,
     accountName,
@@ -66,19 +82,19 @@ function logRefreshStart(accountId, accountName, platform = 'claude', reason = '
  * 记录 token 刷新成功
  */
 function logRefreshSuccess(accountId, accountName, platform = 'claude', tokenData = {}) {
-  const maskedTokenData = {
-    accessToken: tokenData.accessToken ? maskToken(tokenData.accessToken) : '[NOT_PROVIDED]',
-    refreshToken: tokenData.refreshToken ? maskToken(tokenData.refreshToken) : '[NOT_PROVIDED]',
+  const tokenSummary = {
+    hasAccessToken: Boolean(tokenData.accessToken),
+    hasRefreshToken: Boolean(tokenData.refreshToken),
     expiresAt: tokenData.expiresAt || tokenData.expiry_date || '[NOT_PROVIDED]',
     scopes: tokenData.scopes || tokenData.scope || '[NOT_PROVIDED]'
   }
 
-  tokenRefreshLogger.info({
+  writeTokenRefreshLog('info', {
     event: 'token_refresh_success',
     accountId,
     accountName,
     platform,
-    tokenData: maskedTokenData,
+    tokenData: tokenSummary,
     timestamp: new Date().toISOString()
   })
 }
@@ -94,7 +110,7 @@ function logRefreshError(accountId, accountName, platform = 'claude', error, att
     responseData: error.response?.data || 'N/A'
   }
 
-  tokenRefreshLogger.error({
+  writeTokenRefreshLog('error', {
     event: 'token_refresh_error',
     accountId,
     accountName,
@@ -109,7 +125,7 @@ function logRefreshError(accountId, accountName, platform = 'claude', error, att
  * 记录 token 刷新跳过（由于并发锁）
  */
 function logRefreshSkipped(accountId, accountName, platform = 'claude', reason = 'locked') {
-  tokenRefreshLogger.info({
+  writeTokenRefreshLog('info', {
     event: 'token_refresh_skipped',
     accountId,
     accountName,
@@ -123,7 +139,7 @@ function logRefreshSkipped(accountId, accountName, platform = 'claude', reason =
  * 记录 token 使用情况
  */
 function logTokenUsage(accountId, accountName, platform = 'claude', expiresAt, isExpired) {
-  tokenRefreshLogger.debug({
+  writeTokenRefreshLog('debug', {
     event: 'token_usage_check',
     accountId,
     accountName,
@@ -139,7 +155,7 @@ function logTokenUsage(accountId, accountName, platform = 'claude', expiresAt, i
  * 记录批量刷新任务
  */
 function logBatchRefreshStart(totalAccounts, platform = 'all') {
-  tokenRefreshLogger.info({
+  writeTokenRefreshLog('info', {
     event: 'batch_refresh_start',
     totalAccounts,
     platform,
@@ -151,7 +167,7 @@ function logBatchRefreshStart(totalAccounts, platform = 'all') {
  * 记录批量刷新结果
  */
 function logBatchRefreshComplete(results) {
-  tokenRefreshLogger.info({
+  writeTokenRefreshLog('info', {
     event: 'batch_refresh_complete',
     results: {
       total: results.total || 0,

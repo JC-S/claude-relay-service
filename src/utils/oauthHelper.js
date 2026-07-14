@@ -273,7 +273,7 @@ async function exchangeCodeForTokens(authorizationCode, codeVerifier, state, pro
 
     const response = await axios.post(OAUTH_CONFIG.TOKEN_URL, params, axiosConfig)
 
-    // 记录完整的响应数据到专门的认证详细日志
+    // 记录不含凭据的认证响应摘要
     logger.authDetail('OAuth token exchange response', response.data)
 
     // 记录简化版本到主日志
@@ -502,7 +502,7 @@ async function exchangeSetupTokenCode(authorizationCode, codeVerifier, state, pr
 
     const response = await axios.post(OAUTH_CONFIG.TOKEN_URL, params, axiosConfig)
 
-    // 记录完整的响应数据到专门的认证详细日志
+    // 记录不含凭据的认证响应摘要
     logger.authDetail('Setup Token exchange response', response.data)
 
     // 记录简化版本到主日志
