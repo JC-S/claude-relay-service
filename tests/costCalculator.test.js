@@ -187,10 +187,10 @@ describe('CostCalculator', () => {
 
   describe('gpt-5.6 cache-write pricing', () => {
     const modelPricing = {
-      'gpt-5.6': [5, 10, 30, 60, 6.25, 12.5, 0.5, 1],
-      'gpt-5.6-sol': [5, 10, 30, 60, 6.25, 12.5, 0.5, 1],
-      'gpt-5.6-terra': [2.5, 5, 15, 30, 3.125, 6.25, 0.25, 0.5],
-      'gpt-5.6-luna': [1, 2, 6, 12, 1.25, 2.5, 0.1, 0.2]
+      'gpt-5.6': [5, 12.5, 30, 75, 6.25, 15.625, 0.5, 1.25],
+      'gpt-5.6-sol': [5, 12.5, 30, 75, 6.25, 15.625, 0.5, 1.25],
+      'gpt-5.6-terra': [2.5, 6.25, 15, 37.5, 3.125, 7.8125, 0.25, 0.625],
+      'gpt-5.6-luna': [1, 2.5, 6, 15, 1.25, 3.125, 0.1, 0.25]
     }
 
     it.each(Object.entries(modelPricing))(
@@ -228,13 +228,13 @@ describe('CostCalculator', () => {
     it('calculates the representative Sol standard and priority totals', () => {
       pricingService.getModelPricing.mockReturnValue({
         input_cost_per_token: 0.000005,
-        input_cost_per_token_priority: 0.00001,
+        input_cost_per_token_priority: 0.0000125,
         output_cost_per_token: 0.00003,
-        output_cost_per_token_priority: 0.00006,
+        output_cost_per_token_priority: 0.000075,
         cache_creation_input_token_cost: 0.00000625,
-        cache_creation_input_token_cost_priority: 0.0000125,
+        cache_creation_input_token_cost_priority: 0.000015625,
         cache_read_input_token_cost: 0.0000005,
-        cache_read_input_token_cost_priority: 0.000001,
+        cache_read_input_token_cost_priority: 0.00000125,
         supports_service_tier: true,
         litellm_provider: 'openai'
       })
@@ -249,7 +249,7 @@ describe('CostCalculator', () => {
       const priority = CostCalculator.calculateCost(usage, 'gpt-5.6-sol', 'priority')
 
       expect(standard.costs.total).toBeCloseTo(0.7475, 10)
-      expect(priority.costs.total).toBeCloseTo(1.495, 10)
+      expect(priority.costs.total).toBeCloseTo(1.86875, 10)
     })
 
     it('does not activate 272K pricing fields in the legacy path', () => {

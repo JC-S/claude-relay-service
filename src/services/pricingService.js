@@ -53,16 +53,16 @@ class PricingService {
         priorityMultiplier: 2.5
       },
       'gpt-5.6': {
-        priorityMultiplier: 2
+        priorityMultiplier: 2.5
       },
       'gpt-5.6-sol': {
-        priorityMultiplier: 2
+        priorityMultiplier: 2.5
       },
       'gpt-5.6-terra': {
-        priorityMultiplier: 2
+        priorityMultiplier: 2.5
       },
       'gpt-5.6-luna': {
-        priorityMultiplier: 2
+        priorityMultiplier: 2.5
       }
     }
 

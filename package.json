@@ -12,6 +12,7 @@
     "setup": "node scripts/setup.js",
     "cli": "node cli/index.js",
     "init:costs": "node src/cli/initCosts.js",
+    "migrate:gpt56-fast-pricing": "node src/cli/backfillGpt56FastPricing.js",
     "service": "node scripts/manage.js",
     "service:start": "node scripts/manage.js start",
     "service:start:daemon": "node scripts/manage.js start -d",

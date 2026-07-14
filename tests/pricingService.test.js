@@ -469,7 +469,7 @@ describe('PricingService - Long Context Pricing', () => {
     })
 
     it.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
-      '%s 的 priority 价格按基础价格 2x 本地覆盖',
+      '%s 的 priority 价格按基础价格 2.5x 本地覆盖',
       (model) => {
         pricingService.pricingData = {
           [model]: {
@@ -488,18 +488,33 @@ describe('PricingService - Long Context Pricing', () => {
         const pricing = pricingService.getModelPricing(model)
 
         expect(pricing.supports_service_tier).toBe(true)
-        expect(pricing.input_cost_per_token_priority).toBe(0.00001)
-        expect(pricing.output_cost_per_token_priority).toBe(0.00006)
-        expect(pricing.cache_creation_input_token_cost_priority).toBe(0.0000125)
-        expect(pricing.cache_read_input_token_cost_priority).toBe(0.000001)
+        expect(pricing.input_cost_per_token_priority).toBeCloseTo(0.0000125, 12)
+        expect(pricing.output_cost_per_token_priority).toBeCloseTo(0.000075, 12)
+        expect(pricing.cache_creation_input_token_cost_priority).toBeCloseTo(0.000015625, 12)
+        expect(pricing.cache_read_input_token_cost_priority).toBeCloseTo(0.00000125, 12)
       }
     )
 
+    it('gpt-5.6-nova 不被精确本地覆盖误标记', () => {
+      pricingService.pricingData = {
+        'gpt-5.6-nova': {
+          input_cost_per_token: 0.000005,
+          output_cost_per_token: 0.00003,
+          litellm_provider: 'openai'
+        }
+      }
+
+      const pricing = pricingService.getModelPricing('gpt-5.6-nova')
+
+      expect(pricing.supports_service_tier).not.toBe(true)
+      expect(pricing.input_cost_per_token_priority).toBeUndefined()
+    })
+
     it.each([
-      ['gpt-5.6', 6.25, 12.5],
-      ['gpt-5.6-sol', 6.25, 12.5],
-      ['gpt-5.6-terra', 3.125, 6.25],
-      ['gpt-5.6-luna', 1.25, 2.5]
+      ['gpt-5.6', 6.25, 15.625],
+      ['gpt-5.6-sol', 6.25, 15.625],
+      ['gpt-5.6-terra', 3.125, 7.8125],
+      ['gpt-5.6-luna', 1.25, 3.125]
     ])('%s 按独立 standard/priority 缓存写入价格计费', (model, standardPrice, priorityPrice) => {
       pricingService.pricingData = JSON.parse(JSON.stringify(pricingData))
       const usage = {

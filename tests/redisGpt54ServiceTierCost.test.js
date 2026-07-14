@@ -56,7 +56,7 @@ describe('Redis aggregated gpt-5.4 service tier cost', () => {
     expect(result.costs.total).toBeCloseTo(60.75, 10)
   })
 
-  test('splits gpt-5.6 cache writes into standard and priority prices', () => {
+  test('splits gpt-5.6 cache writes into standard and 2.5x priority prices', () => {
     pricingService.pricingData = {
       'gpt-5.6': {
         input_cost_per_token: 0.000005,
@@ -81,7 +81,7 @@ describe('Redis aggregated gpt-5.4 service tier cost', () => {
     )
 
     expect(result.hasServiceTierSplit).toBe(true)
-    expect(result.costs.cacheWrite).toBeCloseTo(18.75, 10)
-    expect(result.costs.total).toBeCloseTo(18.75, 10)
+    expect(result.costs.cacheWrite).toBeCloseTo(21.875, 10)
+    expect(result.costs.total).toBeCloseTo(21.875, 10)
   })
 })
