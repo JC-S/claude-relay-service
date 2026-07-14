@@ -696,15 +696,6 @@
                               type="opus"
                               variant="compact"
                             />
-                            <LimitProgressBar
-                              v-if="key.weeklyFableCostLimit > 0"
-                              :current="getCachedStats(key.id)?.weeklyFableCost || 0"
-                              label="Fable 周限制"
-                              :limit="key.weeklyFableCostLimit"
-                              type="fable"
-                              variant="compact"
-                            />
-
                             <!-- v2 父账号总费用限制 -->
                             <LimitProgressBar
                               v-if="isV2ParentKey(key)"
@@ -1624,15 +1615,6 @@
                         type="opus"
                         variant="compact"
                       />
-                      <LimitProgressBar
-                        v-if="key.weeklyFableCostLimit > 0"
-                        :current="getCachedStats(key.id)?.weeklyFableCost || 0"
-                        label="Fable 周限制"
-                        :limit="key.weeklyFableCostLimit"
-                        type="fable"
-                        variant="compact"
-                      />
-
                       <!-- v2 父账号总费用限制 -->
                       <LimitProgressBar
                         v-if="isV2ParentKey(key)"
@@ -3029,22 +3011,15 @@ const toPositiveNumber = (value) => {
 
 const hasStatsDependentLimitDisplay = (key) => {
   const hasWeeklyLimit = toPositiveNumber(key?.weeklyOpusCostLimit) > 0
-  const hasFableWeeklyLimit = toPositiveNumber(key?.weeklyFableCostLimit) > 0
   const hasWindowLimit =
     toPositiveNumber(key?.rateLimitWindow) > 0 && toPositiveNumber(key?.rateLimitCost) > 0
 
   if (isV2ParentKey(key)) {
-    return (
-      hasWeeklyLimit ||
-      hasFableWeeklyLimit ||
-      hasWindowLimit ||
-      toPositiveNumber(key?.v2TotalBudget) > 0
-    )
+    return hasWeeklyLimit || hasWindowLimit || toPositiveNumber(key?.v2TotalBudget) > 0
   }
 
   return (
     hasWeeklyLimit ||
-    hasFableWeeklyLimit ||
     toPositiveNumber(key?.dailyCostLimit) > 0 ||
     toPositiveNumber(key?.totalCostLimit) > 0 ||
     hasWindowLimit
