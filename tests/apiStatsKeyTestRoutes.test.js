@@ -80,7 +80,7 @@ describe('legacy public API key connectivity routes', () => {
       })
 
       const malformed = createRes()
-      await handler({ body: { apiKey: 'short' } }, malformed)
+      await handler({ body: { apiKey: 'x'.repeat(513) } }, malformed)
       expect(malformed.statusCode).toBe(400)
       expect(malformed.body.error).toBe('Invalid API key format')
     }

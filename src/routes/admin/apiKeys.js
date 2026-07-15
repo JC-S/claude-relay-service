@@ -1738,6 +1738,59 @@ router.post('/api-keys/:keyId/secret/reveal', authenticateAdmin, async (req, res
   }
 })
 
+// 🔄 重新生成或设置 API Key secret；Key ID 与全部历史统计保持不变
+router.post('/api-keys/:keyId/secret/regenerate', authenticateAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store')
+  try {
+    const result = await apiKeyService.rotateApiKeySecret(
+      req.params.keyId,
+      { mode: req.body?.mode, apiKey: req.body?.apiKey },
+      'admin'
+    )
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    const code = error.code || 'INTERNAL_ERROR'
+    if (code === 'NOT_FOUND') {
+      return res.status(404).json({ success: false, code, message: 'API key not found' })
+    }
+    if (
+      [
+        'INVALID_MODE',
+        'EMPTY',
+        'TOO_LONG',
+        'NON_ASCII',
+        'EDGE_WHITESPACE',
+        'BEARER_PREFIX'
+      ].includes(code)
+    ) {
+      return res.status(400).json({ success: false, code, message: error.message })
+    }
+    if (code === 'V2_PARENT_NO_SECRET') {
+      return res.status(400).json({
+        success: false,
+        code,
+        message: 'v2 父账号没有可重新生成的调用密钥'
+      })
+    }
+    if (code === 'REGISTRY_NOT_READY') {
+      return res.status(503).json({ success: false, code, message: error.message })
+    }
+    if (['SAME_VALUE', 'CONFLICT', 'STATE_CHANGED', 'REGISTRY_CONFLICT'].includes(code)) {
+      const message =
+        code === 'REGISTRY_CONFLICT'
+          ? '检测到该 Key 的凭据登记异常，请检查是否存在重复导入的数据后人工处理'
+          : error.message
+      return res.status(409).json({ success: false, code, message })
+    }
+    logger.error('Failed to regenerate API key secret:', error)
+    return res.status(500).json({
+      success: false,
+      code: 'INTERNAL_ERROR',
+      message: 'Failed to regenerate API key'
+    })
+  }
+})
+
 // 批量创建API Keys
 router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
   try {

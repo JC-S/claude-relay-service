@@ -13,8 +13,16 @@ const { pickRequestRecordMetadata } = require('../utils/requestRecordMetadata')
 const requestBodyRuleService = require('./requestBodyRuleService')
 const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
 const { encrypt, decrypt } = require('../utils/commonHelper')
+const { validateApiKeyCredential, validateCustomApiKey } = require('../utils/apiKeyCredential')
 
 const CONNECTIVITY_TEST_SERVICES = ['claude', 'gemini', 'openai', 'grok']
+const API_KEY_SECRET_ROTATION_ATTEMPTS = 3
+
+function createApiKeySecretError(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
 
 const ACCOUNT_TYPE_CONFIG = {
   claude: { prefix: 'claude:account:' },
@@ -424,10 +432,25 @@ class ApiKeyService {
       throw new Error(payloadRulesValidation.error)
     }
 
-    // 生成简单的API Key (64字符十六进制)
-    const apiKey = `${this.prefix}${this._generateSecretKey()}`
     const keyId = uuidv4()
-    const hashedKey = this._hashApiKey(apiKey)
+    let apiKey = ''
+    let hashedKey = ''
+    for (let attempt = 0; attempt < API_KEY_SECRET_ROTATION_ATTEMPTS; attempt++) {
+      const candidate = `${this.prefix}${this._generateSecretKey()}`
+      const candidateHash = this._hashApiKey(candidate)
+      const reservation = await redis.reserveApiKeySecret(candidateHash, keyId)
+      if (reservation === 'RESERVED' || reservation === 'OWNED') {
+        apiKey = candidate
+        hashedKey = candidateHash
+        break
+      }
+    }
+    if (!apiKey) {
+      throw createApiKeySecretError(
+        'API_KEY_GENERATION_CONFLICT',
+        'Unable to generate a unique API key'
+      )
+    }
 
     // 处理 permissions
     const _permissionsValue = permissions
@@ -438,6 +461,8 @@ class ApiKeyService {
       description,
       apiKey: hashedKey,
       encryptedApiKey: encrypt(apiKey), // 🆕 可逆明文副本，仅供 reveal，绝不随列表/详情/导出返回
+      apiKeyGenerationMode: 'system',
+      apiKeyHint: apiKey.slice(-4),
       tokenLimit: String(tokenLimit ?? 0),
       concurrencyLimit: String(concurrencyLimit ?? 0),
       rateLimitWindow: String(rateLimitWindow ?? 0),
@@ -605,7 +630,7 @@ class ApiKeyService {
   // 🔍 验证API Key
   async validateApiKey(apiKey) {
     try {
-      if (!apiKey || !apiKey.startsWith(this.prefix)) {
+      if (!validateApiKeyCredential(apiKey).valid) {
         return { valid: false, error: 'Invalid API key format' }
       }
 
@@ -656,8 +681,12 @@ class ApiKeyService {
         keyData.expiresAt = expiresAt.toISOString()
         keyData.lastUsedAt = now.toISOString()
 
-        // 保存到Redis
-        await redis.setApiKey(keyData.id, keyData)
+        await redis.updateApiKeyFields(keyData.id, {
+          isActivated: keyData.isActivated,
+          activatedAt: keyData.activatedAt,
+          expiresAt: keyData.expiresAt,
+          lastUsedAt: keyData.lastUsedAt
+        })
 
         logger.success(
           `🔓 API key activated: ${keyData.id} (${
@@ -899,7 +928,7 @@ class ApiKeyService {
   // 🔍 验证API Key（仅用于统计查询，不触发激活）
   async validateApiKeyForStats(apiKey) {
     try {
-      if (!apiKey || !apiKey.startsWith(this.prefix)) {
+      if (!validateApiKeyCredential(apiKey).valid) {
         return { valid: false, error: 'Invalid API key format' }
       }
 
@@ -1808,7 +1837,13 @@ class ApiKeyService {
 
         // 生成掩码key后再清理敏感字段
         if (key.apiKey) {
-          key.maskedKey = `${this.prefix}****${key.apiKey.slice(-4)}`
+          if (key.apiKeyGenerationMode === 'custom') {
+            key.maskedKey = key.apiKeyHint
+              ? `自定义 Key · ****${key.apiKeyHint}`
+              : '自定义 Key · 已设置'
+          } else {
+            key.maskedKey = `${this.prefix}****${key.apiKey.slice(-4)}`
+          }
         }
         delete key.apiKey
         delete key.encryptedApiKey // 🔒 绝不返回可逆明文副本
@@ -1963,7 +1998,7 @@ class ApiKeyService {
         'v2TotalBudget', // 🆕 v2 父账号总账额度（仅管理员可改，故意不含 isV2Parent/parentKeyId）
         'v2IpWhitelistOverride' // 🆕 v2 子 key 自定义白名单标记（唯一写入方为 updateV2Child）
       ]
-      const updatedData = { ...keyData }
+      const updatedFields = {}
       const isV2Parent = keyData.isV2Parent === 'true'
 
       for (const [field, value] of Object.entries(updates)) {
@@ -1992,10 +2027,10 @@ class ApiKeyService {
               field === 'ipWhitelist'
                 ? normalizeIpWhitelist(value)
                 : value || (field === 'serviceRates' ? {} : [])
-            updatedData[field] = JSON.stringify(normalizedValue)
+            updatedFields[field] = JSON.stringify(normalizedValue)
           } else if (field === 'permissions') {
             // 权限字段：规范化后JSON序列化，与createApiKey保持一致
-            updatedData[field] = JSON.stringify(normalizePermissions(value))
+            updatedFields[field] = JSON.stringify(normalizePermissions(value))
           } else if (
             field === 'enableModelRestriction' ||
             field === 'enableClientRestriction' ||
@@ -2012,26 +2047,29 @@ class ApiKeyService {
             field === 'v2IpWhitelistOverride'
           ) {
             // 布尔值转字符串
-            updatedData[field] = String(value)
+            updatedFields[field] = String(value)
           } else if (field === 'expiresAt' || field === 'activatedAt') {
             // 日期字段保持原样，不要toString()
-            updatedData[field] = value || ''
+            updatedFields[field] = value || ''
           } else {
-            updatedData[field] = (value !== null && value !== undefined ? value : '').toString()
+            updatedFields[field] = (value !== null && value !== undefined ? value : '').toString()
           }
         }
       }
 
-      updatedData.updatedAt = new Date().toISOString()
+      updatedFields.updatedAt = new Date().toISOString()
 
-      // 传递hashedKey以确保映射表一致性
-      // keyData.apiKey 存储的就是 hashedKey（见generateApiKey第123行）
       // 🆕 仅对「可调用」的 key 重建 hash 映射：已软删除 / v2 父账号本就不应存在映射，
       // 否则任意管理更新（如改 v2 总额）会复活其映射，破坏 fail-closed 不变量。
       const shouldKeepHash = keyData.isDeleted !== 'true' && keyData.isV2Parent !== 'true'
-      await redis.setApiKey(keyId, updatedData, shouldKeepHash ? keyData.apiKey : null)
+      await redis.updateApiKeyFields(keyId, updatedFields)
       if (!shouldKeepHash && keyData.apiKey) {
         await redis.deleteApiKeyHash(keyData.apiKey)
+      } else if (shouldKeepHash) {
+        const repairResult = await redis.repairApiKeyHashMapping(keyId)
+        if (repairResult === 'CONFLICT') {
+          logger.error(`API Key hash mapping conflict detected for ${keyId}`)
+        }
       }
 
       // 同步更新 API Key 索引
@@ -2065,8 +2103,7 @@ class ApiKeyService {
       }
 
       // 标记为已删除，保留所有数据和统计信息
-      const updatedData = {
-        ...keyData,
+      const updatedFields = {
         isDeleted: 'true',
         deletedAt: new Date().toISOString(),
         deletedBy,
@@ -2074,7 +2111,7 @@ class ApiKeyService {
         isActive: 'false' // 同时禁用
       }
 
-      await redis.setApiKey(keyId, updatedData)
+      await redis.updateApiKeyFields(keyId, updatedFields)
 
       // 从哈希映射中移除（这样就不能再使用这个key进行API调用）
       if (keyData.apiKey) {
@@ -2128,34 +2165,29 @@ class ApiKeyService {
         throw new Error('API key is not deleted')
       }
 
-      // 准备更新的数据
-      const updatedData = { ...keyData }
-      updatedData.isActive = 'true'
-      updatedData.restoredAt = new Date().toISOString()
-      updatedData.restoredBy = restoredBy
-      updatedData.restoredByType = restoredByType
-
-      // 从更新的数据中移除删除相关的字段
-      delete updatedData.isDeleted
-      delete updatedData.deletedAt
-      delete updatedData.deletedBy
-      delete updatedData.deletedByType
-
-      // 保存更新后的数据
-      await redis.setApiKey(keyId, updatedData)
-
-      // 使用Redis的hdel命令删除不需要的字段
-      const keyName = `apikey:${keyId}`
-      await redis.client.hdel(keyName, 'isDeleted', 'deletedAt', 'deletedBy', 'deletedByType')
+      const restoredFields = {
+        isActive: 'true',
+        restoredAt: new Date().toISOString(),
+        restoredBy,
+        restoredByType
+      }
+      await redis.updateApiKeyFields(keyId, restoredFields, [
+        'isDeleted',
+        'deletedAt',
+        'deletedBy',
+        'deletedByType'
+      ])
 
       // 重新建立哈希映射（恢复API Key的使用能力）
       // 🆕 v2 父账号恢复后仍不可直接 API 调用，故不重建 hash 映射
       if (keyData.apiKey && keyData.isV2Parent !== 'true') {
-        await redis.setApiKeyHash(keyData.apiKey, {
-          id: keyId,
-          name: keyData.name,
-          isActive: 'true'
-        })
+        const repairResult = await redis.repairApiKeyHashMapping(keyId)
+        if (repairResult === 'CONFLICT') {
+          throw createApiKeySecretError(
+            'REGISTRY_CONFLICT',
+            'API key hash mapping belongs to another record'
+          )
+        }
       }
 
       // 重新添加到费用排序索引
@@ -2186,7 +2218,11 @@ class ApiKeyService {
       logger.success(`Restored API key: ${keyId} by ${restoredBy} (${restoredByType})`)
 
       // 🆕 返回前剥离敏感字段（apiKey hash、v2 密码 hash），任何响应都不得包含
-      const safeApiKey = { ...updatedData }
+      const safeApiKey = { ...keyData, ...restoredFields }
+      delete safeApiKey.isDeleted
+      delete safeApiKey.deletedAt
+      delete safeApiKey.deletedBy
+      delete safeApiKey.deletedByType
       delete safeApiKey.apiKey
       delete safeApiKey.encryptedApiKey // 🔒 绝不返回可逆明文副本
       delete safeApiKey.v2PasswordHash
@@ -2433,8 +2469,7 @@ class ApiKeyService {
         }
         // 更新最后使用时间
         const lastUsedAt = new Date().toISOString()
-        keyData.lastUsedAt = lastUsedAt
-        await redis.setApiKey(keyId, keyData)
+        await redis.updateApiKeyFields(keyId, { lastUsedAt })
 
         // 同步更新 lastUsedAt 索引
         try {
@@ -2718,8 +2753,7 @@ class ApiKeyService {
         }
         // 更新最后使用时间
         const lastUsedAt = new Date().toISOString()
-        keyData.lastUsedAt = lastUsedAt
-        await redis.setApiKey(keyId, keyData)
+        await redis.updateApiKeyFields(keyId, { lastUsedAt })
 
         // 同步更新 lastUsedAt 索引
         try {
@@ -3263,56 +3297,102 @@ class ApiKeyService {
     }
   }
 
-  // 🔄 重新生成API Key
-  async regenerateApiKey(keyId) {
-    try {
-      const existingKey = await redis.getApiKey(keyId)
-      if (!existingKey) {
-        throw new Error('API key not found')
-      }
-
-      // 🆕 v2 父账号不可重新生成 API secret（保持不可直接调用）；v2 子 key 可重生成且归属不变
-      if (existingKey.isV2Parent === 'true') {
-        throw new Error('A v2 parent account cannot regenerate its API secret')
-      }
-
-      // 生成新的key
-      const newApiKey = `${this.prefix}${this._generateSecretKey()}`
-      const newHashedKey = this._hashApiKey(newApiKey)
-
-      // 删除旧的哈希映射
-      const oldHashedKey = existingKey.apiKey
-      await redis.deleteApiKeyHash(oldHashedKey)
-
-      // 更新key数据
-      const updatedKeyData = {
-        ...existingKey,
-        apiKey: newHashedKey,
-        encryptedApiKey: encrypt(newApiKey), // 🆕 同步刷新可逆明文副本
-        updatedAt: new Date().toISOString()
-      }
-
-      // 保存新数据并建立新的哈希映射
-      await redis.setApiKey(keyId, updatedKeyData, newHashedKey)
-
-      logger.info(`🔄 Regenerated API key: ${existingKey.name} (${keyId})`)
-
-      return {
-        id: keyId,
-        name: existingKey.name,
-        key: newApiKey, // 返回完整的新key
-        updatedAt: updatedKeyData.updatedAt
-      }
-    } catch (error) {
-      logger.error('❌ Failed to regenerate API key:', error)
-      throw error
+  async rotateApiKeySecret(keyId, { mode, apiKey } = {}, actorType = 'system') {
+    if (mode !== 'system' && mode !== 'custom') {
+      throw createApiKeySecretError('INVALID_MODE', 'mode must be system or custom')
     }
+    if (mode === 'system' && apiKey !== undefined) {
+      throw createApiKeySecretError('INVALID_MODE', 'apiKey is not allowed in system mode')
+    }
+    if (mode === 'custom') {
+      const validation = validateCustomApiKey(apiKey)
+      if (!validation.valid) {
+        throw createApiKeySecretError(validation.code, validation.message)
+      }
+      if (!(await redis.isApiKeySecretRegistryReady())) {
+        throw createApiKeySecretError(
+          'REGISTRY_NOT_READY',
+          'API key history is still initializing; please try again later'
+        )
+      }
+    }
+
+    const existingKey = await redis.getApiKey(keyId)
+    if (!existingKey || Object.keys(existingKey).length === 0 || existingKey.isDeleted === 'true') {
+      throw createApiKeySecretError('NOT_FOUND', 'API key not found')
+    }
+    if (existingKey.isV2Parent === 'true') {
+      throw createApiKeySecretError(
+        'V2_PARENT_NO_SECRET',
+        'A v2 parent account has no callable API secret'
+      )
+    }
+    if (!/^[a-f0-9]{64}$/i.test(existingKey.apiKey || '')) {
+      throw createApiKeySecretError('STATE_CHANGED', 'API key credential state is invalid')
+    }
+
+    const attempts = mode === 'system' ? API_KEY_SECRET_ROTATION_ATTEMPTS : 1
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const candidate = mode === 'system' ? `${this.prefix}${this._generateSecretKey()}` : apiKey
+      const newHash = this._hashApiKey(candidate)
+      const updatedAt = new Date().toISOString()
+      const result = await redis.rotateApiKeySecret({
+        keyId,
+        expectedOldHash: existingKey.apiKey,
+        newHash,
+        encryptedApiKey: encrypt(candidate),
+        generationMode: mode,
+        apiKeyHint: candidate.length >= 16 ? candidate.slice(-4) : '',
+        updatedAt
+      })
+
+      if (result === 'OK') {
+        logger.info(
+          `API key secret rotated: actor=${actorType} keyId=${keyId} mode=${mode} result=OK`
+        )
+        return {
+          id: keyId,
+          name: existingKey.name,
+          apiKey: candidate,
+          updatedAt,
+          generationMode: mode
+        }
+      }
+      if (mode === 'system' && result === 'CONFLICT') {
+        continue
+      }
+
+      const messages = {
+        SAME_VALUE: 'The new API key must differ from the current value',
+        CONFLICT: 'This API key value has already been used',
+        STATE_CHANGED: 'The API key changed while it was being rotated; please retry',
+        REGISTRY_CONFLICT:
+          'The API key credential registry is inconsistent; check for duplicate imported data before retrying'
+      }
+      logger.warn(`API key secret rotation rejected: keyId=${keyId} mode=${mode} result=${result}`)
+      throw createApiKeySecretError(result, messages[result] || 'API key rotation failed')
+    }
+
+    throw createApiKeySecretError(
+      'CONFLICT',
+      'Unable to generate a unique API key after multiple attempts'
+    )
   }
 
-  // 🔓 解密存储的可逆明文副本（decrypt 失败会原样返回密文，故必须前缀校验；useCache=false 不缓存明文密钥）
-  _decryptStoredApiKeySecret(encryptedValue) {
+  async rotateV2ChildApiKeySecret(parentKeyId, childKeyId, options) {
+    await this.assertV2ChildOwnership(parentKeyId, childKeyId)
+    return await this.rotateApiKeySecret(childKeyId, options, 'v2')
+  }
+
+  // decrypt() returns its input on failure, so the plaintext must be verified against the record.
+  _decryptStoredApiKeySecret(encryptedValue, expectedHashedKey) {
     const plaintext = decrypt(encryptedValue, false)
-    if (!plaintext || !plaintext.startsWith(this.prefix)) {
+    const actualHash = plaintext ? this._hashApiKey(plaintext) : ''
+    if (
+      !/^[a-f0-9]{64}$/i.test(expectedHashedKey || '') ||
+      !/^[a-f0-9]{64}$/i.test(actualHash) ||
+      !crypto.timingSafeEqual(Buffer.from(actualHash, 'hex'), Buffer.from(expectedHashedKey, 'hex'))
+    ) {
       const err = new Error('API key secret cannot be decrypted')
       err.code = 'PLAINTEXT_DECRYPT_FAILED'
       throw err
@@ -3338,7 +3418,7 @@ class ApiKeyService {
       err.code = 'PLAINTEXT_UNAVAILABLE'
       throw err
     }
-    return this._decryptStoredApiKeySecret(keyData.encryptedApiKey)
+    return this._decryptStoredApiKeySecret(keyData.encryptedApiKey, keyData.apiKey)
   }
 
   // 🗑️ 硬删除API Key (完全移除)
@@ -3760,8 +3840,7 @@ class ApiKeyService {
       )
       inheritedUsageInitialized = true
 
-      const updatedData = {
-        ...keyData,
+      const updatedFields = {
         isV2Parent: 'true',
         v2Email: normalizedEmail,
         v2PasswordHash,
@@ -3773,7 +3852,7 @@ class ApiKeyService {
         // 否则 cleanupExpiredKeys 定时任务会在原过期日把整个 v2 账号自动禁用
         expiresAt: ''
       }
-      await redis.setApiKey(keyId, updatedData)
+      await redis.updateApiKeyFields(keyId, updatedFields)
 
       // 删除父 key 的 hash 映射（同时清旧/新结构）→ 原 secret 立即不可直接调用
       if (keyData.apiKey) {
@@ -4286,7 +4365,7 @@ class ApiKeyService {
       err.code = 'PLAINTEXT_UNAVAILABLE'
       throw err
     }
-    return this._decryptStoredApiKeySecret(child.encryptedApiKey)
+    return this._decryptStoredApiKeySecret(child.encryptedApiKey, child.apiKey)
   }
 
   // 📝 v2 更新子 key（归属校验 + 硬白名单 + 数值/状态规范化全部收敛在 service 层，

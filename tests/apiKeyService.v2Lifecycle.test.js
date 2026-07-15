@@ -33,6 +33,11 @@ jest.mock(
 jest.mock('../src/models/redis', () => ({
   getApiKey: jest.fn(),
   setApiKey: jest.fn(),
+  updateApiKeyFields: jest.fn(),
+  reserveApiKeySecret: jest.fn(),
+  repairApiKeyHashMapping: jest.fn(),
+  rotateApiKeySecret: jest.fn(),
+  isApiKeySecretRegistryReady: jest.fn(),
   deleteApiKeyHash: jest.fn(),
   getSession: jest.fn(),
   setSession: jest.fn(),
@@ -53,6 +58,8 @@ jest.mock('../src/models/redis', () => ({
   setV2ParentTotalCost: jest.fn(),
   deleteV2ParentTotalCost: jest.fn(),
   getCostStats: jest.fn(),
+  getDailyCost: jest.fn(),
+  getUsageStats: jest.fn(),
   client: { hset: jest.fn() }
 }))
 
@@ -125,6 +132,11 @@ describe('apiKeyService v2 lifecycle fixes', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     redis.setApiKey.mockResolvedValue()
+    redis.updateApiKeyFields.mockResolvedValue()
+    redis.reserveApiKeySecret.mockResolvedValue('RESERVED')
+    redis.repairApiKeyHashMapping.mockResolvedValue('OK')
+    redis.rotateApiKeySecret.mockResolvedValue('OK')
+    redis.isApiKeySecretRegistryReady.mockResolvedValue(true)
     redis.deleteApiKeyHash.mockResolvedValue()
     redis.setV2ParentTotalCost.mockResolvedValue()
     redis.deleteV2ParentTotalCost.mockResolvedValue()
@@ -182,7 +194,7 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     expect(result.success).toBe(true)
     expect(result.v2TotalBudget).toBe(125.5)
     expect(redis.setV2ParentTotalCost).toHaveBeenCalledWith('key-1', 17.25)
-    expect(redis.setApiKey).toHaveBeenCalledWith(
+    expect(redis.updateApiKeyFields).toHaveBeenCalledWith(
       'key-1',
       expect.objectContaining({ isV2Parent: 'true', expiresAt: '', v2TotalBudget: '125.5' })
     )
@@ -272,12 +284,11 @@ describe('apiKeyService v2 lifecycle fixes', () => {
       weeklyOpusCostLimit: 600
     })
 
-    const [keyId, storedKeyData, hashForMapping] = redis.setApiKey.mock.calls[0]
+    const [keyId, storedKeyData] = redis.updateApiKeyFields.mock.calls[0]
     expect(keyId).toBe(PARENT_ID)
-    expect(hashForMapping).toBeNull()
-    expect(storedKeyData.dailyCostLimit).toBe('12')
-    expect(storedKeyData.totalCostLimit).toBe('8000')
-    expect(storedKeyData.v2TotalBudget).toBe('12000')
+    expect(storedKeyData).not.toHaveProperty('dailyCostLimit')
+    expect(storedKeyData).not.toHaveProperty('totalCostLimit')
+    expect(storedKeyData).not.toHaveProperty('v2TotalBudget')
     expect(storedKeyData.weeklyOpusCostLimit).toBe('600')
     expect(redis.deleteApiKeyHash).toHaveBeenCalledWith('hashed-parent-key')
   })
@@ -707,6 +718,11 @@ describe('apiKeyService v2 IP whitelist', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     redis.setApiKey.mockResolvedValue()
+    redis.updateApiKeyFields.mockResolvedValue()
+    redis.reserveApiKeySecret.mockResolvedValue('RESERVED')
+    redis.repairApiKeyHashMapping.mockResolvedValue('OK')
+    redis.rotateApiKeySecret.mockResolvedValue('OK')
+    redis.isApiKeySecretRegistryReady.mockResolvedValue(true)
     redis.deleteApiKeyHash.mockResolvedValue()
     redis.client.hset.mockResolvedValue()
   })
@@ -1297,6 +1313,11 @@ describe('apiKeyService 明文 reveal', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     redis.setApiKey.mockResolvedValue()
+    redis.updateApiKeyFields.mockResolvedValue()
+    redis.reserveApiKeySecret.mockResolvedValue('RESERVED')
+    redis.repairApiKeyHashMapping.mockResolvedValue('OK')
+    redis.rotateApiKeySecret.mockResolvedValue('OK')
+    redis.isApiKeySecretRegistryReady.mockResolvedValue(true)
     redis.deleteApiKeyHash.mockResolvedValue()
   })
 
@@ -1320,25 +1341,105 @@ describe('apiKeyService 明文 reveal', () => {
     expect(result).not.toHaveProperty('encryptedApiKey')
   })
 
-  // 2. regenerateApiKey（非父 key）刷新 encryptedApiKey；新密文解回返回的新 key
-  test('regenerateApiKey refreshes encryptedApiKey and the new ciphertext decrypts to the new key', async () => {
+  // 2. 原子轮换刷新 encryptedApiKey；新密文解回返回的新 key
+  test('rotateApiKeySecret refreshes encryptedApiKey atomically', async () => {
+    const oldSecret = 'cr_old-secret'
     redis.getApiKey.mockResolvedValue({
       id: 'key-1',
       name: 'old-name',
-      apiKey: 'old-hashed',
+      apiKey: apiKeyService._hashApiKey(oldSecret),
       isV2Parent: 'false'
     })
 
-    const result = await apiKeyService.regenerateApiKey('key-1')
+    const result = await apiKeyService.rotateApiKeySecret('key-1', { mode: 'system' }, 'admin')
 
     expect(result).toMatchObject({ id: 'key-1', name: 'old-name' })
-    expect(result.key.startsWith('cr_')).toBe(true)
-    expect(redis.deleteApiKeyHash).toHaveBeenCalledWith('old-hashed')
-    expect(redis.setApiKey).toHaveBeenCalledTimes(1)
-    const [, updatedKeyData] = redis.setApiKey.mock.calls[0]
-    expect(updatedKeyData.encryptedApiKey).toEqual(expect.any(String))
-    expect(decrypt(updatedKeyData.encryptedApiKey, false)).toBe(result.key)
+    expect(result.apiKey.startsWith('cr_')).toBe(true)
+    expect(redis.rotateApiKeySecret).toHaveBeenCalledTimes(1)
+    const rotation = redis.rotateApiKeySecret.mock.calls[0][0]
+    expect(rotation.encryptedApiKey).toEqual(expect.any(String))
+    expect(decrypt(rotation.encryptedApiKey, false)).toBe(result.apiKey)
     expect(result).not.toHaveProperty('encryptedApiKey')
+  })
+
+  test('custom rotation accepts a one-character key and stores no hint', async () => {
+    const oldSecret = 'cr_old-secret'
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      name: 'custom-key',
+      apiKey: apiKeyService._hashApiKey(oldSecret),
+      isDeleted: 'false',
+      isV2Parent: 'false'
+    })
+
+    const result = await apiKeyService.rotateApiKeySecret('key-1', {
+      mode: 'custom',
+      apiKey: 'x'
+    })
+
+    expect(result.apiKey).toBe('x')
+    expect(redis.isApiKeySecretRegistryReady).toHaveBeenCalledTimes(1)
+    expect(redis.rotateApiKeySecret).toHaveBeenCalledWith(
+      expect.objectContaining({ generationMode: 'custom', apiKeyHint: '' })
+    )
+  })
+
+  test('custom rotation fails closed while the history registry is initializing', async () => {
+    redis.isApiKeySecretRegistryReady.mockResolvedValue(false)
+
+    await expect(
+      apiKeyService.rotateApiKeySecret('key-1', { mode: 'custom', apiKey: 'custom-key' })
+    ).rejects.toMatchObject({ code: 'REGISTRY_NOT_READY' })
+    expect(redis.getApiKey).not.toHaveBeenCalled()
+    expect(redis.rotateApiKeySecret).not.toHaveBeenCalled()
+  })
+
+  test('system rotation retries a random collision without changing the expected old hash', async () => {
+    const oldHash = apiKeyService._hashApiKey('cr_old-secret')
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      name: 'system-key',
+      apiKey: oldHash,
+      isDeleted: 'false',
+      isV2Parent: 'false'
+    })
+    redis.rotateApiKeySecret.mockResolvedValueOnce('CONFLICT').mockResolvedValueOnce('OK')
+
+    await expect(
+      apiKeyService.rotateApiKeySecret('key-1', { mode: 'system' })
+    ).resolves.toMatchObject({ generationMode: 'system' })
+
+    expect(redis.rotateApiKeySecret).toHaveBeenCalledTimes(2)
+    expect(redis.rotateApiKeySecret.mock.calls[0][0].expectedOldHash).toBe(oldHash)
+    expect(redis.rotateApiKeySecret.mock.calls[1][0].expectedOldHash).toBe(oldHash)
+    expect(redis.rotateApiKeySecret.mock.calls[0][0].newHash).not.toBe(
+      redis.rotateApiKeySecret.mock.calls[1][0].newHash
+    )
+  })
+
+  test('v2 rotation rejects a child owned by another parent before invoking Lua', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'child-1',
+      parentKeyId: 'other-parent',
+      isDeleted: 'false'
+    })
+
+    await expect(
+      apiKeyService.rotateV2ChildApiKeySecret(PARENT_ID, 'child-1', { mode: 'system' })
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(redis.rotateApiKeySecret).not.toHaveBeenCalled()
+  })
+
+  test('one-character custom keys pass normal and stats validation', async () => {
+    redis.findApiKeyByHash.mockResolvedValue({
+      id: 'key-1',
+      name: 'short-custom',
+      isActive: 'true',
+      isDeleted: 'false'
+    })
+
+    await expect(apiKeyService.validateApiKey('x')).resolves.toMatchObject({ valid: true })
+    await expect(apiKeyService.validateApiKeyForStats('x')).resolves.toMatchObject({ valid: true })
   })
 
   // getApiKeyPlaintextById ────────────────────────────────────────────────────
@@ -1349,6 +1450,7 @@ describe('apiKeyService 明文 reveal', () => {
     redis.getApiKey.mockResolvedValue({
       id: 'key-1',
       isDeleted: 'false',
+      apiKey: apiKeyService._hashApiKey(secret),
       encryptedApiKey: encrypt(secret)
     })
 
@@ -1403,11 +1505,12 @@ describe('apiKeyService 明文 reveal', () => {
     expect(logger.security).not.toHaveBeenCalled()
   })
 
-  // 7. PLAINTEXT_DECRYPT_FAILED：密文解出的明文不以 cr_ 开头（如 encrypt('garbage')）
-  test('getApiKeyPlaintextById throws PLAINTEXT_DECRYPT_FAILED when the decrypted value lacks the prefix', async () => {
+  // 7. PLAINTEXT_DECRYPT_FAILED：密文解出的明文与记录哈希不一致
+  test('getApiKeyPlaintextById throws PLAINTEXT_DECRYPT_FAILED when the plaintext hash mismatches', async () => {
     redis.getApiKey.mockResolvedValue({
       id: 'key-1',
       isDeleted: 'false',
+      apiKey: apiKeyService._hashApiKey('different-secret'),
       encryptedApiKey: encrypt('garbage-without-prefix')
     })
 
@@ -1426,6 +1529,7 @@ describe('apiKeyService 明文 reveal', () => {
       id: 'child-1',
       parentKeyId: PARENT_ID,
       isDeleted: 'false',
+      apiKey: apiKeyService._hashApiKey(secret),
       encryptedApiKey: encrypt(secret)
     })
 
@@ -1487,6 +1591,33 @@ describe('apiKeyService 明文 reveal', () => {
     expect(keys).toHaveLength(1)
     expect(keys[0]).not.toHaveProperty('encryptedApiKey')
     expect(keys[0]).not.toHaveProperty('apiKey')
+  })
+
+  test('getAllApiKeysFast uses the stored hint for custom keys without decrypting them', async () => {
+    redis.batchGetApiKeys.mockResolvedValue([
+      {
+        id: 'c1',
+        isDeleted: false,
+        apiKey: 'a'.repeat(64),
+        apiKeyGenerationMode: 'custom',
+        apiKeyHint: 'tail'
+      },
+      {
+        id: 'c2',
+        isDeleted: false,
+        apiKey: 'b'.repeat(64),
+        apiKeyGenerationMode: 'custom',
+        apiKeyHint: ''
+      }
+    ])
+    redis.batchGetApiKeyStats.mockResolvedValue(new Map())
+
+    const keys = await apiKeyService.getAllApiKeysFast(false, ['c1', 'c2'])
+
+    expect(keys.map((key) => key.maskedKey)).toEqual([
+      '自定义 Key · ****tail',
+      '自定义 Key · 已设置'
+    ])
   })
 
   // 12. restoreApiKey 返回的安全副本剥离 encryptedApiKey / apiKey（hash）

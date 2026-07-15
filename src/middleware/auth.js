@@ -11,6 +11,7 @@ const claudeRelayConfigService = require('../services/claudeRelayConfigService')
 const { calculateWaitTimeStats } = require('../utils/statsHelper')
 const { isClaudeFamilyModel, isClaudeFableModel } = require('../utils/modelHelper')
 const { getRequestIp, isIpAllowed } = require('../utils/ipWhitelistHelper')
+const { validateApiKeyCredential } = require('../utils/apiKeyCredential')
 const {
   CACHE_KEY: CLAUDE_CODE_UA_CACHE_KEY,
   getClaudeCodeVersionGateResult
@@ -476,7 +477,7 @@ const authenticateApiKey = async (req, res, next) => {
     }
 
     // 基本API Key格式验证
-    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+    if (!validateApiKeyCredential(apiKey).valid) {
       logger.security(`Invalid API key format from ${req.ip || 'unknown'}`)
       return res.status(401).json({
         error: 'Invalid API key format',

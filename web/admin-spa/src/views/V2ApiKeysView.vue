@@ -321,16 +321,26 @@
             <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
               >完整 API Key</label
             >
-            <button
-              class="inline-flex items-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-60 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-              :disabled="revealingApiKey"
-              type="button"
-              @click="revealApiKey"
-            >
-              <div v-if="revealingApiKey" class="loading-spinner" />
-              <i v-else class="fas fa-eye" />
-              显示完整 Key
-            </button>
+            <div class="flex flex-wrap gap-2">
+              <button
+                class="inline-flex items-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-60 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                :disabled="revealingApiKey"
+                type="button"
+                @click="revealApiKey"
+              >
+                <div v-if="revealingApiKey" class="loading-spinner" />
+                <i v-else class="fas fa-eye" />
+                显示完整 Key
+              </button>
+              <button
+                class="inline-flex items-center gap-2 rounded-xl border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                type="button"
+                @click="openRegenerateModal"
+              >
+                <i class="fas fa-arrows-rotate" />
+                重新生成 Key
+              </button>
+            </div>
             <div
               v-if="revealedApiKey"
               class="mt-2 flex items-center gap-2 rounded-lg bg-gray-100 p-3 dark:bg-gray-700"
@@ -908,6 +918,13 @@
       @cancel="handleCancelConfirm"
       @confirm="handleConfirmConfirm"
     />
+    <RegenerateApiKeyModal
+      v-if="showRegenerateModal && editingKey"
+      :api-key="editingKey"
+      scope="v2"
+      @close="showRegenerateModal = false"
+      @regenerated="handleKeyRegenerated"
+    />
   </div>
 </template>
 
@@ -927,6 +944,7 @@ import {
   revealV2ApiKeySecretApi
 } from '@/utils/http_apis'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
+import RegenerateApiKeyModal from '@/components/apikeys/RegenerateApiKeyModal.vue'
 import CustomDropdown from '@/components/common/CustomDropdown.vue'
 import UnifiedTestModal from '@/components/common/UnifiedTestModal.vue'
 
@@ -1022,6 +1040,8 @@ const newSecret = ref('')
 const revealedApiKey = ref('')
 const showFullApiKey = ref(false)
 const revealingApiKey = ref(false)
+const showRegenerateModal = ref(false)
+const editingKey = computed(() => keys.value.find((key) => key.id === editingId.value) || null)
 
 // 账号级 IP 白名单弹窗
 const showAccountIpWhitelistModal = ref(false)
@@ -1309,6 +1329,7 @@ const openEditModal = (key) => {
     form.ipWhitelistInput = ''
   }
   resetRevealState()
+  showRegenerateModal.value = false
   showFormModal.value = true
 }
 
@@ -1527,7 +1548,19 @@ const copySecret = async () => {
 
 const closeFormModal = () => {
   showFormModal.value = false
+  showRegenerateModal.value = false
   resetRevealState()
+}
+
+const openRegenerateModal = () => {
+  resetRevealState()
+  showRegenerateModal.value = true
+}
+
+const handleKeyRegenerated = async () => {
+  resetRevealState()
+  showToast('API Key 已重新生成', 'success')
+  await Promise.all([loadKeys(), loadRangeStats()])
 }
 
 // 编辑态显示该子 key 完整明文；request() 不抛异常，失败统一 toast 后端中文提示

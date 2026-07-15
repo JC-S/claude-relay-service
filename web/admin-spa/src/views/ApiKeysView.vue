@@ -2259,6 +2259,7 @@
       :accounts="accounts"
       :api-key="editingApiKey"
       @close="showEditApiKeyModal = false"
+      @key-regenerated="handleKeyRegenerated"
       @manage-v2="handleEditModalManageV2"
       @success="handleEditSuccess"
       @upgrade-v2="handleEditModalUpgradeV2"
@@ -4285,6 +4286,14 @@ const handleEditSuccess = () => {
     invalidateV2ChildrenCacheFor(editingApiKey.value)
   }
   loadApiKeys()
+}
+
+const handleKeyRegenerated = async () => {
+  showToast('API Key 已重新生成', 'success')
+  if (editingApiKey.value?.parentKeyId) {
+    invalidateV2ChildrenCacheFor(editingApiKey.value)
+  }
+  await loadApiKeys()
 }
 
 // 处理续期成功

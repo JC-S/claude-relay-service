@@ -1,4 +1,36 @@
 const logger = require('../utils/logger')
+const { validateApiKeyCredential } = require('../utils/apiKeyCredential')
+
+// Keep this allowlist aligned with relay route mounts in app.js. Boundary matching below prevents
+// similarly named admin/public routes such as /apiStats from being treated as relay traffic.
+const API_RELAY_PATH_PREFIXES = [
+  '/api',
+  '/claude',
+  '/antigravity/api',
+  '/gemini-cli/api',
+  '/gemini',
+  '/openai',
+  '/general',
+  '/droid',
+  '/grok',
+  '/azure'
+]
+
+function normalizePath(value) {
+  const path = String(value || '/')
+    .split('?')[0]
+    .replace(/\/{2,}/g, '/')
+    .toLowerCase()
+  if (path.length > 1 && path.endsWith('/')) {
+    return path.slice(0, -1)
+  }
+  return path || '/'
+}
+
+function isApiRelayPath(req) {
+  const path = normalizePath(req?.originalUrl || req?.url || '/')
+  return API_RELAY_PATH_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
+}
 
 /**
  * 浏览器/Chrome插件兜底中间件
@@ -38,9 +70,9 @@ const browserFallbackMiddleware = (req, res, next) => {
   // 检查是否为Chrome插件或浏览器请求
   const isChromeExtension = origin.startsWith('chrome-extension://')
   const isBrowserRequest = userAgent.includes('Mozilla/') && userAgent.includes('Chrome/')
-  const hasApiKey = normalizedKey.startsWith('cr_') // 我们的API Key格式
+  const hasApiKey = validateApiKeyCredential(normalizedKey).valid
 
-  if ((isChromeExtension || isBrowserRequest) && hasApiKey) {
+  if ((isChromeExtension || isBrowserRequest) && hasApiKey && isApiRelayPath(req)) {
     // 为Chrome插件请求添加特殊标记
     req.isBrowserFallback = true
     req.originalUserAgent = userAgent
@@ -74,5 +106,6 @@ const browserFallbackMiddleware = (req, res, next) => {
 }
 
 module.exports = {
-  browserFallbackMiddleware
+  browserFallbackMiddleware,
+  isApiRelayPath
 }

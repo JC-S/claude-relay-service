@@ -551,17 +551,10 @@ async function importData() {
             }
           }
 
-          // 使用 hset 存储到哈希表
-          const pipeline = redis.client.pipeline()
-          for (const [field, value] of Object.entries(apiKey)) {
-            pipeline.hset(`apikey:${apiKey.id}`, field, value)
-          }
-          await pipeline.exec()
-
-          // 更新哈希映射
-          if (apiKey.apiKey && !importDataObj.metadata.sanitized) {
-            await redis.client.hset('apikey:hash_map', apiKey.apiKey, apiKey.id)
-          }
+          await redis.importApiKeyRecord(apiKey.id, apiKey, {
+            hashedKey: importDataObj.metadata.sanitized ? '' : apiKey.apiKey,
+            sanitized: importDataObj.metadata.sanitized === true
+          })
 
           logger.success(`✅ Imported API Key: ${apiKey.name} (${apiKey.id})`)
           stats.imported++

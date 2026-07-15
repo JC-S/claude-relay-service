@@ -51,6 +51,9 @@ class ApiKeyIndexService {
       this.rebuildHashMap().catch((err) => {
         logger.error('❌ API Key hash_map 回填失败:', err)
       })
+      this.rebuildSecretRegistry().catch((err) => {
+        logger.error('❌ API Key secret registry 回填失败:', err)
+      })
 
       if (parseInt(version) >= this.CURRENT_VERSION) {
         logger.info('✅ API Key 索引已是最新版本')
@@ -76,50 +79,110 @@ class ApiKeyIndexService {
     }
 
     try {
-      const client = this.redis.getClientSafe()
       const keyIds = await this.redis.scanApiKeyIds()
 
       let rebuilt = 0
+      let conflicts = 0
       const BATCH_SIZE = 100
 
       for (let i = 0; i < keyIds.length; i += BATCH_SIZE) {
         const batch = keyIds.slice(i, i + BATCH_SIZE)
-        const pipeline = client.pipeline()
-
-        // 批量获取 API Key 数据
-        for (const keyId of batch) {
-          pipeline.hgetall(`apikey:${keyId}`)
-        }
-        const results = await pipeline.exec()
-
-        // 检查并回填缺失的映射
-        const fillPipeline = client.pipeline()
-        let needFill = false
-
-        for (let j = 0; j < batch.length; j++) {
-          const keyData = results[j]?.[1]
-          if (keyData && keyData.apiKey) {
-            // keyData.apiKey 存储的是哈希值
-            const exists = await client.hexists('apikey:hash_map', keyData.apiKey)
-            if (!exists) {
-              fillPipeline.hset('apikey:hash_map', keyData.apiKey, batch[j])
-              rebuilt++
-              needFill = true
-            }
+        const results = await Promise.all(
+          batch.map((keyId) => this.redis.repairApiKeyHashMapping(keyId))
+        )
+        for (const result of results) {
+          if (result === 'REPAIRED') {
+            rebuilt++
+          } else if (result === 'CONFLICT') {
+            conflicts++
           }
-        }
-
-        if (needFill) {
-          await fillPipeline.exec()
         }
       }
 
       if (rebuilt > 0) {
         logger.info(`🔧 回填了 ${rebuilt} 个 API Key 到 hash_map`)
       }
+      if (conflicts > 0) {
+        logger.error(`❌ 检测到 ${conflicts} 个 API Key hash_map 所有权冲突`)
+      }
     } catch (error) {
       logger.error('❌ 回填 hash_map 失败:', error)
       throw error
+    }
+  }
+
+  async rebuildSecretRegistry() {
+    if (!this.redis) {
+      return
+    }
+
+    const client = this.redis.getClientSafe()
+    const registryKey = 'apikey_secret_registry'
+    if ((await client.hget(registryKey, '__ready__')) === 'v1') {
+      return
+    }
+
+    const lockKey = 'lock:apikey_secret_registry_backfill'
+    const lockValue = randomUUID()
+    const acquired = await this.redis.setAccountLock(lockKey, lockValue, 10 * 60 * 1000)
+    if (!acquired) {
+      logger.info('API Key secret registry is being initialized by another worker')
+      return
+    }
+
+    try {
+      if ((await client.hget(registryKey, '__ready__')) === 'v1') {
+        return
+      }
+
+      const keyIds = await this.redis.scanApiKeyIds()
+      const BATCH_SIZE = 200
+      for (let i = 0; i < keyIds.length; i += BATCH_SIZE) {
+        const batch = keyIds.slice(i, i + BATCH_SIZE)
+        const readPipeline = client.pipeline()
+        for (const keyId of batch) {
+          readPipeline.hget(`apikey:${keyId}`, 'apiKey')
+        }
+        const hashes = await readPipeline.exec()
+        const candidates = []
+        const reservePipeline = client.pipeline()
+        for (let j = 0; j < batch.length; j++) {
+          const hashedKey = hashes[j]?.[1]
+          if (!/^[a-f0-9]{64}$/i.test(hashedKey || '')) {
+            continue
+          }
+          candidates.push({ keyId: batch[j], hashedKey })
+          reservePipeline.hsetnx(registryKey, hashedKey, batch[j])
+        }
+
+        if (candidates.length === 0) {
+          continue
+        }
+        const reservations = await reservePipeline.exec()
+        const ownerPipeline = client.pipeline()
+        const ownerChecks = []
+        for (let j = 0; j < candidates.length; j++) {
+          if (reservations[j]?.[1] === 0) {
+            ownerChecks.push(candidates[j])
+            ownerPipeline.hget(registryKey, candidates[j].hashedKey)
+          }
+        }
+        if (ownerChecks.length > 0) {
+          const owners = await ownerPipeline.exec()
+          for (let j = 0; j < ownerChecks.length; j++) {
+            if (owners[j]?.[1] !== ownerChecks[j].keyId) {
+              throw new Error(
+                `Duplicate API key secret detected for records ${owners[j]?.[1]} and ${ownerChecks[j].keyId}`
+              )
+            }
+          }
+        }
+      }
+
+      await client.hset(registryKey, '__ready__', 'v1')
+      logger.info(`API Key secret registry initialized with ${keyIds.length} records scanned`)
+    } finally {
+      await this.redis.releaseAccountLock(lockKey, lockValue)
     }
   }
 

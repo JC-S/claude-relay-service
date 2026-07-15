@@ -10,6 +10,7 @@ const serviceRatesService = require('../services/serviceRatesService')
 const modelsConfig = require('../../config/models')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { splitModelStatsByFastMode } = require('../utils/modelVariantHelper')
+const { validateApiKeyCredential } = require('../utils/apiKeyCredential')
 const {
   buildUsagePayloadFromStats,
   createModelUsageStats,
@@ -30,6 +31,8 @@ const {
 } = require('../services/apiKeyConnectivityTestService')
 
 const router = express.Router()
+
+const hasValidApiKeyFormat = (apiKey) => validateApiKeyCredential(apiKey).valid
 
 function calculateModelCostFromStats(model, stats) {
   return reconcileStoredModelCost(
@@ -127,7 +130,7 @@ router.post('/api/get-key-id', async (req, res) => {
     }
 
     // 基本API Key格式验证
-    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+    if (!hasValidApiKeyFormat(apiKey)) {
       return res.status(400).json({
         error: 'Invalid API key format',
         message: 'API key format is invalid'
@@ -174,7 +177,7 @@ router.put('/api/ip-whitelist', async (req, res) => {
       })
     }
 
-    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+    if (!hasValidApiKeyFormat(apiKey)) {
       return res.status(400).json({
         error: 'Invalid API key format',
         message: 'API key format is invalid'
@@ -376,7 +379,7 @@ router.post('/api/user-stats', async (req, res) => {
       }
     } else if (apiKey) {
       // 通过 apiKey 查询（保持向后兼容）
-      if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+      if (!hasValidApiKeyFormat(apiKey)) {
         logger.security(`Invalid API key format in user stats query from ${req.ip || 'unknown'}`)
         return res.status(400).json({
           error: 'Invalid API key format',
@@ -1074,7 +1077,7 @@ router.post('/api-key/test', async (req, res) => {
       })
     }
 
-    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+    if (!hasValidApiKeyFormat(apiKey)) {
       return res.status(400).json({
         error: 'Invalid API key format',
         message: 'API key format is invalid'
@@ -1127,7 +1130,7 @@ router.post('/api-key/test-gemini', async (req, res) => {
       })
     }
 
-    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+    if (!hasValidApiKeyFormat(apiKey)) {
       return res.status(400).json({
         error: 'Invalid API key format',
         message: 'API key format is invalid'
@@ -1183,7 +1186,7 @@ router.post('/api-key/test-openai', async (req, res) => {
       })
     }
 
-    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+    if (!hasValidApiKeyFormat(apiKey)) {
       return res.status(400).json({
         error: 'Invalid API key format',
         message: 'API key format is invalid'
@@ -1230,7 +1233,7 @@ router.post('/api-key/test-grok', async (req, res) => {
   try {
     const { apiKey, model = 'grok-4.5', prompt = 'hi' } = req.body
     const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
-    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+    if (!hasValidApiKeyFormat(apiKey)) {
       return res.status(400).json({ error: 'Invalid API key format' })
     }
     const validation = await apiKeyService.validateApiKeyForStats(apiKey)

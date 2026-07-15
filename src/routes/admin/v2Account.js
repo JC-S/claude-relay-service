@@ -219,9 +219,55 @@ router.post('/keys/:keyId/secret/reveal', async (req, res) => {
   }
 })
 
+// 🔄 v2 父账号只可轮换自己名下的子 Key
+router.post('/keys/:keyId/secret/regenerate', async (req, res) => {
+  res.set('Cache-Control', 'no-store')
+  try {
+    const result = await apiKeyService.rotateV2ChildApiKeySecret(
+      req.v2Account.parentKeyId,
+      req.params.keyId,
+      { mode: req.body?.mode, apiKey: req.body?.apiKey }
+    )
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    const code = error.code || 'INTERNAL_ERROR'
+    if (code === 'NOT_FOUND') {
+      return res.status(404).json({ success: false, code, message: 'API key not found' })
+    }
+    if (
+      [
+        'INVALID_MODE',
+        'EMPTY',
+        'TOO_LONG',
+        'NON_ASCII',
+        'EDGE_WHITESPACE',
+        'BEARER_PREFIX'
+      ].includes(code)
+    ) {
+      return res.status(400).json({ success: false, code, message: error.message })
+    }
+    if (code === 'REGISTRY_NOT_READY') {
+      return res.status(503).json({ success: false, code, message: error.message })
+    }
+    if (['SAME_VALUE', 'CONFLICT', 'STATE_CHANGED', 'REGISTRY_CONFLICT'].includes(code)) {
+      const message =
+        code === 'REGISTRY_CONFLICT'
+          ? '检测到该 Key 的凭据登记异常，请联系管理员检查重复导入的数据'
+          : error.message
+      return res.status(409).json({ success: false, code, message })
+    }
+    logger.error('Failed to regenerate v2 child API key secret:', error)
+    return res.status(500).json({
+      success: false,
+      code: 'INTERNAL_ERROR',
+      message: 'Failed to regenerate API key'
+    })
+  }
+})
+
 // 🧪 使用当前账号下的子 key 测试真实转发链路；明文仅在服务端解密和使用
 router.post('/keys/:keyId/connectivity-test', async (req, res) => {
-  const parentKeyId = req.v2Account.parentKeyId
+  const { parentKeyId } = req.v2Account
   const { keyId } = req.params
 
   try {

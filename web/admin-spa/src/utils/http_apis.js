@@ -120,6 +120,8 @@ export const getApiKeyUsageRecordsApi = (id, params) =>
   request({ url: `/admin/api-keys/${id}/usage-records`, method: 'GET', params })
 export const revealApiKeySecretApi = (id) =>
   request({ url: `/admin/api-keys/${id}/secret/reveal`, method: 'POST' })
+export const regenerateApiKeySecretApi = (id, data) =>
+  request({ url: `/admin/api-keys/${id}/secret/regenerate`, method: 'POST', data })
 
 // 🆕 v2 账号
 export const upgradeApiKeyToV2Api = (id, data) =>
@@ -142,6 +144,8 @@ export const getV2ApiKeyUsageRecordsApi = (id, params) =>
   request({ url: `/admin/v2/keys/${id}/usage-records`, method: 'GET', params })
 export const revealV2ApiKeySecretApi = (id) =>
   request({ url: `/admin/v2/keys/${id}/secret/reveal`, method: 'POST' })
+export const regenerateV2ApiKeySecretApi = (id, data) =>
+  request({ url: `/admin/v2/keys/${id}/secret/regenerate`, method: 'POST', data })
 export const changeV2PasswordApi = (data) =>
   request({ url: '/admin/v2/account/password', method: 'POST', data })
 export const getV2IpWhitelistApi = () =>

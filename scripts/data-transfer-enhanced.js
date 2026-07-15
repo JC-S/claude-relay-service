@@ -967,16 +967,12 @@ async function importData() {
             apiKeyData.apiKey = hashedApiKey
           }
 
-          // 使用 hset 存储到哈希表
-          const pipeline = redis.client.pipeline()
-          for (const [field, value] of Object.entries(apiKeyData)) {
-            pipeline.hset(`apikey:${apiKey.id}`, field, value)
-          }
-          await pipeline.exec()
+          await redis.importApiKeyRecord(apiKey.id, apiKeyData, {
+            hashedKey: importDataObj.metadata.sanitized ? '' : hashedApiKey,
+            sanitized: importDataObj.metadata.sanitized === true
+          })
 
-          // 更新哈希映射：hash_map的key必须是哈希值
           if (!importDataObj.metadata.sanitized && hashedApiKey) {
-            await redis.client.hset('apikey:hash_map', hashedApiKey, apiKey.id)
             logger.info(
               `📝 Updated hash mapping: ${hashedApiKey.substring(0, 8)}... -> ${apiKey.id}`
             )

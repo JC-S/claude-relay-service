@@ -2,6 +2,15 @@ const Redis = require('ioredis')
 const config = require('../../config/config')
 const logger = require('../utils/logger')
 
+const API_KEY_RECORD_TTL_SECONDS = 86400 * 365
+const API_KEY_SECRET_REGISTRY_KEY = 'apikey_secret_registry'
+const API_KEY_CREDENTIAL_FIELDS = new Set([
+  'apiKey',
+  'encryptedApiKey',
+  'apiKeyGenerationMode',
+  'apiKeyHint'
+])
+
 // 时区辅助函数
 // 注意：这个函数的目的是获取某个时间点在目标时区的"本地"表示
 // 例如：UTC时间 2025-07-30 01:00:00 在 UTC+8 时区表示为 2025-07-30 09:00:00
@@ -535,18 +544,207 @@ class RedisClient {
   }
 
   // 🔑 API Key 相关操作
+  // Creation-only API. Existing records must use updateApiKeyFields so credentials cannot be
+  // overwritten by a stale read-modify-write cycle.
   async setApiKey(keyId, keyData, hashedKey = null) {
     const key = `apikey:${keyId}`
     const client = this.getClientSafe()
-
-    // 维护哈希映射表（用于快速查找）
-    // hashedKey参数是实际的哈希值，用于建立映射
+    const transaction = client.multi()
+    transaction.hset(key, keyData)
+    transaction.expire(key, API_KEY_RECORD_TTL_SECONDS)
     if (hashedKey) {
-      await client.hset('apikey:hash_map', hashedKey, keyId)
+      transaction.hset('apikey:hash_map', hashedKey, keyId)
+    }
+    await transaction.exec()
+  }
+
+  async updateApiKeyFields(keyId, fields = {}, fieldsToDelete = []) {
+    const fieldNames = [...Object.keys(fields), ...fieldsToDelete]
+    const credentialField = fieldNames.find((field) => API_KEY_CREDENTIAL_FIELDS.has(field))
+    if (credentialField) {
+      const error = new Error(`Credential field cannot be updated directly: ${credentialField}`)
+      error.code = 'API_KEY_CREDENTIAL_WRITE_FORBIDDEN'
+      throw error
     }
 
-    await client.hset(key, keyData)
-    await client.expire(key, 86400 * 365) // 1年过期
+    const entries = Object.entries(fields)
+    const args = [String(entries.length), String(fieldsToDelete.length)]
+    for (const [field, value] of entries) {
+      args.push(field, String(value))
+    }
+    args.push(...fieldsToDelete)
+
+    const script = `
+      if redis.call('EXISTS', KEYS[1]) == 0 then
+        return 0
+      end
+
+      local updateCount = tonumber(ARGV[1])
+      local deleteCount = tonumber(ARGV[2])
+      local offset = 3
+      for i = 0, updateCount - 1 do
+        redis.call('HSET', KEYS[1], ARGV[offset + i * 2], ARGV[offset + i * 2 + 1])
+      end
+      offset = offset + updateCount * 2
+      for i = 0, deleteCount - 1 do
+        redis.call('HDEL', KEYS[1], ARGV[offset + i])
+      end
+      redis.call('EXPIRE', KEYS[1], ARGV[3 + updateCount * 2 + deleteCount])
+      return 1
+    `
+    args.push(String(API_KEY_RECORD_TTL_SECONDS))
+    const result = await this.getClientSafe().eval(script, 1, `apikey:${keyId}`, ...args)
+    if (result !== 1) {
+      const error = new Error('API key record no longer exists')
+      error.code = 'API_KEY_NOT_FOUND'
+      throw error
+    }
+    return true
+  }
+
+  async reserveApiKeySecret(hashedKey, keyId) {
+    const script = `
+      local mapOwner = redis.call('HGET', KEYS[2], ARGV[1])
+      if mapOwner and mapOwner ~= ARGV[2] then
+        return 'HASH_CONFLICT'
+      end
+
+      local registryOwner = redis.call('HGET', KEYS[1], ARGV[1])
+      if registryOwner and registryOwner ~= ARGV[2] then
+        return 'REGISTRY_CONFLICT'
+      end
+      if registryOwner == ARGV[2] then
+        return 'OWNED'
+      end
+
+      redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+      return 'RESERVED'
+    `
+    return await this.getClientSafe().eval(
+      script,
+      2,
+      API_KEY_SECRET_REGISTRY_KEY,
+      'apikey:hash_map',
+      hashedKey,
+      keyId
+    )
+  }
+
+  async isApiKeySecretRegistryReady() {
+    return (await this.getClientSafe().hget(API_KEY_SECRET_REGISTRY_KEY, '__ready__')) === 'v1'
+  }
+
+  async repairApiKeyHashMapping(keyId, expectedHash = '') {
+    const script = `
+      if redis.call('EXISTS', KEYS[1]) == 0 then
+        return 'NOT_FOUND'
+      end
+
+      local currentHash = redis.call('HGET', KEYS[1], 'apiKey')
+      if not currentHash or currentHash == '' then
+        return 'NO_HASH'
+      end
+      if ARGV[2] ~= '' and currentHash ~= ARGV[2] then
+        return 'STATE_CHANGED'
+      end
+
+      local isDeleted = redis.call('HGET', KEYS[1], 'isDeleted')
+      local isV2Parent = redis.call('HGET', KEYS[1], 'isV2Parent')
+      local owner = redis.call('HGET', KEYS[2], currentHash)
+      if isDeleted == 'true' or isV2Parent == 'true' then
+        if owner == ARGV[1] then
+          redis.call('HDEL', KEYS[2], currentHash)
+        end
+        return 'NOT_CALLABLE'
+      end
+
+      if not owner then
+        redis.call('HSET', KEYS[2], currentHash, ARGV[1])
+        return 'REPAIRED'
+      end
+      if owner == ARGV[1] then
+        return 'OK'
+      end
+      return 'CONFLICT'
+    `
+    return await this.getClientSafe().eval(
+      script,
+      2,
+      `apikey:${keyId}`,
+      'apikey:hash_map',
+      keyId,
+      expectedHash
+    )
+  }
+
+  async rotateApiKeySecret({
+    keyId,
+    expectedOldHash,
+    newHash,
+    encryptedApiKey,
+    generationMode,
+    apiKeyHint,
+    updatedAt
+  }) {
+    const script = `
+      if redis.call('EXISTS', KEYS[1]) == 0 then
+        return 'STATE_CHANGED'
+      end
+      if redis.call('HGET', KEYS[1], 'isDeleted') == 'true' or
+         redis.call('HGET', KEYS[1], 'isV2Parent') == 'true' or
+         redis.call('HGET', KEYS[1], 'apiKey') ~= ARGV[1] then
+        return 'STATE_CHANGED'
+      end
+
+      local oldRegistryOwner = redis.call('HGET', KEYS[3], ARGV[1])
+      if not oldRegistryOwner then
+        redis.call('HSET', KEYS[3], ARGV[1], ARGV[3])
+      elseif oldRegistryOwner ~= ARGV[3] then
+        return 'REGISTRY_CONFLICT'
+      end
+
+      if ARGV[2] == ARGV[1] then
+        return 'SAME_VALUE'
+      end
+
+      local oldMapOwner = redis.call('HGET', KEYS[2], ARGV[1])
+      if oldMapOwner and oldMapOwner ~= ARGV[3] then
+        return 'REGISTRY_CONFLICT'
+      end
+      if redis.call('HEXISTS', KEYS[2], ARGV[2]) == 1 then
+        return 'CONFLICT'
+      end
+      if redis.call('HSETNX', KEYS[3], ARGV[2], ARGV[3]) == 0 then
+        return 'CONFLICT'
+      end
+
+      redis.call('HDEL', KEYS[2], ARGV[1])
+      redis.call('DEL', KEYS[4])
+      redis.call('HSET', KEYS[1],
+        'apiKey', ARGV[2],
+        'encryptedApiKey', ARGV[4],
+        'apiKeyGenerationMode', ARGV[5],
+        'apiKeyHint', ARGV[6],
+        'updatedAt', ARGV[7]
+      )
+      redis.call('HSET', KEYS[2], ARGV[2], ARGV[3])
+      return 'OK'
+    `
+    return await this.getClientSafe().eval(
+      script,
+      4,
+      `apikey:${keyId}`,
+      'apikey:hash_map',
+      API_KEY_SECRET_REGISTRY_KEY,
+      `apikey_hash:${expectedOldHash}`,
+      expectedOldHash,
+      newHash,
+      keyId,
+      encryptedApiKey,
+      generationMode,
+      apiKeyHint,
+      updatedAt
+    )
   }
 
   async getApiKey(keyId) {
@@ -555,16 +753,37 @@ class RedisClient {
   }
 
   async deleteApiKey(keyId) {
-    const key = `apikey:${keyId}`
+    const script = `
+      local function isValidHash(value)
+        return value and string.len(value) == 64 and string.match(value, '^[0-9a-fA-F]+$')
+      end
 
-    // 获取要删除的API Key哈希值，以便从映射表中移除
-    const keyData = await this.client.hgetall(key)
-    if (keyData && keyData.apiKey) {
-      // keyData.apiKey现在存储的是哈希值，直接从映射表删除
-      await this.client.hdel('apikey:hash_map', keyData.apiKey)
-    }
+      if redis.call('EXISTS', KEYS[1]) == 0 then
+        return 'NOT_FOUND'
+      end
+      local currentHash = redis.call('HGET', KEYS[1], 'apiKey')
+      if currentHash and currentHash ~= '' then
+        if isValidHash(currentHash) then
+          redis.call('HSETNX', KEYS[3], currentHash, ARGV[1])
+        end
 
-    return await this.client.del(key)
+        if redis.call('HGET', KEYS[2], currentHash) == ARGV[1] then
+          redis.call('HDEL', KEYS[2], currentHash)
+        end
+        redis.call('DEL', 'apikey_hash:' .. currentHash)
+      end
+      redis.call('DEL', KEYS[1])
+      return 'DELETED'
+    `
+    const result = await this.getClientSafe().eval(
+      script,
+      3,
+      `apikey:${keyId}`,
+      'apikey:hash_map',
+      API_KEY_SECRET_REGISTRY_KEY,
+      keyId
+    )
+    return result === 'DELETED' ? 1 : 0
   }
 
   async getAllApiKeys() {
@@ -1130,27 +1349,63 @@ class RedisClient {
     // 使用反向映射表：hash -> keyId
     let keyId = await this.client.hget('apikey:hash_map', hashedKey)
 
+    if (keyId) {
+      const keyData = await this.client.hgetall(`apikey:${keyId}`)
+      if (keyData && Object.keys(keyData).length > 0 && keyData.apiKey === hashedKey) {
+        return { id: keyId, ...keyData }
+      }
+
+      // Only remove the mapping if it still belongs to the stale owner. A concurrent rotation may
+      // already have reused this field for the correct record.
+      const cleanupScript = `
+        if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then
+          return redis.call('HDEL', KEYS[1], ARGV[1])
+        end
+        return 0
+      `
+      await this.client.eval(cleanupScript, 1, 'apikey:hash_map', hashedKey, keyId)
+      keyId = null
+    }
+
+    // The append-only registry can safely recover a completely missing modern mapping. Re-read
+    // the record inside repairApiKeyHashMapping so a concurrent rotation cannot restore old data.
+    if (!keyId) {
+      const registryOwner = await this.client.hget(API_KEY_SECRET_REGISTRY_KEY, hashedKey)
+      if (registryOwner) {
+        const registryRecord = await this.client.hgetall(`apikey:${registryOwner}`)
+        if (
+          registryRecord &&
+          Object.keys(registryRecord).length > 0 &&
+          registryRecord.apiKey === hashedKey
+        ) {
+          const repairResult = await this.repairApiKeyHashMapping(registryOwner, hashedKey)
+          if (repairResult === 'OK' || repairResult === 'REPAIRED') {
+            return { id: registryOwner, ...registryRecord }
+          }
+        }
+      }
+    }
+
     // 回退：查旧结构 apikey_hash:*（启动回填未完成时兼容）
     if (!keyId) {
       const oldData = await this.client.hgetall(`apikey_hash:${hashedKey}`)
       if (oldData && oldData.id) {
-        keyId = oldData.id
-        // 回填到 hash_map
-        await this.client.hset('apikey:hash_map', hashedKey, keyId)
+        const legacyRecord = await this.client.hgetall(`apikey:${oldData.id}`)
+        if (
+          legacyRecord &&
+          Object.keys(legacyRecord).length > 0 &&
+          legacyRecord.apiKey === hashedKey
+        ) {
+          keyId = oldData.id
+          const repairResult = await this.repairApiKeyHashMapping(keyId, hashedKey)
+          if (repairResult === 'OK' || repairResult === 'REPAIRED') {
+            return { id: keyId, ...legacyRecord }
+          }
+        }
+        await this.client.del(`apikey_hash:${hashedKey}`)
       }
     }
 
-    if (!keyId) {
-      return null
-    }
-
-    const keyData = await this.client.hgetall(`apikey:${keyId}`)
-    if (keyData && Object.keys(keyData).length > 0) {
-      return { id: keyId, ...keyData }
-    }
-
-    // 如果数据不存在，清理映射表
-    await this.client.hdel('apikey:hash_map', hashedKey)
     return null
   }
 
@@ -3200,6 +3455,103 @@ class RedisClient {
     await this.client.del(oldKey)
     // 从新的 hash_map 中移除（认证使用此结构）
     await this.client.hdel('apikey:hash_map', hashedKey)
+  }
+
+  async importApiKeyRecord(keyId, keyData, { hashedKey = '', sanitized = false } = {}) {
+    if (!sanitized && hashedKey && !/^[a-f0-9]{64}$/i.test(hashedKey)) {
+      const error = new Error('Imported API key hash must be a SHA-256 hex string')
+      error.code = 'INVALID_API_KEY_HASH'
+      throw error
+    }
+    const normalizedHashedKey = hashedKey ? hashedKey.toLowerCase() : ''
+    const recordData = { ...keyData }
+    if (sanitized) {
+      recordData.apiKey = ''
+    } else if (normalizedHashedKey) {
+      recordData.apiKey = normalizedHashedKey
+    }
+    const effectiveHashedKey = sanitized ? '' : normalizedHashedKey
+    const entries = Object.entries(recordData).map(([field, value]) => [
+      field,
+      value === null || value === undefined
+        ? ''
+        : typeof value === 'object'
+          ? JSON.stringify(value)
+          : String(value)
+    ])
+    const args = [keyId, effectiveHashedKey, sanitized ? '1' : '0', String(entries.length)]
+    for (const [field, value] of entries) {
+      args.push(field, value)
+    }
+
+    const script = `
+      local function isValidHash(value)
+        return value and string.len(value) == 64 and string.match(value, '^[0-9a-fA-F]+$')
+      end
+
+      local keyId = ARGV[1]
+      local newHash = ARGV[2]
+      local sanitized = ARGV[3] == '1'
+      local oldHash = redis.call('HGET', KEYS[1], 'apiKey')
+
+      if not sanitized and newHash ~= '' then
+        if isValidHash(oldHash) then
+          local oldOwner = redis.call('HGET', KEYS[3], oldHash)
+          if not oldOwner then
+            redis.call('HSET', KEYS[3], oldHash, keyId)
+          elseif oldOwner ~= keyId then
+            return 'REGISTRY_CONFLICT'
+          end
+        end
+
+        local registryOwner = redis.call('HGET', KEYS[3], newHash)
+        if registryOwner and registryOwner ~= keyId then
+          return 'REGISTRY_CONFLICT'
+        end
+        if registryOwner == keyId and oldHash ~= newHash then
+          return 'HISTORY_CONFLICT'
+        end
+        local mapOwner = redis.call('HGET', KEYS[2], newHash)
+        if mapOwner and mapOwner ~= keyId then
+          return 'HASH_CONFLICT'
+        end
+        if not registryOwner then
+          redis.call('HSET', KEYS[3], newHash, keyId)
+        end
+      end
+
+      if oldHash and oldHash ~= '' and (sanitized or oldHash ~= newHash) then
+        if redis.call('HGET', KEYS[2], oldHash) == keyId then
+          redis.call('HDEL', KEYS[2], oldHash)
+        end
+        redis.call('DEL', 'apikey_hash:' .. oldHash)
+      end
+
+      local pairCount = tonumber(ARGV[4])
+      local offset = 5
+      for i = 0, pairCount - 1 do
+        redis.call('HSET', KEYS[1], ARGV[offset + i * 2], ARGV[offset + i * 2 + 1])
+      end
+
+      if not sanitized and newHash ~= '' then
+        redis.call('HSET', KEYS[2], newHash, keyId)
+      end
+      return 'OK'
+    `
+    const result = await this.getClientSafe().eval(
+      script,
+      3,
+      `apikey:${keyId}`,
+      'apikey:hash_map',
+      API_KEY_SECRET_REGISTRY_KEY,
+      ...args
+    )
+    if (result !== 'OK') {
+      const error = new Error(`API key import conflict: ${result}`)
+      error.code = result
+      throw error
+    }
+    return true
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -58,6 +58,16 @@
                 显示完整 Key
               </button>
               <button
+                v-if="!apiKey.isV2Parent"
+                class="inline-flex items-center justify-center rounded-lg border border-amber-300 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 hover:text-amber-900 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                title="重新生成 Key"
+                type="button"
+                @click="openRegenerateModal"
+              >
+                <i class="fas fa-arrows-rotate mr-1.5 text-xs" />
+                重新生成 Key
+              </button>
+              <button
                 v-if="apiKey.isV2Parent"
                 class="inline-flex items-center justify-center rounded-lg border border-purple-200 px-3 py-2 text-sm font-medium text-purple-600 transition-colors hover:bg-purple-50 hover:text-purple-900 dark:border-purple-700 dark:text-purple-400 dark:hover:bg-purple-900/20"
                 title="v2 管理"
@@ -1373,6 +1383,13 @@
       @cancel="handleCancelModal"
       @confirm="handleConfirmModal"
     />
+    <RegenerateApiKeyModal
+      v-if="showRegenerateModal"
+      :api-key="apiKey"
+      scope="admin"
+      @close="showRegenerateModal = false"
+      @regenerated="handleKeyRegenerated"
+    />
   </Teleport>
 </template>
 
@@ -1384,6 +1401,7 @@ import { useApiKeysStore } from '@/stores/apiKeys'
 import * as httpApis from '@/utils/http_apis'
 import AccountSelector from '@/components/common/AccountSelector.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
+import RegenerateApiKeyModal from '@/components/apikeys/RegenerateApiKeyModal.vue'
 
 const props = defineProps({
   apiKey: {
@@ -1409,7 +1427,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['close', 'success', 'upgrade-v2', 'manage-v2'])
+const emit = defineEmits(['close', 'success', 'upgrade-v2', 'manage-v2', 'key-regenerated'])
 
 // const authStore = useAuthStore()
 const clientsStore = useClientsStore()
@@ -1421,6 +1439,7 @@ const accountsLoading = ref(false)
 const revealedApiKey = ref('')
 const showFullApiKey = ref(false)
 const revealingApiKey = ref(false)
+const showRegenerateModal = ref(false)
 const isV2Parent = computed(
   () => props.apiKey?.isV2Parent === true || props.apiKey?.isV2Parent === 'true'
 )
@@ -1470,7 +1489,18 @@ const resetRevealedApiKey = () => {
   revealingApiKey.value = false
 }
 
+const openRegenerateModal = () => {
+  resetRevealedApiKey()
+  showRegenerateModal.value = true
+}
+
+const handleKeyRegenerated = (metadata) => {
+  resetRevealedApiKey()
+  emit('key-regenerated', metadata)
+}
+
 const handleClose = () => {
+  showRegenerateModal.value = false
   resetRevealedApiKey()
   emit('close')
 }

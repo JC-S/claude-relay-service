@@ -11,6 +11,9 @@ jest.mock(
 
 jest.mock('../src/models/redis', () => ({
   setApiKey: jest.fn(),
+  updateApiKeyFields: jest.fn(),
+  reserveApiKeySecret: jest.fn(),
+  repairApiKeyHashMapping: jest.fn(),
   getApiKey: jest.fn(),
   findApiKeyByHash: jest.fn(),
   getDailyCost: jest.fn(),
@@ -79,6 +82,9 @@ describe('apiKeyService openai responses config', () => {
       serviceRates: '{}'
     })
     redis.setApiKey.mockResolvedValue()
+    redis.updateApiKeyFields.mockResolvedValue()
+    redis.reserveApiKeySecret.mockResolvedValue('RESERVED')
+    redis.repairApiKeyHashMapping.mockResolvedValue('OK')
     redis.incrementTokenUsage.mockResolvedValue()
     redis.incrementDailyCost.mockResolvedValue()
     redis.incrementAccountUsage.mockResolvedValue()
@@ -140,7 +146,7 @@ describe('apiKeyService openai responses config', () => {
       enableClaudeThinkingSignatureLossyFallback: true
     })
 
-    const [, storedKeyData] = redis.setApiKey.mock.calls[0]
+    const [, storedKeyData] = redis.updateApiKeyFields.mock.calls[0]
     expect(storedKeyData.enableOpenAIResponsesCodexAdaptation).toBe('false')
     expect(storedKeyData.enableOpenAIResponsesPayloadRules).toBe('true')
     expect(storedKeyData.openaiResponsesPayloadRules).toBe(

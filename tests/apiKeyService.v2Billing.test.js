@@ -23,6 +23,8 @@ jest.mock(
 jest.mock('../src/models/redis', () => ({
   getApiKey: jest.fn(),
   setApiKey: jest.fn(),
+  updateApiKeyFields: jest.fn(),
+  repairApiKeyHashMapping: jest.fn(),
   incrementTokenUsage: jest.fn(),
   incrementDailyCost: jest.fn(),
   incrementAccountUsage: jest.fn(),
@@ -111,6 +113,8 @@ describe('apiKeyService v2 billing', () => {
     jest.clearAllMocks()
     mockKeyTopology()
     redis.setApiKey.mockResolvedValue()
+    redis.updateApiKeyFields.mockResolvedValue()
+    redis.repairApiKeyHashMapping.mockResolvedValue('OK')
     redis.incrementTokenUsage.mockResolvedValue()
     redis.incrementDailyCost.mockResolvedValue()
     redis.incrementAccountUsage.mockResolvedValue()
