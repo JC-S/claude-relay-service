@@ -1941,22 +1941,23 @@
           </div>
 
           <!-- 操作按钮 -->
-          <div class="mt-3 flex gap-2 border-t border-gray-100 pt-3">
+          <div
+            class="mobile-action-scroll mt-3 flex gap-1.5 overflow-x-auto border-t border-gray-100 pt-3 dark:border-gray-600"
+          >
             <button
               v-if="showResetButton(account)"
-              class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-amber-50 px-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
               :disabled="account.isResetting"
               @click="resetAccountStatus(account)"
             >
-              <i :class="['fas fa-redo', account.isResetting ? 'animate-spin' : '']" />
-              重置
+              <i :class="['fas fa-redo', account.isResetting ? 'animate-spin' : '']" />重置
             </button>
             <button
-              class="flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs transition-colors"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg px-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
               :class="
                 account.schedulable
-                  ? 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                  : 'bg-green-50 text-green-600 hover:bg-green-100'
+                  ? 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
+                  : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/30 dark:text-green-300 dark:hover:bg-green-900/50'
               "
               :disabled="account.isTogglingSchedulable"
               @click="toggleSchedulable(account)"
@@ -1967,50 +1968,42 @@
 
             <button
               v-if="canViewUsage(account)"
-              class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-600 transition-colors hover:bg-indigo-100"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-indigo-50 px-1.5 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
               @click="openAccountUsageModal(account)"
             >
-              <i class="fas fa-chart-line" />
-              详情
+              <i class="fas fa-chart-line" />详情
             </button>
             <button
-              class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-800/50"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-red-50 px-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-800/50"
               @click="openErrorHistory(account)"
             >
-              <i class="fas fa-exclamation-triangle" />
-              错误
+              <i class="fas fa-exclamation-triangle" />错误
             </button>
             <button
               v-if="canTestAccount(account)"
-              class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-cyan-50 px-3 py-2 text-xs text-cyan-600 transition-colors hover:bg-cyan-100 dark:bg-cyan-900/40 dark:text-cyan-300 dark:hover:bg-cyan-800/50"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-cyan-50 px-1.5 text-xs font-medium text-cyan-600 transition-colors hover:bg-cyan-100 dark:bg-cyan-900/40 dark:text-cyan-300 dark:hover:bg-cyan-800/50"
               @click="openAccountTestModal(account)"
             >
-              <i class="fas fa-vial" />
-              测试
+              <i class="fas fa-vial" />测试
             </button>
-
             <button
               v-if="canScheduleTestAccount(account)"
-              class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-600 transition-colors hover:bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-amber-50 px-1.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
               @click="openScheduledTestModal(account)"
             >
-              <i class="fas fa-clock" />
-              定时
+              <i class="fas fa-clock" />定时
             </button>
-
             <button
-              class="flex-1 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 transition-colors hover:bg-gray-100"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-blue-50 px-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50"
               @click="editAccount(account)"
             >
-              <i class="fas fa-edit mr-1" />
-              编辑
+              <i class="fas fa-edit" />编辑
             </button>
-
             <button
-              class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 transition-colors hover:bg-red-100"
+              class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-red-50 px-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50"
               @click="deleteAccount(account)"
             >
-              <i class="fas fa-trash" />
+              <i class="fas fa-trash" />删除
             </button>
           </div>
         </div>
@@ -5446,6 +5439,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.mobile-action-scroll {
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
+.mobile-action-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .accounts-container {
   min-height: calc(100vh - 300px);
 }

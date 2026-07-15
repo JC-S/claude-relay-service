@@ -1534,16 +1534,10 @@
                 <div class="mb-3 space-y-2">
                   <!-- 今日使用 -->
                   <div class="rounded-lg bg-gray-50 p-3 dark:bg-gray-700">
-                    <div class="mb-2 flex items-center justify-between">
+                    <div class="mb-2">
                       <span class="text-xs text-gray-600 dark:text-gray-400">{{
                         globalDateFilter.type === 'custom' ? '累计统计' : '今日使用'
                       }}</span>
-                      <button
-                        class="text-xs text-blue-600 hover:text-blue-800"
-                        @click="showUsageDetails(key)"
-                      >
-                        <i class="fas fa-chart-line mr-1" />详情
-                      </button>
                     </div>
                     <div class="grid grid-cols-2 gap-3">
                       <div>
@@ -1780,50 +1774,151 @@
                 </div>
 
                 <!-- 操作按钮 -->
-                <div class="mt-3 flex gap-2 border-t border-gray-100 pt-3 dark:border-gray-600">
+                <div
+                  class="mobile-action-scroll mt-3 flex gap-1.5 overflow-x-auto border-t border-gray-100 pt-3 dark:border-gray-600"
+                >
                   <button
-                    class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-blue-50 px-3 py-1.5 text-xs text-blue-600 transition-colors hover:bg-blue-100 dark:bg-blue-900/30 dark:hover:bg-blue-900/50"
+                    class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-purple-50 px-1.5 text-xs font-medium text-purple-600 transition-colors hover:bg-purple-100 dark:bg-purple-900/30 dark:text-purple-300 dark:hover:bg-purple-900/50"
                     @click="showUsageDetails(key)"
                   >
-                    <i class="fas fa-chart-line" />
-                    查看详情
+                    <i class="fas fa-chart-line" />详情
                   </button>
                   <button
-                    class="flex-1 rounded-lg bg-gray-50 px-3 py-1.5 text-xs text-gray-600 transition-colors hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                    v-if="key && key.id"
+                    class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-indigo-50 px-1.5 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+                    @click="toggleApiKeyModelStats(key.id)"
+                  >
+                    <i
+                      :class="[
+                        'fas',
+                        expandedApiKeys[key.id] ? 'fa-chevron-up' : 'fa-chevron-down'
+                      ]"
+                    />
+                    模型
+                  </button>
+                  <button
+                    class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-blue-50 px-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50"
                     @click="openEditApiKeyModal(key)"
                   >
-                    <i class="fas fa-edit mr-1" />
-                    编辑
+                    <i class="fas fa-edit" />编辑
                   </button>
                   <button
                     v-if="
                       key.expiresAt &&
                       (isApiKeyExpired(key.expiresAt) || isApiKeyExpiringSoon(key.expiresAt))
                     "
-                    class="flex-1 rounded-lg bg-orange-50 px-3 py-1.5 text-xs text-orange-600 transition-colors hover:bg-orange-100 dark:bg-orange-900/30 dark:hover:bg-orange-900/50"
+                    class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-green-50 px-1.5 text-xs font-medium text-green-600 transition-colors hover:bg-green-100 dark:bg-green-900/30 dark:text-green-300 dark:hover:bg-green-900/50"
                     @click="openRenewApiKeyModal(key)"
                   >
-                    <i class="fas fa-clock mr-1" />
-                    续期
+                    <i class="fas fa-clock" />续期
                   </button>
                   <button
                     :class="[
                       key.isActive
-                        ? 'bg-orange-50 text-orange-600 hover:bg-orange-100 dark:bg-orange-900/30 dark:hover:bg-orange-900/50'
-                        : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/30 dark:hover:bg-green-900/50',
-                      'rounded-lg px-3 py-1.5 text-xs transition-colors'
+                        ? 'bg-orange-50 text-orange-600 hover:bg-orange-100 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/50'
+                        : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/30 dark:text-green-300 dark:hover:bg-green-900/50',
+                      'flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg px-1.5 text-xs font-medium transition-colors'
                     ]"
                     @click="toggleApiKeyStatus(key)"
                   >
-                    <i :class="['fas', key.isActive ? 'fa-ban' : 'fa-check-circle', 'mr-1']" />
+                    <i :class="['fas', key.isActive ? 'fa-ban' : 'fa-check-circle']" />
                     {{ key.isActive ? '禁用' : '激活' }}
                   </button>
                   <button
-                    class="rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/30 dark:hover:bg-red-900/50"
+                    class="flex min-h-[40px] min-w-[60px] flex-none items-center justify-center gap-1 rounded-lg bg-red-50 px-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50"
                     @click="deleteApiKey(key.id)"
                   >
-                    <i class="fas fa-trash" />
+                    <i class="fas fa-trash" />删除
                   </button>
+                </div>
+
+                <div
+                  v-if="key && key.id && expandedApiKeys[key.id]"
+                  class="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3 dark:border-indigo-800 dark:bg-indigo-900/10"
+                >
+                  <div class="mb-3 flex items-center justify-between gap-2">
+                    <h5 class="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                      <i class="fas fa-chart-pie mr-1 text-indigo-500" />模型使用分布
+                    </h5>
+                    <span
+                      v-if="apiKeyModelStats[key.id]?.length"
+                      class="flex-none rounded-full bg-white px-2 py-1 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                    >
+                      {{ apiKeyModelStats[key.id].length }} 个模型
+                    </span>
+                  </div>
+
+                  <div
+                    class="mb-3 grid grid-cols-3 gap-1 rounded-lg bg-gray-100 p-1 dark:bg-gray-700"
+                  >
+                    <button
+                      v-for="option in getMobileApiKeyDatePresets(key.id)"
+                      :key="option.value"
+                      :class="[
+                        'min-h-[36px] rounded px-2 text-xs font-medium transition-colors',
+                        getApiKeyDateFilter(key.id).preset === option.value &&
+                        getApiKeyDateFilter(key.id).type === 'preset'
+                          ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-800 dark:text-blue-300'
+                          : 'text-gray-600 dark:text-gray-400'
+                      ]"
+                      @click="setApiKeyDateFilterPreset(option.value, key.id)"
+                    >
+                      {{ option.label }}
+                    </button>
+                  </div>
+
+                  <div v-if="!apiKeyModelStats[key.id]" class="py-6 text-center">
+                    <div class="loading-spinner mx-auto" />
+                    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">加载模型统计...</p>
+                  </div>
+                  <div
+                    v-else-if="apiKeyModelStats[key.id].length === 0"
+                    class="py-6 text-center text-xs text-gray-500 dark:text-gray-400"
+                  >
+                    暂无模型使用数据
+                  </div>
+                  <div v-else class="space-y-2">
+                    <div
+                      v-for="stat in apiKeyModelStats[key.id]"
+                      :key="stat.model"
+                      class="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-600 dark:bg-gray-800"
+                    >
+                      <div class="mb-2 flex items-start justify-between gap-2">
+                        <span
+                          class="break-all text-sm font-semibold text-gray-800 dark:text-gray-200"
+                        >
+                          {{ stat.model }}
+                        </span>
+                        <span
+                          class="flex-none rounded-full bg-blue-50 px-2 py-0.5 text-xs text-gray-500 dark:bg-blue-900/30 dark:text-gray-400"
+                        >
+                          {{ stat.requests }} 次
+                        </span>
+                      </div>
+                      <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                        <span class="text-gray-500 dark:text-gray-400">总 Token</span>
+                        <span class="text-right font-medium text-gray-800 dark:text-gray-200">
+                          {{ formatTokenCount(stat.allTokens) }}
+                        </span>
+                        <span class="text-gray-500 dark:text-gray-400">费用</span>
+                        <span class="text-right font-medium text-green-600">
+                          {{ calculateModelCost(stat) }}
+                        </span>
+                        <span class="text-gray-500 dark:text-gray-400">输入 / 输出</span>
+                        <span class="text-right font-medium text-gray-700 dark:text-gray-300">
+                          {{ formatTokenCount(stat.inputTokens) }} /
+                          {{ formatTokenCount(stat.outputTokens) }}
+                        </span>
+                        <template v-if="stat.cacheCreateTokens > 0 || stat.cacheReadTokens > 0">
+                          <span class="text-purple-600">缓存创建 / 读取</span>
+                          <span class="text-right font-medium text-purple-600">
+                            {{ formatTokenCount(stat.cacheCreateTokens || 0) }} /
+                            {{ formatTokenCount(stat.cacheReadTokens || 0) }}
+                          </span>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1967,7 +2062,85 @@
               </button>
             </div>
 
-            <div class="table-wrapper">
+            <div class="space-y-3 md:hidden">
+              <div v-for="key in deletedApiKeys" :key="key.id" class="card p-4">
+                <div class="mb-3 flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <button
+                      class="block max-w-full truncate text-left text-sm font-semibold text-gray-900 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-400"
+                      title="点击复制"
+                      type="button"
+                      @click.stop="copyText(key.name)"
+                    >
+                      {{ key.name }}
+                    </button>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ getDeletedApiKeyBindingLabel(key) }}
+                    </p>
+                  </div>
+                  <span
+                    class="inline-flex flex-shrink-0 items-center rounded-full bg-red-100 px-2 py-1 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                  >
+                    <i class="fas fa-trash mr-1" />已删除
+                  </span>
+                </div>
+
+                <div class="mb-3 rounded-lg bg-gray-50 p-3 dark:bg-gray-700/70">
+                  <div class="grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <p class="text-sm font-semibold text-blue-600 dark:text-blue-400">
+                        ${{ (key.usage?.total?.cost || 0).toFixed(2) }}
+                      </p>
+                      <p class="text-xs text-gray-500 dark:text-gray-400">费用</p>
+                    </div>
+                    <div>
+                      <p class="text-sm font-semibold text-purple-600 dark:text-purple-400">
+                        {{ formatTokenCount(key.usage?.total?.tokens || 0) }}
+                      </p>
+                      <p class="text-xs text-gray-500 dark:text-gray-400">Token</p>
+                    </div>
+                    <div>
+                      <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                        {{ formatNumber(key.usage?.total?.requests || 0) }}
+                      </p>
+                      <p class="text-xs text-gray-500 dark:text-gray-400">请求数</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mb-3 flex items-center justify-between text-xs">
+                  <span class="text-gray-500 dark:text-gray-400">删除时间</span>
+                  <span class="text-gray-700 dark:text-gray-300">{{
+                    formatDate(key.deletedAt)
+                  }}</span>
+                </div>
+
+                <div
+                  :class="[
+                    'grid gap-2 border-t border-gray-100 pt-3 dark:border-gray-600',
+                    key.canRestore ? 'grid-cols-2' : 'grid-cols-1'
+                  ]"
+                >
+                  <button
+                    v-if="key.canRestore"
+                    class="flex min-h-[44px] items-center justify-center gap-1 rounded-lg bg-green-50 px-3 text-xs font-medium text-green-600 transition-colors hover:bg-green-100 dark:bg-green-900/30 dark:text-green-400 dark:hover:bg-green-900/50"
+                    type="button"
+                    @click="restoreApiKey(key.id)"
+                  >
+                    <i class="fas fa-undo" />恢复
+                  </button>
+                  <button
+                    class="flex min-h-[44px] items-center justify-center gap-1 rounded-lg bg-red-50 px-3 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
+                    type="button"
+                    @click="permanentDeleteApiKey(key.id)"
+                  >
+                    <i class="fas fa-times" />彻底删除
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="table-wrapper hidden md:block">
               <div class="table-container">
                 <table class="w-full">
                   <thead
@@ -3634,6 +3807,17 @@ const getGrokBindingInfo = (key) => {
   return info
 }
 
+const getDeletedApiKeyBindingLabel = (key) => {
+  if (key.claudeAccountId) return 'Claude OAuth'
+  if (key.claudeConsoleAccountId) return 'Claude Console'
+  if (key.geminiAccountId) return 'Gemini'
+  if (key.openaiAccountId) return 'OpenAI'
+  if (key.bedrockAccountId) return 'Bedrock'
+  if (key.droidAccountId) return 'Droid'
+  if (key.grokAccountId) return 'Grok'
+  return '共享池'
+}
+
 // 检查API Key是否过期
 const isApiKeyExpired = (expiresAt) => {
   if (!expiresAt) return false
@@ -4105,6 +4289,9 @@ const getApiKeyDateFilter = (keyId) => {
   }
   return apiKeyDateFilters.value[keyId]
 }
+
+const getMobileApiKeyDatePresets = (keyId) =>
+  getApiKeyDateFilter(keyId).presetOptions.filter((option) => option.value !== 'custom')
 
 // 设置 API Key 日期预设
 const setApiKeyDateFilterPreset = (preset, keyId) => {
@@ -5337,6 +5524,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.mobile-action-scroll {
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
+.mobile-action-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .tab-content {
   min-height: calc(100vh - 300px);
 }
