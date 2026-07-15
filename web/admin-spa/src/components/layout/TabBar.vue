@@ -53,9 +53,12 @@ const authStore = useAuthStore()
 
 // 根据 LDAP 配置动态生成 tabs
 const tabs = computed(() => {
-  // 🆕 v2 账号只可见 API Keys 一个标签
+  // v2 账号只可见子 Key 管理和使用教程
   if (authStore.userRole === 'v2') {
-    return [{ key: 'apiKeys', name: 'API Keys', shortName: 'API', icon: 'fas fa-key' }]
+    return [
+      { key: 'apiKeys', name: 'API Keys', shortName: 'API', icon: 'fas fa-key' },
+      { key: 'tutorial', name: '使用教程', shortName: '教程', icon: 'fas fa-graduation-cap' }
+    ]
   }
 
   const baseTabs = [
