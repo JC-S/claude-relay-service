@@ -489,15 +489,7 @@ const fableUsagePercentage = computed(() => {
 
 // 方法
 
-// 格式化Token数量（使用K/M单位）
-const formatTokenCount = (count) => {
-  if (count >= 1000000) {
-    return (count / 1000000).toFixed(1) + 'M'
-  } else if (count >= 1000) {
-    return (count / 1000).toFixed(1) + 'K'
-  }
-  return count.toString()
-}
+const formatTokenCount = formatNumber
 
 const close = () => {
   emit('close')

@@ -3366,16 +3366,7 @@ const scheduleNextCostSortStatusRefresh = () => {
 
 // 格式化数字
 
-// 格式化Token数量
-const formatTokenCount = (count) => {
-  if (!count && count !== 0) return '0'
-  if (count >= 1000000) {
-    return (count / 1000000).toFixed(1) + 'M'
-  } else if (count >= 1000) {
-    return (count / 1000).toFixed(1) + 'K'
-  }
-  return count.toString()
-}
+const formatTokenCount = formatNumber
 
 // 获取绑定账户名称
 const getBoundAccountName = (accountId) => {

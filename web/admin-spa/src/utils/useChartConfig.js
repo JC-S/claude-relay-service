@@ -1,5 +1,6 @@
 import { Chart } from 'chart.js/auto'
 import { useThemeStore } from '@/stores/theme'
+import { formatNumber } from '@/utils/tools'
 
 export function useChartConfig() {
   const themeStore = useThemeStore()
@@ -88,12 +89,7 @@ export function useChartConfig() {
             size: 11
           },
           callback: function (value) {
-            if (value >= 1000000) {
-              return (value / 1000000).toFixed(1) + 'M'
-            } else if (value >= 1000) {
-              return (value / 1000).toFixed(1) + 'K'
-            }
-            return value
+            return formatNumber(value)
           }
         }
       }

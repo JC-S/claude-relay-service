@@ -1202,14 +1202,7 @@ function createUsageTrendChart() {
               } else if (label === '请求数') {
                 return label + ': ' + value.toLocaleString() + ' 次'
               } else {
-                // 格式化token数显示
-                if (value >= 1000000) {
-                  return label + ': ' + (value / 1000000).toFixed(2) + 'M tokens'
-                } else if (value >= 1000) {
-                  return label + ': ' + (value / 1000).toFixed(2) + 'K tokens'
-                } else {
-                  return label + ': ' + value.toLocaleString() + ' tokens'
-                }
+                return label + ': ' + formatNumber(value) + ' tokens'
               }
             }
           }
@@ -1414,15 +1407,7 @@ function createApiKeysUsageTrendChart() {
               else if (rank === 3) rankIcon = '🥉 '
 
               if (apiKeysTrendMetric.value === 'tokens') {
-                // 格式化token显示
-                let formattedValue = ''
-                if (value >= 1000000) {
-                  formattedValue = (value / 1000000).toFixed(2) + 'M'
-                } else if (value >= 1000) {
-                  formattedValue = (value / 1000).toFixed(2) + 'K'
-                } else {
-                  formattedValue = value.toLocaleString()
-                }
+                const formattedValue = formatNumber(value)
 
                 // 获取对应API Key的费用信息
                 const apiKeyId = apiKeysTrendData.value.topApiKeys[context.datasetIndex]
