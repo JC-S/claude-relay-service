@@ -94,7 +94,8 @@ function inferAccountTypeFromKey(keyData = {}) {
     ['claudeAccountId', 'claude'],
     ['geminiAccountId', 'gemini'],
     ['bedrockAccountId', 'bedrock'],
-    ['droidAccountId', 'droid']
+    ['droidAccountId', 'droid'],
+    ['grokAccountId', 'grok']
   ]
 
   const matchedTypes = hints

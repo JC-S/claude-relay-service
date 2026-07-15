@@ -12,12 +12,13 @@ const {
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { parseAddress } = require('../utils/ipWhitelistHelper')
 
-const CONNECTIVITY_TEST_SERVICES = ['claude', 'gemini', 'openai']
+const CONNECTIVITY_TEST_SERVICES = ['claude', 'gemini', 'openai', 'grok']
 const ALLOWED_MAX_TOKENS = [100, 500, 1000, 2000, 4096]
 const DEFAULT_MODELS = {
   claude: 'claude-sonnet-4-5-20250929',
   gemini: 'gemini-2.5-pro',
-  openai: 'gpt-5.4'
+  openai: 'gpt-5.4',
+  grok: 'grok-4.5'
 }
 const MODEL_PATTERN = /^[A-Za-z0-9._:-]+(?:\[1m\])?$/
 const CODEX_TEST_INSTRUCTIONS =
@@ -264,11 +265,44 @@ async function runOpenAIKeyTest({
   })
 }
 
+async function runGrokKeyTest({
+  apiKey,
+  model = DEFAULT_MODELS.grok,
+  prompt = 'hi',
+  maxTokens = 1000,
+  responseStream,
+  clientIp
+}) {
+  const port = config.server.port || 3000
+  return runStreamingTest({
+    apiUrl: `http://127.0.0.1:${port}/grok/responses`,
+    payload: {
+      model,
+      input: prompt,
+      max_output_tokens: maxTokens,
+      stream: true,
+      store: false
+    },
+    headers: withClientIp(
+      {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        session_id: crypto.randomUUID()
+      },
+      clientIp
+    ),
+    responseStream,
+    extractText: (data) =>
+      data.type === 'response.output_text.delta' ? data.delta : data.delta?.text
+  })
+}
+
 function runApiKeyConnectivityTest(options) {
   const runners = {
     claude: runClaudeKeyTest,
     gemini: runGeminiKeyTest,
-    openai: runOpenAIKeyTest
+    openai: runOpenAIKeyTest,
+    grok: runGrokKeyTest
   }
   const runner = runners[options.service]
   if (!runner) {
@@ -284,5 +318,6 @@ module.exports = {
   runClaudeKeyTest,
   runGeminiKeyTest,
   runOpenAIKeyTest,
+  runGrokKeyTest,
   runApiKeyConnectivityTest
 }

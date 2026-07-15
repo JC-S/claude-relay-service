@@ -442,8 +442,8 @@
       </div>
     </div>
 
-    <!-- OpenAI OAuth流程 -->
-    <div v-else-if="platform === 'openai'">
+    <!-- OpenAI / Grok OAuth流程 -->
+    <div v-else-if="platform === 'openai' || platform === 'grok'">
       <div
         class="rounded-lg border border-orange-200 bg-orange-50 p-6 dark:border-orange-700 dark:bg-orange-900/30"
       >
@@ -454,9 +454,11 @@
             <i class="fas fa-brain text-white" />
           </div>
           <div class="flex-1">
-            <h4 class="mb-3 font-semibold text-orange-900 dark:text-orange-200">OpenAI 账户授权</h4>
+            <h4 class="mb-3 font-semibold text-orange-900 dark:text-orange-200">
+              {{ oauthPlatformName }} 账户授权
+            </h4>
             <p class="mb-4 text-sm text-orange-800 dark:text-orange-300">
-              请按照以下步骤完成 OpenAI 账户的授权：
+              请按照以下步骤完成 {{ oauthPlatformName }} 账户的授权：
             </p>
 
             <div class="space-y-4">
@@ -526,7 +528,7 @@
                       在浏览器中打开链接并完成授权
                     </p>
                     <p class="mb-2 text-sm text-orange-700 dark:text-orange-300">
-                      请在新标签页中打开授权链接，登录您的 OpenAI 账户并授权。
+                      请在新标签页中打开授权链接，登录您的 {{ oauthPlatformName }} 账户并授权。
                     </p>
                     <div
                       class="mb-3 rounded border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-900/30"
@@ -537,7 +539,7 @@
                       </p>
                       <p class="mt-2 text-xs text-amber-700 dark:text-amber-400">
                         当浏览器地址栏变为
-                        <strong class="font-mono">http://localhost:1455/...</strong>
+                        <strong class="font-mono">{{ oauthCallbackPrefix }}</strong>
                         开头时，表示授权已完成。
                       </p>
                     </div>
@@ -570,7 +572,7 @@
                     </p>
                     <p class="mb-3 text-sm text-orange-700 dark:text-orange-300">
                       授权完成后，当页面地址变为
-                      <strong class="font-mono">http://localhost:1455/...</strong> 时：
+                      <strong class="font-mono">{{ oauthCallbackPrefix }}</strong> 时：
                     </p>
                     <div class="space-y-3">
                       <div>
@@ -582,7 +584,7 @@
                         <textarea
                           v-model="authCode"
                           class="form-input w-full resize-none font-mono text-sm"
-                          placeholder="方式1：复制完整的链接（http://localhost:1455/auth/callback?code=...）&#10;方式2：仅复制 code 参数的值&#10;系统会自动识别并提取所需信息"
+                          :placeholder="oauthInputPlaceholder"
                           rows="3"
                         />
                       </div>
@@ -595,9 +597,7 @@
                           参数值，系统会自动识别。
                         </p>
                         <p class="mt-1 text-xs text-blue-600 dark:text-blue-400">
-                          • 完整链接示例：<span class="font-mono"
-                            >http://localhost:1455/auth/callback?code=ac_4hm8...</span
-                          >
+                          • 完整链接示例：<span class="font-mono">{{ oauthCallbackExample }}</span>
                         </p>
                         <p class="text-xs text-blue-600">
                           • 仅 Code 示例：<span class="font-mono"
@@ -835,6 +835,20 @@ const geminiOauthProvider = computed(() => {
   }
   return 'gemini-cli'
 })
+const oauthPlatformName = computed(() => (props.platform === 'grok' ? 'Grok' : 'OpenAI'))
+const oauthCallbackPrefix = computed(() =>
+  props.platform === 'grok' ? 'http://127.0.0.1:56121/callback?...' : 'http://localhost:1455/...'
+)
+const oauthCallbackExample = computed(() =>
+  props.platform === 'grok'
+    ? 'http://127.0.0.1:56121/callback?code=...&state=...'
+    : 'http://localhost:1455/auth/callback?code=ac_4hm8...'
+)
+const oauthInputPlaceholder = computed(() =>
+  props.platform === 'grok'
+    ? '请粘贴完整回调链接（推荐，包含 code 和 state）或仅粘贴 code'
+    : '方式1：复制完整的链接（http://localhost:1455/auth/callback?code=...）\n方式2：仅复制 code 参数的值\n系统会自动识别并提取所需信息'
+)
 const sessionId = ref('') // 保存sessionId用于后续交换
 const userCode = ref('')
 const verificationUri = ref('')
@@ -923,7 +937,7 @@ const extractAuthorizationCodeFromInput = (value) => {
 
 // 监听授权码输入，自动提取URL或查询串中的code参数
 watch(authCode, (newValue) => {
-  if (props.platform === 'droid') return
+  if (props.platform === 'droid' || props.platform === 'grok') return
   if (!newValue || typeof newValue !== 'string') return
 
   const trimmedValue = newValue.trim()
@@ -993,6 +1007,10 @@ const generateAuthUrl = async () => {
       sessionId.value = result.sessionId
     } else if (props.platform === 'openai') {
       const result = await accountsStore.generateOpenAIAuthUrl(proxyConfig)
+      authUrl.value = result.authUrl
+      sessionId.value = result.sessionId
+    } else if (props.platform === 'grok') {
+      const result = await accountsStore.generateGrokAuthUrl(proxyConfig)
       authUrl.value = result.authUrl
       sessionId.value = result.sessionId
     } else if (props.platform === 'droid') {
@@ -1109,6 +1127,11 @@ const exchangeCode = async () => {
         code: authCode.value.trim(),
         sessionId: sessionId.value
       }
+    } else if (props.platform === 'grok') {
+      data = {
+        code: authCode.value.trim(),
+        sessionId: sessionId.value
+      }
     } else if (props.platform === 'droid') {
       data = {
         sessionId: sessionId.value
@@ -1137,6 +1160,8 @@ const exchangeCode = async () => {
       }
     } else if (props.platform === 'openai') {
       tokenInfo = await accountsStore.exchangeOpenAICode(data)
+    } else if (props.platform === 'grok') {
+      tokenInfo = await accountsStore.exchangeGrokCode(data)
     } else if (props.platform === 'droid') {
       const response = await accountsStore.exchangeDroidCode(data)
       if (!response.success) {

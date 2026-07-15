@@ -26,6 +26,7 @@ const openaiClaudeRoutes = require('./routes/openaiClaudeRoutes')
 const openaiRoutes = require('./routes/openaiRoutes')
 const generalOpenAIRoutes = require('./routes/generalOpenAIRoutes')
 const droidRoutes = require('./routes/droidRoutes')
+const grokRoutes = require('./routes/grokRoutes')
 const userRoutes = require('./routes/userRoutes')
 const azureOpenaiRoutes = require('./routes/azureOpenaiRoutes')
 const webhookRoutes = require('./routes/webhook')
@@ -366,6 +367,7 @@ class Application {
       this.app.use('/general', generalOpenAIRoutes) // 通用 OpenAI 兼容入口，仅调度 OpenAI OAuth 账号
       // Droid 路由：支持多种 Factory.ai 端点
       this.app.use('/droid', droidRoutes) // Droid (Factory.ai) API 转发
+      this.app.use('/grok', grokRoutes) // xAI Grok Responses API
       this.app.use('/azure', azureOpenaiRoutes)
       this.app.use('/admin/webhook', webhookRoutes)
 
@@ -380,9 +382,12 @@ class Application {
           const timer = logger.timer('health-check')
 
           // 检查各个组件健康状态
-          const [redisHealth, loggerHealth] = await Promise.all([
+          const [redisHealth, loggerHealth, grokAccounts] = await Promise.all([
             this.checkRedisHealth(),
-            this.checkLoggerHealth()
+            this.checkLoggerHealth(),
+            require('./services/account/grokAccountService')
+              .getAllAccounts(true)
+              .catch(() => [])
           ])
 
           const memory = process.memoryUsage()
@@ -422,6 +427,12 @@ class Application {
             components: {
               redis: redisHealth,
               logger: loggerHealth
+            },
+            providers: {
+              grok: {
+                enabled: config.grok?.enabled === true,
+                accountCount: grokAccounts.length
+              }
             },
             stats: logger.getStats()
           }

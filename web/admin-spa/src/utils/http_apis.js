@@ -251,6 +251,35 @@ export const exchangeDroidCodeApi = (data) =>
 export const getDroidAccountByIdApi = (id) =>
   request({ url: `/admin/droid-accounts/${id}`, method: 'GET' })
 
+// Grok 账户
+export const getGrokAccountsApi = () => request({ url: '/admin/grok-accounts', method: 'GET' })
+export const getGrokAccountByIdApi = (id) =>
+  request({ url: `/admin/grok-accounts/${id}`, method: 'GET' })
+export const createGrokAccountApi = (data) =>
+  request({ url: '/admin/grok-accounts', method: 'POST', data })
+export const updateGrokAccountApi = (id, data) =>
+  request({ url: `/admin/grok-accounts/${id}`, method: 'PUT', data })
+export const generateGrokAuthUrlApi = (data) =>
+  request({ url: '/admin/grok-accounts/generate-auth-url', method: 'POST', data })
+export const exchangeGrokCodeApi = (data) =>
+  request({ url: '/admin/grok-accounts/exchange-code', method: 'POST', data })
+export const validateGrokRefreshTokenApi = (data) =>
+  request({ url: '/admin/grok-accounts/validate-refresh-token', method: 'POST', data })
+export const reauthGrokAccountApi = (id, data) =>
+  request({ url: `/admin/grok-accounts/${id}/reauth`, method: 'POST', data })
+export const refreshGrokAccountTokenApi = (id) =>
+  request({ url: `/admin/grok-accounts/${id}/refresh-token`, method: 'POST' })
+export const toggleGrokAccountApi = (id) =>
+  request({ url: `/admin/grok-accounts/${id}/toggle-schedulable`, method: 'POST' })
+export const resetGrokAccountStatusApi = (id) =>
+  request({ url: `/admin/grok-accounts/${id}/reset-status`, method: 'POST' })
+export const testGrokAccountApi = (id, data) =>
+  request({ url: `/admin/grok-accounts/${id}/test`, method: 'POST', data })
+export const syncGrokAccountModelsApi = (id) =>
+  request({ url: `/admin/grok-accounts/${id}/sync-models`, method: 'POST' })
+export const queryGrokAccountQuotaApi = (id) =>
+  request({ url: `/admin/grok-accounts/${id}/query-quota`, method: 'POST' })
+
 // CCR 账户
 export const getCcrAccountsApi = () => request({ url: '/admin/ccr-accounts', method: 'GET' })
 export const createCcrAccountApi = (data) =>

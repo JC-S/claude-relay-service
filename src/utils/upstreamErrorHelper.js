@@ -12,6 +12,7 @@ const DEFAULT_TTL = {
   service_unavailable: 60, // 503: 1分钟（默认更短，避免短暂抖动导致长时间不可路由）
   overload: 600, // 529: 10分钟
   auth_error: 1800, // 401/403: 30分钟
+  billing_error: 600, // 402: 10分钟
   timeout: 300, // 504/网络超时: 5分钟
   rate_limit: 300 // 429: 5分钟（优先使用响应头解析值）
 }
@@ -46,6 +47,7 @@ const getTtlConfig = () => {
     server_error: config.upstreamError?.serverErrorTtlSeconds ?? DEFAULT_TTL.server_error,
     overload: config.upstreamError?.overloadTtlSeconds ?? DEFAULT_TTL.overload,
     auth_error: config.upstreamError?.authErrorTtlSeconds ?? DEFAULT_TTL.auth_error,
+    billing_error: DEFAULT_TTL.billing_error,
     timeout: config.upstreamError?.timeoutTtlSeconds ?? DEFAULT_TTL.timeout,
     rate_limit: DEFAULT_TTL.rate_limit,
     max_custom:
@@ -158,6 +160,9 @@ const classifyError = (statusCode) => {
   }
   if (statusCode === 401 || statusCode === 403) {
     return 'auth_error'
+  }
+  if (statusCode === 402) {
+    return 'billing_error'
   }
   if (statusCode === 429) {
     return 'rate_limit'
@@ -425,7 +430,8 @@ const markTempUnavailable = async (
   accountType,
   statusCode,
   customTtl = null,
-  context = null
+  context = null,
+  options = {}
 ) => {
   try {
     const errorType = classifyError(statusCode)
@@ -456,7 +462,9 @@ const markTempUnavailable = async (
     let ttlSeconds
     if (Number.isFinite(parsedCustomTtl) && parsedCustomTtl > 0) {
       const requestedTtl = Math.ceil(parsedCustomTtl)
-      ttlSeconds = Math.min(requestedTtl, ttlConfig.max_custom)
+      ttlSeconds = options.allowBeyondGlobalCap
+        ? requestedTtl
+        : Math.min(requestedTtl, ttlConfig.max_custom)
       if (ttlSeconds < requestedTtl) {
         logger.warn(
           `⚠️ [UpstreamError] Upstream retry-after ${requestedTtl}s for account ${accountId} (${accountType}) exceeds temp-unavailable cap, clamping to ${ttlSeconds}s`

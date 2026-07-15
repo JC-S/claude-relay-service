@@ -7,6 +7,7 @@ const logger = require('../utils/logger')
 const openaiAccountService = require('./account/openaiAccountService')
 const claudeAccountService = require('./account/claudeAccountService')
 const claudeConsoleAccountService = require('./account/claudeConsoleAccountService')
+const grokAccountService = require('./account/grokAccountService')
 const unifiedOpenAIScheduler = require('./scheduler/unifiedOpenAIScheduler')
 const webhookService = require('./webhookService')
 
@@ -73,6 +74,7 @@ class RateLimitCleanupService {
         openai: { checked: 0, cleared: 0, errors: [] },
         claude: { checked: 0, cleared: 0, errors: [] },
         claudeConsole: { checked: 0, cleared: 0, errors: [] },
+        grok: { checked: 0, cleared: 0, errors: [] },
         quotaExceeded: { checked: 0, cleared: 0, errors: [] },
         tokenRefresh: { checked: 0, refreshed: 0, errors: [] }
       }
@@ -86,6 +88,8 @@ class RateLimitCleanupService {
       // 清理 Claude Console 账号
       await this.cleanupClaudeConsoleAccounts(results.claudeConsole)
 
+      await this.cleanupGrokAccounts(results.grok)
+
       // 清理 Claude Console 配额超限状态
       await this.cleanupClaudeConsoleQuotaExceeded(results.quotaExceeded)
 
@@ -96,11 +100,13 @@ class RateLimitCleanupService {
         results.openai.checked +
         results.claude.checked +
         results.claudeConsole.checked +
+        results.grok.checked +
         results.quotaExceeded.checked
       const totalCleared =
         results.openai.cleared +
         results.claude.cleared +
         results.claudeConsole.cleared +
+        results.grok.cleared +
         results.quotaExceeded.cleared
       const duration = Date.now() - startTime
 
@@ -113,6 +119,7 @@ class RateLimitCleanupService {
         logger.info(
           `   Claude Console: ${results.claudeConsole.cleared}/${results.claudeConsole.checked}`
         )
+        logger.info(`   Grok: ${results.grok.cleared}/${results.grok.checked}`)
         logger.info(
           `   Quota Exceeded: ${results.quotaExceeded.cleared}/${results.quotaExceeded.checked}`
         )
@@ -137,6 +144,7 @@ class RateLimitCleanupService {
         ...results.openai.errors,
         ...results.claude.errors,
         ...results.claudeConsole.errors,
+        ...results.grok.errors,
         ...results.quotaExceeded.errors,
         ...results.tokenRefresh.errors
       ]
@@ -201,6 +209,32 @@ class RateLimitCleanupService {
       }
     } catch (error) {
       logger.error('Failed to cleanup OpenAI accounts:', error)
+      result.errors.push({ error: error.message })
+    }
+  }
+
+  async cleanupGrokAccounts(result) {
+    try {
+      const accounts = await grokAccountService.getAllAccounts(true)
+      for (const account of accounts) {
+        if (!account.tempUnavailableUntil && !account.rateLimitResetAt) {
+          continue
+        }
+        result.checked++
+        try {
+          if (await grokAccountService.clearExpiredTemporaryStatus(account.id)) {
+            result.cleared++
+            this.clearedAccounts.push({
+              accountId: account.id,
+              accountName: account.name || account.id,
+              platform: 'Grok'
+            })
+          }
+        } catch (error) {
+          result.errors.push({ accountId: account.id, error: error.message })
+        }
+      }
+    } catch (error) {
       result.errors.push({ error: error.message })
     }
   }

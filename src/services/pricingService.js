@@ -85,7 +85,8 @@ class PricingService {
       'claude-fable-5': {
         source: 'claude-opus-4-7',
         priceMultiplier: 2
-      }
+      },
+      'grok-composer-2.5-fast': 'grok-build-0.1'
     }
   }
 

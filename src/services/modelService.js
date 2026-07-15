@@ -65,6 +65,19 @@ class ModelService {
           'gpt-5.6-luna'
         ]
       },
+      grok: {
+        provider: 'xai',
+        description: 'xAI Grok text models',
+        models: [
+          'grok-4.5',
+          'grok-4.3',
+          'grok-build-0.1',
+          'grok-composer-2.5-fast',
+          'grok-4.20-0309-reasoning',
+          'grok-4.20-0309-non-reasoning',
+          'grok-4.20-multi-agent-0309'
+        ]
+      },
       gemini: {
         provider: 'google',
         description: 'Google Gemini models',

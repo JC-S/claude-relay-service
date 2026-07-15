@@ -257,7 +257,8 @@ onMounted(loadModels)
 function buildTestConfigEndpoint(platform, accountId) {
   const map = {
     claude: `${APP_CONFIG.apiPrefix}/admin/claude-accounts/${accountId}/test-config`,
-    openai: `${APP_CONFIG.apiPrefix}/admin/openai-accounts/${accountId}/test-config`
+    openai: `${APP_CONFIG.apiPrefix}/admin/openai-accounts/${accountId}/test-config`,
+    grok: `${APP_CONFIG.apiPrefix}/admin/grok-accounts/${accountId}/test-config`
   }
   return map[platform] || ''
 }
@@ -269,7 +270,9 @@ function defaultModelForPlatform(platform) {
   if (firstOption) {
     return firstOption
   }
-  return platform === 'openai' ? 'gpt-5.4' : 'claude-sonnet-4-5-20250929'
+  if (platform === 'openai') return 'gpt-5.4'
+  if (platform === 'grok') return 'grok-4.5'
+  return 'claude-sonnet-4-5-20250929'
 }
 
 // 格式化时间戳

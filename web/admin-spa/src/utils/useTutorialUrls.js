@@ -41,12 +41,14 @@ export function useTutorialUrls() {
   const openaiBaseUrl = computed(() => getBaseUrlPrefix() + '/openai')
   const droidClaudeBaseUrl = computed(() => getBaseUrlPrefix() + '/droid/claude')
   const droidOpenaiBaseUrl = computed(() => getBaseUrlPrefix() + '/droid/openai')
+  const grokBaseUrl = computed(() => getBaseUrlPrefix() + '/grok')
 
   return {
     currentBaseUrl,
     geminiBaseUrl,
     openaiBaseUrl,
     droidClaudeBaseUrl,
-    droidOpenaiBaseUrl
+    droidOpenaiBaseUrl,
+    grokBaseUrl
   }
 }

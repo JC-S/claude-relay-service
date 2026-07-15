@@ -235,6 +235,11 @@ function isGeneralOpenAIEndpoint(req) {
   return original === '/general' || original.startsWith('/general/')
 }
 
+function isGrokEndpoint(req) {
+  const original = normalizeRequestPath(req.originalUrl || '')
+  return original === '/grok' || original.startsWith('/grok/')
+}
+
 /**
  * 等待并发槽位（排队机制核心）
  *
@@ -521,7 +526,8 @@ const authenticateApiKey = async (req, res, next) => {
     }
 
     const skipKeyRestrictions = isTokenCountRequest(req)
-    const skipClientRestriction = skipKeyRestrictions || isGeneralOpenAIEndpoint(req)
+    const skipClientRestriction =
+      skipKeyRestrictions || isGeneralOpenAIEndpoint(req) || isGrokEndpoint(req)
 
     // 🔒 检查客户端限制（使用新的验证器）
     if (
@@ -1431,6 +1437,7 @@ const authenticateApiKey = async (req, res, next) => {
       openaiAccountId: validation.keyData.openaiAccountId, // 添加 OpenAI 账号ID
       bedrockAccountId: validation.keyData.bedrockAccountId, // 添加 Bedrock 账号ID
       droidAccountId: validation.keyData.droidAccountId,
+      grokAccountId: validation.keyData.grokAccountId,
       permissions: validation.keyData.permissions,
       concurrencyLimit: validation.keyData.concurrencyLimit,
       rateLimitWindow: validation.keyData.rateLimitWindow,
@@ -1446,6 +1453,7 @@ const authenticateApiKey = async (req, res, next) => {
       totalCost: validation.keyData.totalCost,
       disableGptFastMode: validation.keyData.disableGptFastMode,
       enableGeneralOpenAIEndpoint: validation.keyData.enableGeneralOpenAIEndpoint,
+      enableGrokEndpoint: validation.keyData.enableGrokEndpoint,
       enableGeneralOpenAIImages: validation.keyData.enableGeneralOpenAIImages,
       enableGeneralPromptCacheAssist: validation.keyData.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback:

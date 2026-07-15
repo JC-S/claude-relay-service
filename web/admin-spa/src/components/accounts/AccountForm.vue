@@ -71,7 +71,7 @@
               <!-- 平台分组选择器 -->
               <div class="space-y-3">
                 <!-- 分组选择器 -->
-                <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div class="grid grid-cols-2 gap-2 sm:grid-cols-5">
                   <!-- Claude 分组 -->
                   <div
                     class="group relative cursor-pointer overflow-hidden rounded-lg border-2 transition-all duration-200"
@@ -202,6 +202,37 @@
                         Droid
                       </h4>
                       <p class="text-xs text-gray-600 dark:text-gray-400">Claude Droid</p>
+                    </div>
+                  </div>
+
+                  <!-- Grok 分组 -->
+                  <div
+                    class="group relative cursor-pointer overflow-hidden rounded-lg border-2 transition-all duration-200"
+                    :class="[
+                      platformGroup === 'grok'
+                        ? 'border-slate-700 bg-gradient-to-br from-slate-100 to-cyan-50 shadow-md dark:border-cyan-500 dark:from-slate-800 dark:to-cyan-950/40'
+                        : 'border-gray-200 bg-white hover:border-slate-400 hover:shadow dark:border-gray-700 dark:bg-gray-800 dark:hover:border-cyan-600'
+                    ]"
+                    @click="selectPlatformGroup('grok')"
+                  >
+                    <div class="p-3">
+                      <div class="flex items-center justify-between">
+                        <div
+                          class="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-slate-800 to-cyan-600"
+                        >
+                          <span class="text-sm font-black text-white">x</span>
+                        </div>
+                        <div
+                          v-if="platformGroup === 'grok'"
+                          class="flex h-5 w-5 items-center justify-center rounded-full bg-slate-800 dark:bg-cyan-600"
+                        >
+                          <i class="fas fa-check text-xs text-white"></i>
+                        </div>
+                      </div>
+                      <h4 class="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                        Grok
+                      </h4>
+                      <p class="text-xs text-gray-600 dark:text-gray-400">xAI Build</p>
                     </div>
                   </div>
                 </div>
@@ -568,6 +599,37 @@
                         </div>
                       </label>
                     </template>
+
+                    <!-- Grok 子选项 -->
+                    <template v-if="platformGroup === 'grok'">
+                      <label
+                        class="group relative flex cursor-pointer items-center rounded-md border p-2 transition-all"
+                        :class="[
+                          form.platform === 'grok'
+                            ? 'border-slate-700 bg-slate-100 dark:border-cyan-500 dark:bg-cyan-950/30'
+                            : 'border-gray-300 bg-white hover:border-slate-500 hover:bg-slate-50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-cyan-600'
+                        ]"
+                      >
+                        <input v-model="form.platform" class="sr-only" type="radio" value="grok" />
+                        <div class="flex items-center gap-2">
+                          <span class="font-black text-slate-800 dark:text-cyan-300">x</span>
+                          <div>
+                            <span class="block text-xs font-medium text-gray-900 dark:text-gray-100"
+                              >Grok Responses</span
+                            >
+                            <span class="text-xs text-gray-500 dark:text-gray-400"
+                              >OAuth / API Key</span
+                            >
+                          </div>
+                        </div>
+                        <div
+                          v-if="form.platform === 'grok'"
+                          class="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 dark:bg-cyan-600"
+                        >
+                          <i class="fas fa-check text-xs text-white"></i>
+                        </div>
+                      </label>
+                    </template>
                   </div>
                 </div>
               </div>
@@ -610,7 +672,7 @@
                   />
                   <span class="text-sm text-gray-700 dark:text-gray-300">Setup Token (效期长)</span>
                 </label>
-                <label class="flex cursor-pointer items-center">
+                <label v-if="form.platform !== 'grok'" class="flex cursor-pointer items-center">
                   <input
                     v-model="form.addType"
                     class="mr-2 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
@@ -621,16 +683,28 @@
                     >手动输入 Access Token</span
                   >
                 </label>
-                <label v-if="form.platform === 'droid'" class="flex cursor-pointer items-center">
+                <label
+                  v-if="form.platform === 'droid' || form.platform === 'grok'"
+                  class="flex cursor-pointer items-center"
+                >
                   <input
                     v-model="form.addType"
                     class="mr-2 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
                     type="radio"
                     value="apikey"
                   />
-                  <span class="text-sm text-gray-700 dark:text-gray-300"
-                    >使用 API Key (支持多个)</span
-                  >
+                  <span class="text-sm text-gray-700 dark:text-gray-300">
+                    {{ form.platform === 'grok' ? '使用 xAI API Key' : '使用 API Key (支持多个)' }}
+                  </span>
+                </label>
+                <label v-if="form.platform === 'grok'" class="flex cursor-pointer items-center">
+                  <input
+                    v-model="form.addType"
+                    class="mr-2 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                    type="radio"
+                    value="refresh-token"
+                  />
+                  <span class="text-sm text-gray-700 dark:text-gray-300">导入 Refresh Token</span>
                 </label>
               </div>
             </div>
@@ -1999,6 +2073,21 @@
               </p>
             </div>
 
+            <div v-if="form.platform === 'grok'">
+              <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                >账户并发数</label
+              >
+              <input
+                v-model.number="form.concurrency"
+                class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                min="1"
+                type="number"
+              />
+              <p class="mt-1 text-xs text-amber-600 dark:text-amber-300">
+                OAuth 账户建议保持 1；提高并发可能触发 xAI 风控。API Key 账户可按上游额度调整。
+              </p>
+            </div>
+
             <!-- 手动输入 Token 字段 -->
             <div
               v-if="
@@ -2265,6 +2354,73 @@
                 </ul>
               </div>
             </div>
+
+            <div
+              v-if="form.platform === 'grok' && form.addType === 'apikey'"
+              class="space-y-4 rounded-lg border border-slate-300 bg-slate-50 p-4 dark:border-cyan-800 dark:bg-cyan-950/20"
+            >
+              <div class="flex items-start gap-3">
+                <div
+                  class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800 dark:bg-cyan-700"
+                >
+                  <i class="fas fa-key text-sm text-white" />
+                </div>
+                <div>
+                  <h5 class="font-semibold text-slate-900 dark:text-cyan-100">xAI API Key</h5>
+                  <p class="mt-1 text-sm text-slate-600 dark:text-cyan-200/80">
+                    该账户将直连 api.x.ai，不使用 Grok Build OAuth 订阅。
+                  </p>
+                </div>
+              </div>
+              <div>
+                <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  >API Key *</label
+                >
+                <input
+                  v-model="form.apiKey"
+                  class="form-input w-full border-gray-300 font-mono dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                  :class="{ 'border-red-500': errors.apiKey }"
+                  placeholder="xai-..."
+                  :type="showApiKey ? 'text' : 'password'"
+                />
+                <p v-if="errors.apiKey" class="mt-1 text-xs text-red-500">{{ errors.apiKey }}</p>
+              </div>
+            </div>
+
+            <div
+              v-if="form.platform === 'grok' && form.addType === 'refresh-token'"
+              class="space-y-4 rounded-lg border border-cyan-200 bg-cyan-50 p-4 dark:border-cyan-800 dark:bg-cyan-950/20"
+            >
+              <div>
+                <h5 class="font-semibold text-cyan-900 dark:text-cyan-100">导入 Refresh Token</h5>
+                <p class="mt-1 text-sm text-cyan-700 dark:text-cyan-200/80">
+                  系统会先向 xAI 验证并换取 Access Token，验证成功后才创建账户。
+                </p>
+              </div>
+              <div>
+                <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  >Refresh Token *</label
+                >
+                <textarea
+                  v-model="form.refreshToken"
+                  class="form-input w-full resize-none border-gray-300 font-mono text-xs dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                  :class="{ 'border-red-500': errors.refreshToken }"
+                  placeholder="粘贴 xAI Refresh Token"
+                  rows="4"
+                />
+                <p v-if="errors.refreshToken" class="mt-1 text-xs text-red-500">
+                  {{ errors.refreshToken }}
+                </p>
+              </div>
+            </div>
+
+            <GrokModelConfigFields
+              v-if="form.platform === 'grok'"
+              v-model:allowed-models="allowedModels"
+              v-model:mappings="modelMappings"
+              v-model:mode="modelRestrictionMode"
+              :models="visibleCommonModels"
+            />
 
             <!-- 代理设置 -->
             <ProxyConfig v-model="form.proxy" />
@@ -3096,6 +3252,62 @@
               数字越小优先级越高，建议范围：1-100
             </p>
           </div>
+
+          <div v-if="form.platform === 'grok'" class="space-y-4">
+            <div>
+              <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                >账户并发数</label
+              >
+              <input
+                v-model.number="form.concurrency"
+                class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                min="1"
+                type="number"
+              />
+              <p class="mt-1 text-xs text-amber-600 dark:text-amber-300">
+                OAuth 账户建议保持 1；提高并发可能触发 xAI 风控。
+              </p>
+            </div>
+
+            <div
+              v-if="props.account?.authType === 'api_key'"
+              class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-cyan-900 dark:bg-cyan-950/20"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h5 class="text-sm font-semibold text-slate-900 dark:text-cyan-100">
+                    xAI API Key
+                  </h5>
+                  <p class="mt-1 text-xs text-slate-500 dark:text-cyan-200/70">
+                    留空保持现有凭证；同步失败不会清空当前模型列表。
+                  </p>
+                </div>
+                <button
+                  class="rounded-lg border border-cyan-300 px-3 py-2 text-xs font-medium text-cyan-700 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-200 dark:hover:bg-cyan-950/40"
+                  :disabled="syncingGrokModels"
+                  type="button"
+                  @click="syncGrokModels"
+                >
+                  <i class="fas fa-sync-alt mr-1" :class="{ 'animate-spin': syncingGrokModels }" />
+                  同步模型
+                </button>
+              </div>
+              <input
+                v-model="form.apiKey"
+                class="form-input mt-3 w-full border-gray-300 font-mono dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                placeholder="留空表示不更新"
+                type="password"
+              />
+            </div>
+          </div>
+
+          <GrokModelConfigFields
+            v-if="form.platform === 'grok'"
+            v-model:allowed-models="allowedModels"
+            v-model:mappings="modelMappings"
+            v-model:mode="modelRestrictionMode"
+            :models="visibleCommonModels"
+          />
 
           <!-- Claude Console 和 CCR 特定字段（编辑模式）-->
           <div
@@ -4000,7 +4212,8 @@
               form.platform !== 'ccr' &&
               form.platform !== 'bedrock' &&
               form.platform !== 'azure_openai' &&
-              form.platform !== 'openai-responses'
+              form.platform !== 'openai-responses' &&
+              form.platform !== 'grok'
             "
             class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/30"
           >
@@ -4225,6 +4438,7 @@ import * as httpApis from '@/utils/http_apis'
 import { useAccountsStore } from '@/stores/accounts'
 import ProxyConfig from './ProxyConfig.vue'
 import OAuthFlow from './OAuthFlow.vue'
+import GrokModelConfigFields from './GrokModelConfigFields.vue'
 import TempUnavailablePolicyFields from './TempUnavailablePolicyFields.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import GroupManagementModal from './GroupManagementModal.vue'
@@ -4335,6 +4549,8 @@ const determinePlatformGroup = (platform) => {
     return 'gemini'
   } else if (platform === 'droid') {
     return 'droid'
+  } else if (platform === 'grok') {
+    return 'grok'
   }
   return ''
 }
@@ -4518,6 +4734,9 @@ const form = ref({
   platform: props.account?.platform || 'claude',
   addType: (() => {
     const platform = props.account?.platform || 'claude'
+    if (platform === 'grok') {
+      return props.account?.authType === 'api_key' ? 'apikey' : 'oauth'
+    }
     if (platform === 'gemini' || platform === 'gemini-antigravity' || platform === 'openai')
       return 'oauth'
     if (platform === 'claude') return 'oauth'
@@ -4547,6 +4766,7 @@ const form = ref({
   apiUrl: props.account?.apiUrl || '',
   apiKey: props.account?.apiKey || '',
   priority: props.account?.priority || 50,
+  concurrency: Math.max(1, Number(props.account?.concurrency) || 1),
   endpointType: props.account?.endpointType || 'anthropic',
   // OpenAI-Responses 特定字段
   baseApi: props.account?.baseApi || '',
@@ -4790,6 +5010,10 @@ const allowedModels = ref([
 
 // 常用模型列表（从 API 获取）
 const commonModels = ref([])
+const modelsByPlatform = ref({})
+const visibleCommonModels = computed(() =>
+  form.value.platform === 'grok' ? modelsByPlatform.value.grok || [] : commonModels.value
+)
 
 // 加载模型列表
 const loadCommonModels = async () => {
@@ -4797,6 +5021,7 @@ const loadCommonModels = async () => {
     const result = await httpApis.getModelsApi()
     if (result.success && result.data?.all) {
       commonModels.value = result.data.all
+      modelsByPlatform.value = result.data
     }
   } catch (error) {
     console.error('Failed to load models:', error)
@@ -4805,9 +5030,59 @@ const loadCommonModels = async () => {
 
 // 模型映射表数据
 const modelMappings = ref([])
+const syncingGrokModels = ref(false)
+
+const buildGrokModelConfig = () => {
+  if (modelRestrictionMode.value === 'whitelist') {
+    return {
+      supportedModels: [...allowedModels.value],
+      modelMapping: {}
+    }
+  }
+  const modelMapping = convertMappingsToObject() || {}
+  return {
+    supportedModels: Array.from(new Set(Object.values(modelMapping).filter(Boolean))),
+    modelMapping
+  }
+}
+
+const syncGrokModels = async () => {
+  if (!props.account?.id || props.account.authType !== 'api_key') return
+  syncingGrokModels.value = true
+  try {
+    const response = await httpApis.syncGrokAccountModelsApi(props.account.id)
+    if (!response.success) {
+      showToast(response.message || '同步模型失败', 'error')
+      return
+    }
+    allowedModels.value = Array.isArray(response.data) ? response.data : []
+    modelRestrictionMode.value = 'whitelist'
+    showToast(`已同步 ${allowedModels.value.length} 个模型`, 'success')
+  } catch (error) {
+    showToast(error.message || '同步模型失败', 'error')
+  } finally {
+    syncingGrokModels.value = false
+  }
+}
 
 // 初始化模型映射表
 const initModelMappings = () => {
+  if (props.account?.platform === 'grok') {
+    const mapping = props.account.modelMapping
+    if (mapping && typeof mapping === 'object' && Object.keys(mapping).length > 0) {
+      modelRestrictionMode.value = 'mapping'
+      modelMappings.value = Object.entries(mapping).map(([from, to]) => ({ from, to }))
+      allowedModels.value = []
+      return
+    }
+    modelRestrictionMode.value = 'whitelist'
+    allowedModels.value = Array.isArray(props.account.supportedModels)
+      ? [...props.account.supportedModels]
+      : []
+    modelMappings.value = []
+    return
+  }
+
   if (props.account?.supportedModels) {
     // 如果是对象格式（新的映射表）
     if (
@@ -5039,6 +5314,12 @@ const selectPlatformGroup = (group) => {
     form.value.platform = 'gemini' // Default to Gemini CLI, user can select Antigravity
   } else if (group === 'droid') {
     form.value.platform = 'droid'
+  } else if (group === 'grok') {
+    form.value.platform = 'grok'
+    form.value.addType = 'oauth'
+    form.value.concurrency = 1
+    allowedModels.value = []
+    modelMappings.value = []
   }
 }
 
@@ -5347,11 +5628,18 @@ const isClaudeOfficialPlatform = computed(() =>
   ['claude', 'claude-oauth'].includes(form.value.platform)
 )
 const canReauthOpenAI = computed(() => isEdit.value && form.value.platform === 'openai')
+const canReauthGrok = computed(
+  () => isEdit.value && form.value.platform === 'grok' && props.account?.authType === 'oauth'
+)
 const canReauthClaudeOAuth = computed(
   () => isEdit.value && isClaudeOfficialPlatform.value && props.account?.authType === 'oauth'
 )
-const canReauthOAuthAccount = computed(() => canReauthOpenAI.value || canReauthClaudeOAuth.value)
-const reauthPlatformLabel = computed(() => (canReauthClaudeOAuth.value ? 'Claude' : 'OpenAI'))
+const canReauthOAuthAccount = computed(
+  () => canReauthOpenAI.value || canReauthClaudeOAuth.value || canReauthGrok.value
+)
+const reauthPlatformLabel = computed(() =>
+  canReauthClaudeOAuth.value ? 'Claude' : canReauthGrok.value ? 'Grok' : 'OpenAI'
+)
 const reauthFlowPlatform = computed(() =>
   canReauthClaudeOAuth.value ? 'claude' : form.value.platform
 )
@@ -5415,6 +5703,25 @@ const handleReauthSuccess = async (tokenInfo) => {
         return
       }
 
+      reauthMode.value = false
+      emit('success', { message: res.message || '重新授权成功' })
+      return
+    }
+
+    if (canReauthGrok.value) {
+      const tokens = tokenInfo?.tokens || tokenInfo || {}
+      if (!tokens.accessToken || !tokens.refreshToken) {
+        showToast('授权未返回有效 Token，请重试', 'error')
+        return
+      }
+      const res = await accountsStore.reauthGrokAccount(props.account.id, {
+        tokens,
+        accountInfo: tokenInfo?.accountInfo || tokens.accountInfo || {}
+      })
+      if (!res?.success) {
+        showToast(res?.message || '重新授权失败', 'error')
+        return
+      }
       reauthMode.value = false
       emit('success', { message: res.message || '重新授权成功' })
       return
@@ -5561,6 +5868,23 @@ const handleOAuthSuccess = async (tokenInfoOrList) => {
       data.accountInfo = tokenInfo.accountInfo
       data.priority = form.value.priority || 50
       Object.assign(data, buildOpenAINicInterleavePayload())
+    } else if (currentPlatform === 'grok') {
+      const tokens = tokenInfo.tokens || tokenInfo || {}
+      if (!tokens.accessToken || !tokens.refreshToken) {
+        showToast('授权成功但未返回完整的 Grok OAuth Token', 'error')
+        return
+      }
+      data.authType = 'oauth'
+      data.accessToken = tokens.accessToken
+      data.refreshToken = tokens.refreshToken
+      data.idToken = tokens.idToken || ''
+      data.tokenType = tokens.tokenType || 'Bearer'
+      data.expiresAt = tokens.expiresAt || ''
+      data.scope = tokens.scope || ''
+      data.accountInfo = tokenInfo.accountInfo || tokens.accountInfo || {}
+      data.priority = form.value.priority || 50
+      data.concurrency = Math.max(1, Number(form.value.concurrency) || 1)
+      Object.assign(data, buildGrokModelConfig())
     } else if (currentPlatform === 'droid') {
       const rawTokens = tokenInfo.tokens || tokenInfo || {}
 
@@ -5636,6 +5960,8 @@ const handleOAuthSuccess = async (tokenInfoOrList) => {
       result = await accountsStore.createOpenAIAccount(data)
     } else if (currentPlatform === 'droid') {
       result = await accountsStore.createDroidAccount(data)
+    } else if (currentPlatform === 'grok') {
+      result = await accountsStore.createGrokAccount(data)
     } else {
       result = await accountsStore.createGeminiAccount(data)
     }
@@ -5763,6 +6089,11 @@ const createAccount = async () => {
       errors.value.apiKey = '请填写 API Key'
       hasError = true
     }
+  } else if (form.value.platform === 'grok' && form.value.addType === 'refresh-token') {
+    if (!form.value.refreshToken || form.value.refreshToken.trim() === '') {
+      errors.value.refreshToken = '请填写 Refresh Token'
+      hasError = true
+    }
   } else if (form.value.addType === 'manual') {
     // 手动模式验证 - 只有部分平台需要验证 Token
     if (form.value.platform === 'openai') {
@@ -5797,12 +6128,15 @@ const createAccount = async () => {
     // Claude Console、CCR、OpenAI-Responses 等其他平台不需要 Token 验证
   } else if (form.value.addType === 'apikey') {
     // Gemini API 使用单个 apiKey 字段
-    if (form.value.platform === 'gemini-api') {
+    if (form.value.platform === 'gemini-api' || form.value.platform === 'grok') {
       if (!form.value.apiKey || form.value.apiKey.trim() === '') {
         errors.value.apiKey = '请填写 API Key'
         hasError = true
       }
-      if (!form.value.baseUrl || form.value.baseUrl.trim() === '') {
+      if (
+        form.value.platform === 'gemini-api' &&
+        (!form.value.baseUrl || form.value.baseUrl.trim() === '')
+      ) {
         errors.value.baseUrl = '请填写 API 基础地址'
         hasError = true
       }
@@ -5959,6 +6293,26 @@ const createAccount = async () => {
         data.tokenType = 'Bearer'
         data.authenticationMethod = 'manual'
       }
+    } else if (form.value.platform === 'grok') {
+      data.priority = form.value.priority || 50
+      data.concurrency = Math.max(1, Number(form.value.concurrency) || 1)
+      Object.assign(data, buildGrokModelConfig())
+      if (form.value.addType === 'apikey') {
+        data.authType = 'api_key'
+        data.apiKey = form.value.apiKey.trim()
+      } else if (form.value.addType === 'refresh-token') {
+        const validated = await accountsStore.validateGrokRefreshToken({
+          refreshToken: form.value.refreshToken.trim(),
+          proxy: proxyPayload
+        })
+        const tokens = validated?.tokens || validated || {}
+        if (!tokens.accessToken || !tokens.refreshToken) {
+          throw new Error('Refresh Token validation did not return valid OAuth tokens')
+        }
+        data.authType = 'oauth'
+        Object.assign(data, tokens)
+        data.accountInfo = validated?.accountInfo || tokens.accountInfo || {}
+      }
     } else if (form.value.platform === 'claude-console' || form.value.platform === 'ccr') {
       // Claude Console 和 CCR 账户特定数据（CCR 使用 Claude Console 的后端逻辑）
       data.apiUrl = form.value.apiUrl
@@ -6047,6 +6401,8 @@ const createAccount = async () => {
       result = await accountsStore.createClaudeConsoleAccount(data)
     } else if (form.value.platform === 'droid') {
       result = await accountsStore.createDroidAccount(data)
+    } else if (form.value.platform === 'grok') {
+      result = await accountsStore.createGrokAccount(data)
     } else if (form.value.platform === 'openai-responses') {
       result = await accountsStore.createOpenAIResponsesAccount(data)
     } else if (form.value.platform === 'bedrock') {
@@ -6413,6 +6769,15 @@ const updateAccount = async () => {
         : []
     }
 
+    if (props.account.platform === 'grok') {
+      data.priority = form.value.priority || 50
+      data.concurrency = Math.max(1, Number(form.value.concurrency) || 1)
+      Object.assign(data, buildGrokModelConfig())
+      if (props.account.authType === 'api_key' && form.value.apiKey?.trim()) {
+        data.apiKey = form.value.apiKey.trim()
+      }
+    }
+
     // 支持 disableAutoProtection 的平台才写入
     if (autoProtectionPlatforms.includes(props.account.platform)) {
       data.disableAutoProtection = !!form.value.disableAutoProtection
@@ -6436,6 +6801,8 @@ const updateAccount = async () => {
       await accountsStore.updateGeminiApiAccount(props.account.id, data)
     } else if (props.account.platform === 'droid') {
       await accountsStore.updateDroidAccount(props.account.id, data)
+    } else if (props.account.platform === 'grok') {
+      await accountsStore.updateGrokAccount(props.account.id, data)
     } else {
       throw new Error(`不支持的平台: ${props.account.platform}`)
     }
@@ -6643,6 +7010,14 @@ watch(
     } else if (newPlatform === 'openai') {
       // 切换到 OpenAI 时，使用 OAuth 作为默认方式
       form.value.addType = 'oauth'
+    } else if (newPlatform === 'grok') {
+      form.value.addType = 'oauth'
+      if (!isEdit.value) {
+        modelRestrictionMode.value = 'whitelist'
+        allowedModels.value = []
+        modelMappings.value = []
+        form.value.concurrency = 1
+      }
     } else if (newPlatform === 'gemini-api' || newPlatform === 'azure_openai') {
       // 切换到 Gemini API 或 Azure OpenAI 时，使用 apikey 模式（直接创建，不需要 OAuth 流程）
       form.value.addType = 'apikey'
@@ -6879,11 +7254,15 @@ watch(
           ? newAccount.authenticationMethod.trim().toLowerCase()
           : ''
       const derivedAddType =
-        normalizedAuthMethod === 'api_key'
-          ? 'apikey'
-          : normalizedAuthMethod === 'manual'
-            ? 'manual'
+        newAccount.platform === 'grok'
+          ? newAccount.authType === 'api_key'
+            ? 'apikey'
             : 'oauth'
+          : normalizedAuthMethod === 'api_key'
+            ? 'apikey'
+            : normalizedAuthMethod === 'manual'
+              ? 'manual'
+              : 'oauth'
 
       // 获取分组ID - 可能来自 groupId 字段或 groupInfo 对象
       let groupId = ''
@@ -6937,6 +7316,7 @@ watch(
         apiUrl: newAccount.apiUrl || '',
         apiKey: '', // 编辑模式不显示现有的 API Key
         priority: newAccount.priority || 50,
+        concurrency: Math.max(1, Number(newAccount.concurrency) || 1),
         supportedModels: (() => {
           const models = newAccount.supportedModels
           if (!models) return []

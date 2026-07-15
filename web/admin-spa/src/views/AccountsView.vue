@@ -670,6 +670,19 @@
                         </span>
                       </div>
                       <div
+                        v-else-if="account.platform === 'grok'"
+                        class="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-gradient-to-r from-slate-100 to-cyan-100 px-2.5 py-1 dark:border-cyan-800 dark:from-slate-800 dark:to-cyan-950/40"
+                      >
+                        <span class="text-xs font-black text-slate-800 dark:text-cyan-300">x</span>
+                        <span class="text-xs font-semibold text-slate-800 dark:text-cyan-200"
+                          >Grok</span
+                        >
+                        <span class="mx-1 h-4 w-px bg-slate-300 dark:bg-cyan-800" />
+                        <span class="text-xs font-medium text-slate-600 dark:text-cyan-300">
+                          {{ account.authType === 'api_key' ? 'API Key' : 'OAuth' }}
+                        </span>
+                      </div>
+                      <div
                         v-else-if="account.platform === 'gemini-api'"
                         class="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-gradient-to-r from-amber-100 to-yellow-100 px-2.5 py-1 dark:border-amber-700 dark:from-amber-900/20 dark:to-yellow-900/20"
                       >
@@ -873,7 +886,13 @@
                   <div v-else class="text-xs text-gray-400">暂无数据</div>
                 </td>
                 <td class="whitespace-nowrap px-3 py-4">
+                  <GrokQuotaSummary
+                    v-if="account.platform === 'grok'"
+                    :account="account"
+                    @refreshed="(data) => handleGrokQuotaRefreshed(account.id, data)"
+                  />
                   <BalanceDisplay
+                    v-else
                     :account-id="account.id"
                     :initial-balance="account.balanceInfo"
                     :platform="account.platform"
@@ -888,6 +907,7 @@
                   <div class="mt-1 text-xs">
                     <button
                       v-if="
+                        account.platform !== 'grok' &&
                         !(account.platform === 'gemini' && account.oauthProvider === 'antigravity')
                       "
                       class="text-blue-500 hover:underline dark:text-blue-300"
@@ -1262,6 +1282,7 @@
                       account.platform === 'azure_openai' ||
                       account.platform === 'ccr' ||
                       account.platform === 'droid' ||
+                      account.platform === 'grok' ||
                       account.platform === 'gemini-api'
                     "
                     class="flex items-center gap-2"
@@ -1292,8 +1313,15 @@
                 </td>
                 <td class="whitespace-nowrap px-3 py-4">
                   <div class="flex flex-col gap-1">
+                    <span
+                      v-if="account.platform === 'grok'"
+                      class="inline-flex items-center text-xs text-cyan-700 dark:text-cyan-300"
+                    >
+                      <i class="fas fa-rotate mr-1" />
+                      {{ account.authType === 'oauth' ? 'OAuth 自动刷新' : 'API Key' }}
+                    </span>
                     <!-- 已设置过期时间 -->
-                    <span v-if="account.expiresAt">
+                    <span v-else-if="account.expiresAt">
                       <span
                         v-if="isExpired(account.expiresAt)"
                         class="inline-flex cursor-pointer items-center text-red-600 hover:underline"
@@ -1489,7 +1517,9 @@
                             ? 'bg-gradient-to-br from-teal-500 to-emerald-600'
                             : account.platform === 'droid'
                               ? 'bg-gradient-to-br from-cyan-500 to-sky-600'
-                              : 'bg-gradient-to-br from-blue-500 to-blue-600'
+                              : account.platform === 'grok'
+                                ? 'bg-gradient-to-br from-slate-800 to-cyan-600'
+                                : 'bg-gradient-to-br from-blue-500 to-blue-600'
                 ]"
               >
                 <i
@@ -1507,7 +1537,9 @@
                               ? 'fas fa-code-branch'
                               : account.platform === 'droid'
                                 ? 'fas fa-robot'
-                                : 'fas fa-robot'
+                                : account.platform === 'grok'
+                                  ? 'fas fa-bolt'
+                                  : 'fas fa-robot'
                   ]"
                 />
               </div>
@@ -1598,7 +1630,13 @@
           <!-- 余额/配额 -->
           <div class="mb-3">
             <p class="mb-1 text-xs text-gray-500 dark:text-gray-400">余额/配额</p>
+            <GrokQuotaSummary
+              v-if="account.platform === 'grok'"
+              :account="account"
+              @refreshed="(data) => handleGrokQuotaRefreshed(account.id, data)"
+            />
             <BalanceDisplay
+              v-else
               :account-id="account.id"
               :initial-balance="account.balanceInfo"
               :platform="account.platform"
@@ -2325,6 +2363,7 @@ import CustomDropdown from '@/components/common/CustomDropdown.vue'
 import ActionDropdown from '@/components/common/ActionDropdown.vue'
 import GroupManagementModal from '@/components/accounts/GroupManagementModal.vue'
 import BalanceDisplay from '@/components/accounts/BalanceDisplay.vue'
+import GrokQuotaSummary from '@/components/accounts/GrokQuotaSummary.vue'
 import AccountBalanceScriptModal from '@/components/accounts/AccountBalanceScriptModal.vue'
 
 // 确认弹窗状态
@@ -2407,6 +2446,7 @@ const TEMP_UNAVAILABLE_ACCOUNT_TYPE_ALIASES = {
   'openai-responses': ['openai-responses'],
   ccr: ['ccr'],
   droid: ['droid'],
+  grok: ['grok'],
   azure_openai: ['azure-openai'],
   'azure-openai': ['azure-openai']
 }
@@ -2453,6 +2493,7 @@ const supportedUsagePlatforms = [
   'openai-responses',
   'gemini',
   'droid',
+  'grok',
   'gemini-api',
   'bedrock'
 ]
@@ -2533,6 +2574,12 @@ const platformHierarchy = [
     label: 'Droid（全部）',
     icon: 'fa-robot',
     children: [{ value: 'droid', label: 'Droid', icon: 'fa-robot' }]
+  },
+  {
+    value: 'group-grok',
+    label: 'Grok（全部）',
+    icon: 'fa-bolt',
+    children: [{ value: 'grok', label: 'Grok / xAI', icon: 'fa-bolt' }]
   }
 ]
 
@@ -2541,7 +2588,8 @@ const platformGroupMap = {
   'group-claude': ['claude', 'claude-console', 'bedrock', 'ccr'],
   'group-openai': ['openai', 'openai-responses', 'azure_openai'],
   'group-gemini': ['gemini', 'gemini-api'],
-  'group-droid': ['droid']
+  'group-droid': ['droid'],
+  'group-grok': ['grok']
 }
 
 // 平台请求处理器
@@ -2555,6 +2603,7 @@ const platformRequestHandlers = {
   'openai-responses': () => httpApis.getOpenAIResponsesAccountsApi(),
   ccr: () => httpApis.getCcrAccountsApi(),
   droid: () => httpApis.getDroidAccountsApi(),
+  grok: () => httpApis.getGrokAccountsApi(),
   'gemini-api': () => httpApis.getGeminiApiAccountsApi()
 }
 
@@ -2598,7 +2647,7 @@ const groupOptions = computed(() => {
   accountGroups.value.forEach((group) => {
     options.push({
       value: group.id,
-      label: `${group.name} (${group.platform === 'claude' ? 'Claude' : group.platform === 'gemini' ? 'Gemini' : group.platform === 'openai' ? 'OpenAI' : 'Droid'})`,
+      label: `${group.name} (${group.platform === 'claude' ? 'Claude' : group.platform === 'gemini' ? 'Gemini' : group.platform === 'openai' ? 'OpenAI' : group.platform === 'grok' ? 'Grok' : 'Droid'})`,
       icon:
         group.platform === 'claude'
           ? 'fa-brain'
@@ -2606,7 +2655,9 @@ const groupOptions = computed(() => {
             ? 'fa-robot'
             : group.platform === 'openai'
               ? 'fa-openai'
-              : 'fa-robot'
+              : group.platform === 'grok'
+                ? 'fa-bolt'
+                : 'fa-robot'
     })
   })
   return options
@@ -2693,6 +2744,7 @@ const showResetButton = (account) => {
     'gemini-api',
     'ccr',
     'droid',
+    'grok',
     'bedrock',
     'azure-openai',
     'azure_openai'
@@ -2811,6 +2863,7 @@ const supportedTestPlatforms = [
   'openai-responses',
   'azure-openai',
   'droid',
+  'grok',
   'ccr'
 ]
 
@@ -2819,7 +2872,7 @@ const canTestAccount = (account) => {
 }
 
 const canScheduleTestAccount = (account) => {
-  return canTestAccount(account)
+  return !!account && ['claude', 'openai', 'grok'].includes(account.platform)
 }
 
 const openAccountTestModal = (account) => {
@@ -3003,7 +3056,8 @@ const accountStats = computed(() => {
     { value: 'bedrock', label: 'Bedrock' },
     { value: 'openai-responses', label: 'OpenAI-Responses' },
     { value: 'ccr', label: 'CCR' },
-    { value: 'droid', label: 'Droid' }
+    { value: 'droid', label: 'Droid' },
+    { value: 'grok', label: 'Grok' }
   ]
 
   return platforms
@@ -3187,6 +3241,18 @@ const handleBalanceRefreshed = (accountId, balanceInfo) => {
     if (account.id !== accountId) return account
     return { ...account, balanceInfo }
   })
+}
+
+const handleGrokQuotaRefreshed = (accountId, snapshot) => {
+  accounts.value = accounts.value.map((account) =>
+    account.id === accountId
+      ? {
+          ...account,
+          billingSnapshot: snapshot.billing || account.billingSnapshot,
+          rateLimitSnapshot: snapshot.rateLimit || account.rateLimitSnapshot
+        }
+      : account
+  )
 }
 
 // 余额请求错误回调（仅提示，不中断页面）
@@ -3478,6 +3544,14 @@ const loadAccounts = async (forceReload = false) => {
           const items = list.map((acc) => {
             const boundApiKeysCount = counts.droidAccountId?.[acc.id] || acc.boundApiKeysCount || 0
             return { ...acc, platform: 'droid', boundApiKeysCount }
+          })
+          allAccounts.push(...items)
+          break
+        }
+        case 'grok': {
+          const items = list.map((acc) => {
+            const boundApiKeysCount = counts.grokAccountId?.[acc.id] || acc.boundApiKeysCount || 0
+            return { ...acc, platform: 'grok', boundApiKeysCount }
           })
           allAccounts.push(...items)
           break
@@ -4028,6 +4102,7 @@ const getBoundApiKeysForAccount = (account) => {
       key.openaiAccountId === accountId ||
       key.azureOpenaiAccountId === accountId ||
       key.openaiAccountId === `responses:${accountId}` ||
+      key.grokAccountId === accountId ||
       key.geminiAccountId === `api:${accountId}`
     )
   })
@@ -4053,6 +4128,8 @@ const resolveAccountDeleteEndpoint = (account) => {
       return `/admin/gemini-accounts/${account.id}`
     case 'droid':
       return `/admin/droid-accounts/${account.id}`
+    case 'grok':
+      return `/admin/grok-accounts/${account.id}`
     case 'gemini-api':
       return `/admin/gemini-api-accounts/${account.id}`
     default:
@@ -4199,6 +4276,7 @@ const RESET_STATUS_ENDPOINT_MAP = {
   'claude-console': (id) => `/admin/claude-console-accounts/${id}/reset-status`,
   ccr: (id) => `/admin/ccr-accounts/${id}/reset-status`,
   droid: (id) => `/admin/droid-accounts/${id}/reset-status`,
+  grok: (id) => `/admin/grok-accounts/${id}/reset-status`,
   'gemini-api': (id) => `/admin/gemini-api-accounts/${id}/reset-status`,
   gemini: (id) => `/admin/gemini-accounts/${id}/reset-status`,
   bedrock: (id) => `/admin/bedrock-accounts/${id}/reset-status`,
@@ -4217,6 +4295,7 @@ const TOGGLE_SCHEDULABLE_ENDPOINT_MAP = {
   'openai-responses': (id) => `/admin/openai-responses-accounts/${id}/toggle-schedulable`,
   ccr: (id) => `/admin/ccr-accounts/${id}/toggle-schedulable`,
   droid: (id) => `/admin/droid-accounts/${id}/toggle-schedulable`,
+  grok: (id) => `/admin/grok-accounts/${id}/toggle-schedulable`,
   'gemini-api': (id) => `/admin/gemini-api-accounts/${id}/toggle-schedulable`
 }
 
@@ -4283,7 +4362,10 @@ const toggleSchedulable = async (account) => {
     return
   }
 
-  const data = await httpApis.toggleAccountStatusApi(endpoint)
+  const data =
+    account.platform === 'grok'
+      ? await httpApis.toggleGrokAccountApi(account.id)
+      : await httpApis.toggleAccountStatusApi(endpoint)
   if (data.success) {
     account.schedulable = data.schedulable
     showToast(data.schedulable ? '已启用调度' : '已禁用调度', 'success')
@@ -5283,6 +5365,9 @@ const handleSaveAccountExpiry = async ({ accountId, expiresAt }) => {
         break
       case 'droid':
         endpoint = `/admin/droid-accounts/${accountId}` // 使用 :id
+        break
+      case 'grok':
+        endpoint = `/admin/grok-accounts/${accountId}`
         break
       case 'azure_openai':
         endpoint = `/admin/azure-openai-accounts/${accountId}` // 使用 :id

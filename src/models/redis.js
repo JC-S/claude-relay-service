@@ -2795,6 +2795,8 @@ class RedisClient {
     let accountData = {}
     if (accountType === 'droid') {
       accountData = await this.client.hgetall(`droid:account:${accountId}`)
+    } else if (accountType === 'grok') {
+      accountData = await this.client.hgetall(`grok:account:${accountId}`)
     } else if (accountType === 'openai') {
       accountData = await this.client.hgetall(`openai:account:${accountId}`)
     } else if (accountType === 'openai-responses') {
@@ -2816,6 +2818,9 @@ class RedisClient {
       }
       if (!accountData.createdAt) {
         accountData = await this.client.hgetall(`droid:account:${accountId}`)
+      }
+      if (!accountData.createdAt) {
+        accountData = await this.client.hgetall(`grok:account:${accountId}`)
       }
     }
     const createdAt = accountData.createdAt ? new Date(accountData.createdAt) : new Date()
@@ -3073,6 +3078,44 @@ class RedisClient {
     // 从索引中移除
     await this.client.srem('droid:account:index', accountId)
     return await this.client.del(key)
+  }
+
+  // xAI Grok accounts
+  async setGrokAccount(accountId, accountData) {
+    const key = `grok:account:${accountId}`
+    await this.client.hset(key, accountData)
+    await this.client.sadd('grok:account:index', accountId)
+    await this.client.del('grok:account:index:empty')
+  }
+
+  async getGrokAccount(accountId) {
+    return await this.client.hgetall(`grok:account:${accountId}`)
+  }
+
+  async getAllGrokAccounts() {
+    const accountIds = await this.getAllIdsByIndex(
+      'grok:account:index',
+      'grok:account:*',
+      /^grok:account:(?!index(?:$|:))(.+)$/
+    )
+    if (!accountIds.length) {
+      return []
+    }
+    const pipeline = this.client.pipeline()
+    accountIds.forEach((id) => pipeline.hgetall(`grok:account:${id}`))
+    const results = await pipeline.exec()
+    return results
+      .map(([error, account], index) =>
+        !error && account && Object.keys(account).length
+          ? { id: accountIds[index], ...account }
+          : null
+      )
+      .filter(Boolean)
+  }
+
+  async deleteGrokAccount(accountId) {
+    await this.client.srem('grok:account:index', accountId)
+    return await this.client.del(`grok:account:${accountId}`)
   }
 
   async setOpenAiAccount(accountId, accountData) {

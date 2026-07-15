@@ -22,7 +22,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
       gemini: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
       openai: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
       azure_openai: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
-      bedrock: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 }
+      bedrock: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
+      grok: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 }
     },
     todayRequests: 0,
     totalRequests: 0,
@@ -276,7 +277,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
             gemini: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
             openai: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
             azure_openai: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
-            bedrock: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 }
+            bedrock: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 },
+            grok: { total: 0, normal: 0, abnormal: 0, paused: 0, rateLimited: 0 }
           },
           todayRequests: recentActivity.requestsToday || 0,
           totalRequests: overview.totalRequestsUsed || 0,

@@ -26,6 +26,10 @@ jest.mock('../src/services/account/openaiResponsesAccountService', () => ({
 }))
 jest.mock('../src/services/account/azureOpenaiAccountService', () => ({ getAccount: jest.fn() }))
 jest.mock('../src/services/account/droidAccountService', () => ({ getAccount: jest.fn() }))
+jest.mock('../src/services/account/grokAccountService', () => ({
+  getAccount: jest.fn(),
+  getSafeAccount: jest.fn()
+}))
 jest.mock('../src/services/account/bedrockAccountService', () => ({ getAccount: jest.fn() }))
 jest.mock('../src/utils/costCalculator', () => ({
   calculateCost: jest.fn()
@@ -143,6 +147,61 @@ describe('requestDetailService', () => {
     expect(storedPayload.rawModel).toBe('gpt-5.4')
     expect(storedPayload.model).toBe('gpt-5.4 (fast)')
     expect(storedPayload.serviceTier).toBe('priority')
+  })
+
+  test('preserves Grok terminal and model-chain metadata', async () => {
+    const exec = jest.fn().mockResolvedValue([])
+    const multi = {
+      set: jest.fn().mockReturnThis(),
+      zadd: jest.fn().mockReturnThis(),
+      expire: jest.fn().mockReturnThis(),
+      exec
+    }
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: false
+    })
+    redis.getClient.mockReturnValue({ multi: jest.fn(() => multi) })
+
+    await requestDetailService.captureRequestDetail({
+      requestId: 'req_grok_metadata',
+      timestamp: '2026-04-07T12:00:00.000Z',
+      endpoint: '/grok/responses',
+      method: 'POST',
+      statusCode: 200,
+      downstreamHttpStatus: 200,
+      upstreamHttpStatus: 200,
+      upstreamSemanticStatus: 429,
+      terminalType: 'response.failed',
+      errorType: 'rate_limit_error',
+      errorCode: 'rate_limit_exceeded',
+      upstreamRequestId: 'xai-request-id',
+      apiKeyId: 'key_grok',
+      accountId: 'grok_account',
+      accountType: 'grok',
+      model: 'grok-4.5',
+      requestedModel: 'grok-latest',
+      mappedModel: 'grok-4.5',
+      actualModel: 'grok-4.5',
+      billingModel: 'grok-4.5',
+      inputTokens: 0,
+      outputTokens: 0
+    })
+
+    const storedPayload = JSON.parse(multi.set.mock.calls[0][1])
+    expect(storedPayload).toEqual(
+      expect.objectContaining({
+        accountType: 'grok',
+        upstreamSemanticStatus: 429,
+        terminalType: 'response.failed',
+        errorCode: 'rate_limit_exceeded',
+        requestedModel: 'grok-latest',
+        mappedModel: 'grok-4.5',
+        actualModel: 'grok-4.5',
+        billingModel: 'grok-4.5'
+      })
+    )
   })
 
   test('listRequestDetails applies openai cache display flags and openai hit-rate formula', async () => {

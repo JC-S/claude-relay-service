@@ -1,6 +1,49 @@
 const path = require('path')
 require('dotenv').config()
 
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT, 10) || 600000
+const DEFAULT_GROK_DRAIN_IDLE_MS = 90000
+const DEFAULT_GROK_CLI_VERSION = '0.2.93'
+
+const parseGrokCliVersion = () => {
+  const candidate = process.env.XAI_GROK_CLI_VERSION || DEFAULT_GROK_CLI_VERSION
+  const match = candidate.match(/^(\d+)\.(\d+)\.(\d+)$/)
+  if (!match) {
+    process.emitWarning(`Invalid XAI_GROK_CLI_VERSION; using ${DEFAULT_GROK_CLI_VERSION}`)
+    return DEFAULT_GROK_CLI_VERSION
+  }
+  const parts = match.slice(1).map(Number)
+  const minimum = DEFAULT_GROK_CLI_VERSION.split('.').map(Number)
+  const belowMinimum = parts.some((part, index) => {
+    const prefixEqual = parts.slice(0, index).every((value, i) => value === minimum[i])
+    return prefixEqual && part < minimum[index]
+  })
+  if (belowMinimum) {
+    process.emitWarning(
+      `XAI_GROK_CLI_VERSION must be >= ${DEFAULT_GROK_CLI_VERSION}; using the default`
+    )
+    return DEFAULT_GROK_CLI_VERSION
+  }
+  return candidate
+}
+
+const parseGrokDrainIdleMs = () => {
+  const parsed = Number(process.env.GROK_DISCONNECT_DRAIN_IDLE_MS)
+  if (process.env.GROK_DISCONNECT_DRAIN_IDLE_MS === undefined) {
+    return Math.min(DEFAULT_GROK_DRAIN_IDLE_MS, REQUEST_TIMEOUT)
+  }
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+    process.emitWarning(
+      `Invalid GROK_DISCONNECT_DRAIN_IDLE_MS; using ${DEFAULT_GROK_DRAIN_IDLE_MS}`
+    )
+    return Math.min(DEFAULT_GROK_DRAIN_IDLE_MS, REQUEST_TIMEOUT)
+  }
+  if (parsed === 0) {
+    return 0
+  }
+  return Math.min(Math.max(parsed, 5000), REQUEST_TIMEOUT)
+}
+
 const config = {
   // 🌐 服务器配置
   server: {
@@ -134,8 +177,26 @@ const config = {
     requestTimeoutMs: parseInt(process.env.OAUTH_USAGE_REFRESH_REQUEST_TIMEOUT_MS, 10) || 30000
   },
 
+  // xAI Grok Responses provider
+  grok: {
+    enabled: process.env.GROK_PROVIDER_ENABLED === 'true',
+    oauthClientId: process.env.XAI_OAUTH_CLIENT_ID || 'b1a00492-073a-47ea-816f-4c329264a828',
+    oauthScope:
+      process.env.XAI_OAUTH_SCOPE ||
+      'openid profile email offline_access grok-cli:access api:access',
+    oauthRedirectUri: process.env.XAI_OAUTH_REDIRECT_URI || 'http://127.0.0.1:56121/callback',
+    oauthAuthorizeUrl: process.env.XAI_OAUTH_AUTHORIZE_URL || 'https://auth.x.ai/oauth2/authorize',
+    oauthTokenUrl: process.env.XAI_OAUTH_TOKEN_URL || 'https://auth.x.ai/oauth2/token',
+    apiBaseUrl: process.env.XAI_API_BASE_URL || 'https://api.x.ai/v1',
+    cliBaseUrl: process.env.XAI_CLI_BASE_URL || 'https://cli-chat-proxy.grok.com/v1',
+    cliVersion: parseGrokCliVersion(),
+    directApiUserAgent: process.env.XAI_GROK_DIRECT_API_USER_AGENT || 'crs-grok/1.0',
+    oauthCacheNativeTools: process.env.GROK_OAUTH_CACHE_NATIVE_TOOLS !== 'false',
+    disconnectDrainIdleMs: parseGrokDrainIdleMs()
+  },
+
   // ⏱️ 请求超时配置
-  requestTimeout: parseInt(process.env.REQUEST_TIMEOUT) || 600000, // 默认 10 分钟
+  requestTimeout: REQUEST_TIMEOUT, // 默认 10 分钟
 
   // 📈 使用限制
   limits: {

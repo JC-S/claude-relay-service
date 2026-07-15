@@ -9,11 +9,12 @@ const requestDetailService = require('./requestDetailService')
 const { calculateKeyStats } = require('./apiKeyStatsService')
 const { isClaudeFamilyModel, isClaudeFableModel } = require('../utils/modelHelper')
 const { finalizeRequestDetailMeta } = require('../utils/requestDetailHelper')
+const { pickRequestRecordMetadata } = require('../utils/requestRecordMetadata')
 const requestBodyRuleService = require('./requestBodyRuleService')
 const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
 const { encrypt, decrypt } = require('../utils/commonHelper')
 
-const CONNECTIVITY_TEST_SERVICES = ['claude', 'gemini', 'openai']
+const CONNECTIVITY_TEST_SERVICES = ['claude', 'gemini', 'openai', 'grok']
 
 const ACCOUNT_TYPE_CONFIG = {
   claude: { prefix: 'claude:account:' },
@@ -23,7 +24,8 @@ const ACCOUNT_TYPE_CONFIG = {
   'azure-openai': { prefix: 'azure_openai:account:' },
   gemini: { prefix: 'gemini_account:' },
   'gemini-api': { prefix: 'gemini_api_account:' },
-  droid: { prefix: 'droid:account:' }
+  droid: { prefix: 'droid:account:' },
+  grok: { prefix: 'grok:account:' }
 }
 
 const ACCOUNT_TYPE_PRIORITY = [
@@ -34,7 +36,8 @@ const ACCOUNT_TYPE_PRIORITY = [
   'claude-console',
   'gemini',
   'gemini-api',
-  'droid'
+  'droid',
+  'grok'
 ]
 
 const ACCOUNT_CATEGORY_MAP = {
@@ -45,7 +48,8 @@ const ACCOUNT_CATEGORY_MAP = {
   'azure-openai': 'openai',
   gemini: 'gemini',
   'gemini-api': 'gemini',
-  droid: 'droid'
+  droid: 'droid',
+  grok: 'grok'
 }
 
 function projectV2ChildUsageStats(stats) {
@@ -196,7 +200,8 @@ const V2_INHERIT_ACCOUNT_FIELDS = [
   'openaiAccountId',
   'azureOpenaiAccountId',
   'bedrockAccountId',
-  'droidAccountId'
+  'droidAccountId',
+  'grokAccountId'
 ]
 // 配置字段：权限/限制/倍率/特性开关（不含账户身份），真实调用与 stats 展示都应一致继承
 const V2_INHERIT_CONFIG_FIELDS = [
@@ -218,6 +223,7 @@ const V2_INHERIT_CONFIG_FIELDS = [
   'serviceRates',
   'disableGptFastMode',
   'enableGeneralOpenAIEndpoint',
+  'enableGrokEndpoint',
   'enableGeneralOpenAIImages',
   'enableGeneralPromptCacheAssist',
   'enableClaudeThinkingSignatureLossyFallback',
@@ -232,6 +238,7 @@ const V2_ADMIN_BOOLEAN_INHERIT_FIELDS = new Set([
   'enableIpWhitelist',
   'disableGptFastMode',
   'enableGeneralOpenAIEndpoint',
+  'enableGrokEndpoint',
   'enableGeneralOpenAIImages',
   'enableGeneralPromptCacheAssist',
   'enableClaudeThinkingSignatureLossyFallback',
@@ -374,6 +381,7 @@ class ApiKeyService {
       azureOpenaiAccountId = null,
       bedrockAccountId = null, // 添加 Bedrock 账号ID支持
       droidAccountId = null,
+      grokAccountId = null,
       permissions = [], // 数组格式，空数组表示全部服务，如 ['claude', 'gemini']
       isActive = true,
       concurrencyLimit = 0,
@@ -400,6 +408,7 @@ class ApiKeyService {
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       disableGptFastMode = false,
       enableGeneralOpenAIEndpoint = false,
+      enableGrokEndpoint = false,
       enableGeneralOpenAIImages = false,
       enableGeneralPromptCacheAssist = false,
       enableClaudeThinkingSignatureLossyFallback = false,
@@ -442,6 +451,7 @@ class ApiKeyService {
       azureOpenaiAccountId: azureOpenaiAccountId || '',
       bedrockAccountId: bedrockAccountId || '', // 添加 Bedrock 账号ID
       droidAccountId: droidAccountId || '',
+      grokAccountId: grokAccountId || '',
       permissions: JSON.stringify(normalizePermissions(permissions)),
       enableModelRestriction: String(enableModelRestriction),
       restrictedModels: JSON.stringify(restrictedModels || []),
@@ -471,6 +481,7 @@ class ApiKeyService {
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       disableGptFastMode: String(disableGptFastMode === true),
       enableGeneralOpenAIEndpoint: String(enableGeneralOpenAIEndpoint === true),
+      enableGrokEndpoint: String(enableGrokEndpoint === true),
       enableGeneralOpenAIImages: String(enableGeneralOpenAIImages === true),
       enableGeneralPromptCacheAssist: String(enableGeneralPromptCacheAssist === true),
       enableClaudeThinkingSignatureLossyFallback: String(
@@ -540,6 +551,7 @@ class ApiKeyService {
       azureOpenaiAccountId: keyData.azureOpenaiAccountId,
       bedrockAccountId: keyData.bedrockAccountId, // 添加 Bedrock 账号ID
       droidAccountId: keyData.droidAccountId,
+      grokAccountId: keyData.grokAccountId,
       permissions: normalizePermissions(keyData.permissions),
       enableModelRestriction: keyData.enableModelRestriction === 'true',
       restrictedModels: JSON.parse(keyData.restrictedModels),
@@ -566,6 +578,7 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       ),
+      enableGrokEndpoint: parseBooleanWithDefault(keyData.enableGrokEndpoint, false),
       enableGeneralOpenAIImages: parseBooleanWithDefault(keyData.enableGeneralOpenAIImages, false),
       enableGeneralPromptCacheAssist: parseBooleanWithDefault(
         keyData.enableGeneralPromptCacheAssist,
@@ -808,6 +821,7 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       )
+      const enableGrokEndpoint = parseBooleanWithDefault(keyData.enableGrokEndpoint, false)
       const enableGeneralOpenAIImages = parseBooleanWithDefault(
         keyData.enableGeneralOpenAIImages,
         false
@@ -836,6 +850,7 @@ class ApiKeyService {
           azureOpenaiAccountId: keyData.azureOpenaiAccountId,
           bedrockAccountId: keyData.bedrockAccountId, // 添加 Bedrock 账号ID
           droidAccountId: keyData.droidAccountId,
+          grokAccountId: keyData.grokAccountId,
           permissions: normalizePermissions(keyData.permissions),
           tokenLimit: parseInt(keyData.tokenLimit),
           concurrencyLimit: parseInt(keyData.concurrencyLimit || 0),
@@ -862,6 +877,7 @@ class ApiKeyService {
           serviceRates,
           disableGptFastMode,
           enableGeneralOpenAIEndpoint,
+          enableGrokEndpoint,
           enableGeneralOpenAIImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
@@ -994,6 +1010,7 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIEndpoint,
         false
       )
+      const enableGrokEndpoint = parseBooleanWithDefault(keyData.enableGrokEndpoint, false)
       const enableGeneralOpenAIImages = parseBooleanWithDefault(
         keyData.enableGeneralOpenAIImages,
         false
@@ -1028,6 +1045,7 @@ class ApiKeyService {
           azureOpenaiAccountId: keyData.azureOpenaiAccountId,
           bedrockAccountId: keyData.bedrockAccountId,
           droidAccountId: keyData.droidAccountId,
+          grokAccountId: keyData.grokAccountId,
           // 🆕 v2 子 key 标识（父 key id）：仅供服务端识别 v2 子 key（如拒绝其自助改继承配置）。
           // 公开 stats 响应为显式构造对象、不含该字段，不会泄漏给前台。
           parentKeyId: keyData.parentKeyId || null,
@@ -1067,6 +1085,7 @@ class ApiKeyService {
           usage,
           disableGptFastMode,
           enableGeneralOpenAIEndpoint,
+          enableGrokEndpoint,
           enableGeneralOpenAIImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
@@ -1355,6 +1374,7 @@ class ApiKeyService {
           key.enableGeneralOpenAIEndpoint,
           false
         )
+        key.enableGrokEndpoint = parseBooleanWithDefault(key.enableGrokEndpoint, false)
         key.enableGeneralOpenAIImages = parseBooleanWithDefault(
           key.enableGeneralOpenAIImages,
           false
@@ -1676,6 +1696,7 @@ class ApiKeyService {
           key.enableGeneralOpenAIEndpoint,
           false
         )
+        key.enableGrokEndpoint = parseBooleanWithDefault(key.enableGrokEndpoint, false)
         key.enableGeneralOpenAIImages = parseBooleanWithDefault(
           key.enableGeneralOpenAIImages,
           false
@@ -1851,6 +1872,7 @@ class ApiKeyService {
           'geminiAccountId',
           'openaiAccountId',
           'droidAccountId',
+          'grokAccountId',
           'isDeleted'
         )
       }
@@ -1868,7 +1890,8 @@ class ApiKeyService {
             geminiAccountId: fields[1] || null,
             openaiAccountId: fields[2] || null,
             droidAccountId: fields[3] || null,
-            isDeleted: fields[4] === 'true'
+            grokAccountId: fields[4] || null,
+            isDeleted: fields[5] === 'true'
           }
         })
         .filter((k) => k && !k.isDeleted)
@@ -1903,6 +1926,7 @@ class ApiKeyService {
         'azureOpenaiAccountId',
         'bedrockAccountId', // 添加 Bedrock 账号ID
         'droidAccountId',
+        'grokAccountId',
         'permissions',
         'expiresAt',
         'activationDays', // 新增：激活后有效天数
@@ -1929,6 +1953,7 @@ class ApiKeyService {
         'weeklyResetHour', // 周费用重置时 (0-23)
         'disableGptFastMode',
         'enableGeneralOpenAIEndpoint',
+        'enableGrokEndpoint',
         'enableGeneralOpenAIImages',
         'enableGeneralPromptCacheAssist',
         'enableClaudeThinkingSignatureLossyFallback',
@@ -1978,6 +2003,7 @@ class ApiKeyService {
             field === 'isActivated' ||
             field === 'disableGptFastMode' ||
             field === 'enableGeneralOpenAIEndpoint' ||
+            field === 'enableGrokEndpoint' ||
             field === 'enableGeneralOpenAIImages' ||
             field === 'enableGeneralPromptCacheAssist' ||
             field === 'enableClaudeThinkingSignatureLossyFallback' ||
@@ -2461,6 +2487,7 @@ class ApiKeyService {
         stream: finalizedRequestMeta?.stream === true,
         durationMs: finalizedRequestMeta?.durationMs ?? null,
         upstreamNicIp: finalizedRequestMeta?.upstreamNicIp || null,
+        ...pickRequestRecordMetadata(finalizedRequestMeta),
         inputTokens,
         outputTokens,
         cacheCreateTokens,
@@ -2737,6 +2764,8 @@ class ApiKeyService {
         statusCode: finalizedRequestMeta?.statusCode || null,
         stream: finalizedRequestMeta?.stream === true,
         durationMs: finalizedRequestMeta?.durationMs ?? null,
+        upstreamNicIp: finalizedRequestMeta?.upstreamNicIp || null,
+        ...pickRequestRecordMetadata(finalizedRequestMeta),
         inputTokens,
         outputTokens,
         cacheCreateTokens,
@@ -2851,6 +2880,22 @@ class ApiKeyService {
       stream: requestMeta?.stream === true || usageRecord.stream === true,
       durationMs: requestMeta?.durationMs ?? usageRecord.durationMs ?? null,
       upstreamNicIp: requestMeta?.upstreamNicIp || usageRecord.upstreamNicIp || null,
+      clientIp: requestMeta?.clientIp || usageRecord.clientIp || null,
+      upstreamRequestId: requestMeta?.upstreamRequestId || usageRecord.upstreamRequestId || null,
+      downstreamHttpStatus:
+        requestMeta?.downstreamHttpStatus ?? usageRecord.downstreamHttpStatus ?? null,
+      upstreamHttpStatus: requestMeta?.upstreamHttpStatus ?? usageRecord.upstreamHttpStatus ?? null,
+      upstreamSemanticStatus:
+        requestMeta?.upstreamSemanticStatus ?? usageRecord.upstreamSemanticStatus ?? null,
+      terminalType: requestMeta?.terminalType || usageRecord.terminalType || null,
+      errorType: requestMeta?.errorType || usageRecord.errorType || null,
+      errorCode: requestMeta?.errorCode || usageRecord.errorCode || null,
+      requestedModel: requestMeta?.requestedModel || usageRecord.requestedModel || null,
+      mappedModel: requestMeta?.mappedModel || usageRecord.mappedModel || null,
+      actualModel: requestMeta?.actualModel || usageRecord.actualModel || null,
+      billingModel: requestMeta?.billingModel || usageRecord.billingModel || null,
+      firstTokenLatencyMs:
+        requestMeta?.firstTokenLatencyMs ?? usageRecord.firstTokenLatencyMs ?? null,
       requestBody: requestMeta?.requestBody,
       apiKeyId: keyId,
       accountId: usageRecord.accountId || null,
@@ -3113,6 +3158,7 @@ class ApiKeyService {
           userUsername: key.userUsername,
           createdBy: key.createdBy,
           droidAccountId: key.droidAccountId,
+          grokAccountId: key.grokAccountId,
           enableIpWhitelist: key.enableIpWhitelist === true || key.enableIpWhitelist === 'true',
           ipWhitelist: normalizeIpWhitelist(key.ipWhitelist),
           // Include deletion fields for deleted keys
@@ -3170,6 +3216,7 @@ class ApiKeyService {
         openaiAccountId: keyData.openaiAccountId,
         bedrockAccountId: keyData.bedrockAccountId,
         droidAccountId: keyData.droidAccountId,
+        grokAccountId: keyData.grokAccountId,
         azureOpenaiAccountId: keyData.azureOpenaiAccountId,
         ccrAccountId: keyData.ccrAccountId,
         enableIpWhitelist: keyData.enableIpWhitelist === 'true',
@@ -3179,6 +3226,7 @@ class ApiKeyService {
           keyData.enableGeneralOpenAIEndpoint,
           false
         ),
+        enableGrokEndpoint: parseBooleanWithDefault(keyData.enableGrokEndpoint, false),
         enableGeneralOpenAIImages: parseBooleanWithDefault(
           keyData.enableGeneralOpenAIImages,
           false
@@ -3394,6 +3442,7 @@ class ApiKeyService {
         azure_openai: 'azureOpenaiAccountId',
         bedrock: 'bedrockAccountId',
         droid: 'droidAccountId',
+        grok: 'grokAccountId',
         ccr: null // CCR 账号没有对应的 API Key 字段
       }
 

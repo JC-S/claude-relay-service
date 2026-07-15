@@ -38,6 +38,10 @@ function detectBackendFromModel(modelName) {
     return 'openai'
   }
 
+  if (model.startsWith('grok-') || model === 'grok') {
+    return 'grok'
+  }
+
   // 默认使用 Claude
   return 'claude'
 }
@@ -50,6 +54,16 @@ async function routeToBackend(req, res, requestedModel) {
 
   // 检查权限
   const { permissions } = req.apiKey
+
+  if (backend === 'grok') {
+    return res.status(400).json({
+      error: {
+        message: 'Grok models are only available through /grok/responses',
+        type: 'invalid_request_error',
+        code: 'use_grok_responses_endpoint'
+      }
+    })
+  }
 
   if (backend === 'claude') {
     // Claude 后端：通过 OpenAI 兼容层

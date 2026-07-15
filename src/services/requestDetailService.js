@@ -10,6 +10,7 @@ const openaiAccountService = require('./account/openaiAccountService')
 const openaiResponsesAccountService = require('./account/openaiResponsesAccountService')
 const azureOpenaiAccountService = require('./account/azureOpenaiAccountService')
 const droidAccountService = require('./account/droidAccountService')
+const grokAccountService = require('./account/grokAccountService')
 const bedrockAccountService = require('./account/bedrockAccountService')
 const CostCalculator = require('../utils/costCalculator')
 const {
@@ -43,6 +44,7 @@ const accountTypeNames = {
   gemini: 'Gemini',
   'gemini-api': 'Gemini API',
   droid: 'Droid',
+  grok: 'Grok',
   bedrock: 'AWS Bedrock',
   unknown: '未知渠道'
 }
@@ -57,6 +59,7 @@ const accountServices = {
   gemini: geminiAccountService,
   'gemini-api': geminiApiAccountService,
   droid: droidAccountService,
+  grok: grokAccountService,
   bedrock: bedrockAccountService
 }
 
@@ -821,6 +824,29 @@ class RequestDetailService {
       costRecomputed: detail.costRecomputed === true,
       durationMs,
       upstreamNicIp: normalizeOptionalFilterValue(detail.upstreamNicIp) || null,
+      clientIp: normalizeOptionalFilterValue(detail.clientIp) || null,
+      upstreamRequestId: normalizeOptionalFilterValue(detail.upstreamRequestId) || null,
+      downstreamHttpStatus:
+        detail.downstreamHttpStatus === undefined
+          ? null
+          : normalizeNumber(detail.downstreamHttpStatus),
+      upstreamHttpStatus:
+        detail.upstreamHttpStatus === undefined ? null : normalizeNumber(detail.upstreamHttpStatus),
+      upstreamSemanticStatus:
+        detail.upstreamSemanticStatus === undefined
+          ? null
+          : normalizeNumber(detail.upstreamSemanticStatus),
+      terminalType: normalizeOptionalFilterValue(detail.terminalType) || null,
+      errorType: normalizeOptionalFilterValue(detail.errorType) || null,
+      errorCode: normalizeOptionalFilterValue(detail.errorCode) || null,
+      requestedModel: normalizeOptionalFilterValue(detail.requestedModel) || null,
+      mappedModel: normalizeOptionalFilterValue(detail.mappedModel) || null,
+      actualModel: normalizeOptionalFilterValue(detail.actualModel) || null,
+      billingModel: normalizeOptionalFilterValue(detail.billingModel) || null,
+      firstTokenLatencyMs:
+        detail.firstTokenLatencyMs === undefined
+          ? null
+          : normalizeNumber(detail.firstTokenLatencyMs),
       isLongContextRequest: detail.isLongContextRequest === true,
       reasoningDisplay: detail.reasoningDisplay || reasoningInfo.reasoningDisplay || null,
       reasoningSource: detail.reasoningSource || reasoningInfo.reasoningSource || null

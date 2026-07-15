@@ -63,6 +63,7 @@ import ClaudeCodeTutorial from '@/components/tutorial/ClaudeCodeTutorial.vue'
 import GeminiCliTutorial from '@/components/tutorial/GeminiCliTutorial.vue'
 import CodexTutorial from '@/components/tutorial/CodexTutorial.vue'
 import DroidCliTutorial from '@/components/tutorial/DroidCliTutorial.vue'
+import GrokTutorial from '@/components/tutorial/GrokTutorial.vue'
 
 // 当前系统选择
 const activeTutorialSystem = ref('windows')
@@ -82,7 +83,8 @@ const cliTools = [
   { key: 'claude-code', name: 'Claude Code', icon: 'fas fa-robot', component: ClaudeCodeTutorial },
   { key: 'codex', name: 'Codex', icon: 'fas fa-code', component: CodexTutorial },
   { key: 'gemini-cli', name: 'Gemini CLI', icon: 'fab fa-google', component: GeminiCliTutorial },
-  { key: 'droid-cli', name: 'Droid CLI', icon: 'fas fa-terminal', component: DroidCliTutorial }
+  { key: 'droid-cli', name: 'Droid CLI', icon: 'fas fa-terminal', component: DroidCliTutorial },
+  { key: 'grok-build', name: 'Grok Build', icon: 'fas fa-bolt', component: GrokTutorial }
 ]
 
 // 当前工具标题

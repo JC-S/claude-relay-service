@@ -380,6 +380,7 @@ const platformFallbackModels = {
   openai: 'gpt-5.4',
   'openai-responses': 'gpt-5',
   droid: 'claude-sonnet-4-5-20250929',
+  grok: 'grok-4.5',
   ccr: 'claude-sonnet-4-5-20250929'
 }
 
@@ -434,6 +435,12 @@ const apikeyServiceConfigs = {
     endpoint: '/api-key/test-openai',
     defaultModel: 'gpt-5.4',
     displayEndpoint: '/openai/responses'
+  },
+  grok: {
+    name: 'Grok',
+    endpoint: '/api-key/test-grok',
+    defaultModel: 'grok-4.5',
+    displayEndpoint: '/grok/responses'
   }
 }
 
@@ -511,6 +518,11 @@ const platformConfigs = {
     label: 'Droid',
     icon: 'fas fa-robot',
     badge: 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300'
+  },
+  grok: {
+    label: 'Grok / xAI',
+    icon: 'fas fa-bolt',
+    badge: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300'
   },
   ccr: {
     label: 'CCR',
@@ -596,6 +608,7 @@ const getAccountEndpoint = () => {
     'openai-responses': `${APP_CONFIG.apiPrefix}/admin/openai-responses-accounts/${props.account.id}/test`,
     'azure-openai': `${APP_CONFIG.apiPrefix}/admin/azure-openai-accounts/${props.account.id}/test`,
     droid: `${APP_CONFIG.apiPrefix}/admin/droid-accounts/${props.account.id}/test`,
+    grok: `${APP_CONFIG.apiPrefix}/admin/grok-accounts/${props.account.id}/test`,
     ccr: `${APP_CONFIG.apiPrefix}/admin/ccr-accounts/${props.account.id}/test`
   }
   return endpoints[platform] || ''

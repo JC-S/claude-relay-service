@@ -37,7 +37,9 @@
                     ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
                     : tab.key === 'droid'
                       ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300'
-                      : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
+                      : tab.key === 'grok'
+                        ? 'bg-slate-200 text-slate-800 dark:bg-cyan-950/40 dark:text-cyan-300'
+                        : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
             ]"
             @click="activeTab = tab.key"
@@ -89,24 +91,10 @@
                   <span
                     :class="[
                       'rounded-full px-2 py-1 text-xs font-medium',
-                      group.platform === 'claude'
-                        ? 'bg-purple-100 text-purple-700'
-                        : group.platform === 'gemini'
-                          ? 'bg-blue-100 text-blue-700'
-                          : group.platform === 'openai'
-                            ? 'bg-gray-100 text-gray-700'
-                            : 'bg-cyan-100 text-cyan-700'
+                      getPlatformBadgeClass(group.platform)
                     ]"
                   >
-                    {{
-                      group.platform === 'claude'
-                        ? 'Claude'
-                        : group.platform === 'gemini'
-                          ? 'Gemini'
-                          : group.platform === 'openai'
-                            ? 'OpenAI'
-                            : 'Droid'
-                    }}
+                    {{ getPlatformLabel(group.platform) }}
                   </span>
                 </div>
               </div>
@@ -173,13 +161,7 @@
           <div>
             <label class="mb-2 block text-sm font-semibold text-gray-700">平台类型</label>
             <div class="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-600">
-              {{
-                editForm.platform === 'claude'
-                  ? 'Claude'
-                  : editForm.platform === 'gemini'
-                    ? 'Gemini'
-                    : 'OpenAI'
-              }}
+              {{ getPlatformLabel(editForm.platform) }}
               <span class="ml-2 text-xs text-gray-500">(不可修改)</span>
             </div>
           </div>
@@ -259,6 +241,10 @@
                 <input v-model="createForm.platform" class="mr-2" type="radio" value="droid" />
                 <span class="text-sm text-gray-700 dark:text-gray-300">Droid</span>
               </label>
+              <label class="flex cursor-pointer items-center">
+                <input v-model="createForm.platform" class="mr-2" type="radio" value="grok" />
+                <span class="text-sm text-gray-700 dark:text-gray-300">Grok</span>
+              </label>
             </div>
           </div>
 
@@ -323,8 +309,29 @@ const platformTabs = [
   { key: 'claude', label: 'Claude', color: 'purple' },
   { key: 'gemini', label: 'Gemini', color: 'blue' },
   { key: 'openai', label: 'OpenAI', color: 'gray' },
-  { key: 'droid', label: 'Droid', color: 'cyan' }
+  { key: 'droid', label: 'Droid', color: 'cyan' },
+  { key: 'grok', label: 'Grok', color: 'slate' }
 ]
+
+const platformLabels = {
+  claude: 'Claude',
+  gemini: 'Gemini',
+  openai: 'OpenAI',
+  droid: 'Droid',
+  grok: 'Grok'
+}
+
+const platformBadgeClasses = {
+  claude: 'bg-purple-100 text-purple-700',
+  gemini: 'bg-blue-100 text-blue-700',
+  openai: 'bg-gray-100 text-gray-700',
+  droid: 'bg-cyan-100 text-cyan-700',
+  grok: 'bg-slate-200 text-slate-800 dark:bg-cyan-950/40 dark:text-cyan-300'
+}
+
+const getPlatformLabel = (platform) => platformLabels[platform] || platform
+const getPlatformBadgeClass = (platform) =>
+  platformBadgeClasses[platform] || 'bg-gray-100 text-gray-700'
 
 // 各平台分组数量
 const platformCounts = computed(() => {

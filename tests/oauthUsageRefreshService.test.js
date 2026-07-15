@@ -12,6 +12,14 @@ jest.mock('../src/services/account/openaiAccountService', () => ({
   fetchCodexUsage: jest.fn()
 }))
 
+jest.mock('../src/services/account/grokAccountService', () => ({
+  getAllAccounts: jest.fn()
+}))
+
+jest.mock('../src/services/grokQuotaService', () => ({
+  queryBilling: jest.fn()
+}))
+
 jest.mock('../src/utils/logger', () => ({
   debug: jest.fn(),
   info: jest.fn(),
@@ -22,6 +30,8 @@ jest.mock('../src/utils/logger', () => ({
 const redis = require('../src/models/redis')
 const claudeAccountService = require('../src/services/account/claudeAccountService')
 const openaiAccountService = require('../src/services/account/openaiAccountService')
+const grokAccountService = require('../src/services/account/grokAccountService')
+const grokQuotaService = require('../src/services/grokQuotaService')
 const { OAuthUsageRefreshService } = require('../src/services/oauthUsageRefreshService')
 
 describe('oauthUsageRefreshService', () => {
@@ -29,6 +39,8 @@ describe('oauthUsageRefreshService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    grokAccountService.getAllAccounts.mockResolvedValue([])
+    grokQuotaService.queryBilling.mockResolvedValue({ billing: {} })
     dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-06-17T10:00:00.000Z'))
   })
 
@@ -132,6 +144,52 @@ describe('oauthUsageRefreshService', () => {
     openaiAccountService.fetchCodexUsage.mockResolvedValue({
       primaryUsedPercent: 12.5
     })
+    grokAccountService.getAllAccounts.mockResolvedValue([
+      {
+        id: 'grok-stale',
+        authType: 'oauth',
+        isActive: true,
+        schedulable: true,
+        status: 'active',
+        hasRefreshToken: true,
+        billingSnapshot: { observedAt: staleUpdatedAt }
+      },
+      {
+        id: 'grok-fresh',
+        authType: 'oauth',
+        isActive: true,
+        schedulable: true,
+        status: 'active',
+        hasRefreshToken: true,
+        billingSnapshot: { observedAt: freshUpdatedAt }
+      },
+      {
+        id: 'grok-api-key',
+        authType: 'api_key',
+        isActive: true,
+        schedulable: true,
+        status: 'active',
+        billingSnapshot: { observedAt: staleUpdatedAt }
+      },
+      {
+        id: 'grok-stopped',
+        authType: 'oauth',
+        isActive: true,
+        schedulable: false,
+        status: 'active',
+        hasRefreshToken: true,
+        billingSnapshot: { observedAt: staleUpdatedAt }
+      },
+      {
+        id: 'grok-unauthorized',
+        authType: 'oauth',
+        isActive: true,
+        schedulable: true,
+        status: 'unauthorized',
+        hasRefreshToken: true,
+        billingSnapshot: { observedAt: staleUpdatedAt }
+      }
+    ])
 
     const result = await service.performRefresh()
 
@@ -143,6 +201,12 @@ describe('oauthUsageRefreshService', () => {
     })
     expect(result.openai).toMatchObject({
       scanned: 4,
+      stale: 1,
+      refreshed: 1,
+      failed: 0
+    })
+    expect(result.grok).toMatchObject({
+      scanned: 5,
       stale: 1,
       refreshed: 1,
       failed: 0
@@ -160,6 +224,8 @@ describe('oauthUsageRefreshService', () => {
       'openai-stopped',
       expect.any(Object)
     )
+    expect(grokQuotaService.queryBilling).toHaveBeenCalledTimes(1)
+    expect(grokQuotaService.queryBilling).toHaveBeenCalledWith('grok-stale')
   })
 
   test('single account refresh failures do not stop the whole run', async () => {

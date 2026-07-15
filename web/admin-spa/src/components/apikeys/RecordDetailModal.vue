@@ -120,6 +120,67 @@
       </div>
 
       <div
+        v-if="hasGrokRelayMetadata"
+        class="rounded-lg border border-cyan-200 bg-slate-50 p-4 dark:border-cyan-900/60 dark:bg-slate-900/40"
+      >
+        <h4 class="mb-3 text-sm font-semibold text-gray-800 dark:text-gray-200">Grok 转发详情</h4>
+        <dl class="grid gap-3 text-sm sm:grid-cols-2">
+          <div v-if="hasValue(record?.downstreamHttpStatus)" class="detail-row">
+            <dt>下游 HTTP 状态</dt>
+            <dd>{{ record.downstreamHttpStatus }}</dd>
+          </div>
+          <div v-if="hasValue(record?.upstreamHttpStatus)" class="detail-row">
+            <dt>上游 HTTP 状态</dt>
+            <dd>{{ record.upstreamHttpStatus }}</dd>
+          </div>
+          <div v-if="hasValue(record?.upstreamSemanticStatus)" class="detail-row">
+            <dt>上游语义状态</dt>
+            <dd>{{ record.upstreamSemanticStatus }}</dd>
+          </div>
+          <div v-if="record?.terminalType" class="detail-row">
+            <dt>终态事件</dt>
+            <dd>{{ record.terminalType }}</dd>
+          </div>
+          <div v-if="record?.errorType" class="detail-row">
+            <dt>错误类型</dt>
+            <dd>{{ record.errorType }}</dd>
+          </div>
+          <div v-if="record?.errorCode" class="detail-row">
+            <dt>错误代码</dt>
+            <dd>{{ record.errorCode }}</dd>
+          </div>
+          <div v-if="record?.upstreamRequestId" class="detail-row sm:col-span-2">
+            <dt>上游请求 ID</dt>
+            <dd class="break-all">{{ record.upstreamRequestId }}</dd>
+          </div>
+          <div v-if="record?.clientIp" class="detail-row sm:col-span-2">
+            <dt>客户端 IP</dt>
+            <dd class="break-all">{{ record.clientIp }}</dd>
+          </div>
+          <div v-if="hasValue(record?.firstTokenLatencyMs)" class="detail-row">
+            <dt>首 Token 延迟</dt>
+            <dd>{{ record.firstTokenLatencyMs }} ms</dd>
+          </div>
+          <div v-if="record?.requestedModel" class="detail-row">
+            <dt>请求模型</dt>
+            <dd>{{ record.requestedModel }}</dd>
+          </div>
+          <div v-if="record?.mappedModel" class="detail-row">
+            <dt>映射模型</dt>
+            <dd>{{ record.mappedModel }}</dd>
+          </div>
+          <div v-if="record?.actualModel" class="detail-row">
+            <dt>上游实际模型</dt>
+            <dd>{{ record.actualModel }}</dd>
+          </div>
+          <div v-if="record?.billingModel" class="detail-row">
+            <dt>计费模型</dt>
+            <dd>{{ record.billingModel }}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div
         class="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
       >
         <h4 class="mb-3 text-sm font-semibold text-gray-800 dark:text-gray-200">费用详情</h4>
@@ -202,6 +263,28 @@ const hasImageUsage = computed(
     props.record?.imageOutputTokens !== undefined
 )
 
+const hasValue = (value) => value !== null && value !== undefined && value !== ''
+const grokMetadataFields = [
+  'downstreamHttpStatus',
+  'upstreamHttpStatus',
+  'upstreamSemanticStatus',
+  'terminalType',
+  'errorType',
+  'errorCode',
+  'upstreamRequestId',
+  'clientIp',
+  'firstTokenLatencyMs',
+  'requestedModel',
+  'mappedModel',
+  'actualModel',
+  'billingModel'
+]
+const hasGrokRelayMetadata = computed(
+  () =>
+    props.record?.accountType === 'grok' &&
+    grokMetadataFields.some((field) => hasValue(props.record?.[field]))
+)
+
 const formattedTime = computed(() => {
   if (!props.record?.timestamp) return '未知时间'
   return dayjs(props.record.timestamp).format('YYYY-MM-DD HH:mm:ss')
@@ -238,5 +321,29 @@ const formattedCosts = computed(() => {
 
 .record-detail-modal :deep(.el-dialog__footer) {
   padding: 8px 16px 16px;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.detail-row dt {
+  color: rgb(107 114 128);
+}
+
+.detail-row dd {
+  color: rgb(31 41 55);
+  font-weight: 600;
+  text-align: right;
+}
+
+:global(.dark) .detail-row dt {
+  color: rgb(156 163 175);
+}
+
+:global(.dark) .detail-row dd {
+  color: rgb(229 231 235);
 }
 </style>

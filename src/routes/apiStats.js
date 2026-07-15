@@ -16,12 +16,17 @@ const {
   mergeModelUsageStats,
   sumModelUsageTokens
 } = require('../utils/modelUsageStatsHelper')
-const { normalizeIpWhitelist, validateIpWhitelist } = require('../utils/ipWhitelistHelper')
+const {
+  getRequestIp,
+  normalizeIpWhitelist,
+  validateIpWhitelist
+} = require('../utils/ipWhitelistHelper')
 const {
   sanitizeMaxTokens,
   runClaudeKeyTest,
   runGeminiKeyTest,
-  runOpenAIKeyTest
+  runOpenAIKeyTest,
+  runGrokKeyTest
 } = require('../services/apiKeyConnectivityTestService')
 
 const router = express.Router()
@@ -96,6 +101,7 @@ router.get('/models', (req, res) => {
       claude: modelsConfig.CLAUDE_MODELS,
       gemini: modelsConfig.GEMINI_MODELS,
       openai: modelsConfig.OPENAI_CODEX_TEST_MODELS,
+      grok: modelsConfig.GROK_TEST_MODELS,
       other: modelsConfig.OTHER_MODELS,
       all: modelsConfig.getAllModels(),
       platforms: modelsConfig.PLATFORM_TEST_MODELS
@@ -661,6 +667,8 @@ router.post('/api/user-stats', async (req, res) => {
       activationDays: parseInt(fullKeyData.activationDays || 0),
       activatedAt: fullKeyData.activatedAt || null,
       permissions: fullKeyData.permissions,
+      enableGrokEndpoint:
+        fullKeyData.enableGrokEndpoint === true || fullKeyData.enableGrokEndpoint === 'true',
 
       // 使用统计（使用验证结果中的完整数据）
       usage: {
@@ -721,6 +729,10 @@ router.post('/api/user-stats', async (req, res) => {
         openaiAccountId:
           fullKeyData.openaiAccountId && fullKeyData.openaiAccountId !== ''
             ? fullKeyData.openaiAccountId
+            : null,
+        grokAccountId:
+          fullKeyData.grokAccountId && fullKeyData.grokAccountId !== ''
+            ? fullKeyData.grokAccountId
             : null,
         details: Object.keys(boundAccountDetails).length > 0 ? boundAccountDetails : null
       },
@@ -1211,6 +1223,43 @@ router.post('/api-key/test-openai', async (req, res) => {
 
     res.write(`data: ${JSON.stringify({ type: 'error', error: getSafeMessage(error) })}\n\n`)
     res.end()
+  }
+})
+
+router.post('/api-key/test-grok', async (req, res) => {
+  try {
+    const { apiKey, model = 'grok-4.5', prompt = 'hi' } = req.body
+    const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
+    if (typeof apiKey !== 'string' || apiKey.length < 10 || apiKey.length > 512) {
+      return res.status(400).json({ error: 'Invalid API key format' })
+    }
+    const validation = await apiKeyService.validateApiKeyForStats(apiKey)
+    if (!validation.valid) {
+      return res.status(401).json({ error: 'Invalid API key', message: validation.error })
+    }
+    if (
+      validation.keyData.enableGrokEndpoint !== true ||
+      !apiKeyService.hasPermission(validation.keyData.permissions, 'grok')
+    ) {
+      return res.status(403).json({
+        error: 'Permission denied',
+        message: 'This API key does not have Grok endpoint access'
+      })
+    }
+    await runGrokKeyTest({
+      apiKey,
+      model,
+      prompt,
+      maxTokens,
+      responseStream: res,
+      clientIp: getRequestIp(req)
+    })
+  } catch (error) {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Test failed', message: getSafeMessage(error) })
+    }
+    res.write(`data: ${JSON.stringify({ type: 'error', error: getSafeMessage(error) })}\n\n`)
+    return res.end()
   }
 })
 

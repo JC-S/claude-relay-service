@@ -105,6 +105,12 @@ class WebhookNotifier {
         unauthorized: 'OPENAI_UNAUTHORIZED',
         blocked: 'OPENAI_RATE_LIMITED',
         disabled: 'OPENAI_MANUALLY_DISABLED'
+      },
+      grok: {
+        error: 'GROK_ERROR',
+        unauthorized: 'GROK_UNAUTHORIZED',
+        blocked: 'GROK_RATE_LIMITED',
+        disabled: 'GROK_MANUALLY_DISABLED'
       }
     }
 

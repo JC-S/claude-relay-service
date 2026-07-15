@@ -680,6 +680,38 @@ describe('PricingService - Long Context Pricing', () => {
       expect(pricing.input_cost_per_token).toBe(0.000011)
       expect(pricing.output_cost_per_token).toBe(0.000055)
     })
+
+    it('grok composer 缺少定价时克隆 grok build，远端条目出现后自动让位', () => {
+      const buildPricing = {
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000002,
+        cache_read_input_token_cost: 0.0000002,
+        litellm_provider: 'xai'
+      }
+      pricingService.pricingData = { 'grok-build-0.1': { ...buildPricing } }
+
+      const fallback = pricingService.getModelPricing('grok-composer-2.5-fast')
+      expect(fallback).toEqual(
+        expect.objectContaining({
+          pricing_alias_of: 'grok-build-0.1',
+          input_cost_per_token: buildPricing.input_cost_per_token,
+          output_cost_per_token: buildPricing.output_cost_per_token,
+          cache_read_input_token_cost: buildPricing.cache_read_input_token_cost
+        })
+      )
+
+      pricingService.pricingData = {
+        'grok-build-0.1': { ...buildPricing },
+        'grok-composer-2.5-fast': {
+          input_cost_per_token: 0.000003,
+          output_cost_per_token: 0.000004,
+          litellm_provider: 'xai'
+        }
+      }
+      const remote = pricingService.getModelPricing('grok-composer-2.5-fast')
+      expect(remote.pricing_alias_of).toBeUndefined()
+      expect(remote.input_cost_per_token).toBe(0.000003)
+    })
   })
 
   describe('GPT-Image-2 本地缺字段 fallback', () => {

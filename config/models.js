@@ -54,6 +54,16 @@ const OPENAI_CODEX_TEST_MODELS = [
 
 const OPENAI_OAUTH_TEST_MODELS = OPENAI_CODEX_TEST_MODELS
 
+const GROK_TEST_MODELS = [
+  { value: 'grok-4.5', label: 'Grok 4.5' },
+  { value: 'grok-4.3', label: 'Grok 4.3' },
+  { value: 'grok-build-0.1', label: 'Grok Build 0.1' },
+  { value: 'grok-composer-2.5-fast', label: 'Grok Composer 2.5 Fast' },
+  { value: 'grok-4.20-0309-reasoning', label: 'Grok 4.20 Reasoning' },
+  { value: 'grok-4.20-0309-non-reasoning', label: 'Grok 4.20 Non Reasoning' },
+  { value: 'grok-4.20-multi-agent-0309', label: 'Grok 4.20 Multi Agent' }
+]
+
 const BEDROCK_MODELS = [
   { value: 'us.anthropic.claude-opus-4-6-20250610-v1:0', label: 'Claude Opus 4.6' },
   { value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5' },
@@ -80,7 +90,8 @@ const PLATFORM_TEST_MODELS = {
   'openai-responses': OPENAI_MODELS,
   'azure-openai': [],
   droid: CLAUDE_MODELS,
-  ccr: CLAUDE_MODELS
+  ccr: CLAUDE_MODELS,
+  grok: GROK_TEST_MODELS
 }
 
 module.exports = {
@@ -88,6 +99,7 @@ module.exports = {
   GEMINI_MODELS,
   OPENAI_MODELS,
   OPENAI_CODEX_TEST_MODELS,
+  GROK_TEST_MODELS,
   BEDROCK_MODELS,
   OTHER_MODELS,
   PLATFORM_TEST_MODELS,
@@ -100,10 +112,18 @@ module.exports = {
         return GEMINI_MODELS
       case 'openai':
         return OPENAI_CODEX_TEST_MODELS
+      case 'grok':
+        return GROK_TEST_MODELS
       default:
         return []
     }
   },
   // 获取所有模型（用于账户编辑）
-  getAllModels: () => [...CLAUDE_MODELS, ...GEMINI_MODELS, ...OPENAI_MODELS, ...OTHER_MODELS]
+  getAllModels: () => [
+    ...CLAUDE_MODELS,
+    ...GEMINI_MODELS,
+    ...OPENAI_MODELS,
+    ...GROK_TEST_MODELS,
+    ...OTHER_MODELS
+  ]
 }

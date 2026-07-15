@@ -84,7 +84,7 @@ class AccountTestSchedulerService {
    */
   async _refreshAllTasks() {
     try {
-      const platforms = ['claude', 'gemini', 'openai']
+      const platforms = ['claude', 'gemini', 'openai', 'grok']
       const activeAccountKeys = new Set()
 
       // 并行加载所有平台的配置
@@ -218,6 +218,9 @@ class AccountTestSchedulerService {
         case 'openai':
           testResult = await this._testOpenAIAccount(accountId, model)
           break
+        case 'grok':
+          testResult = await this._testGrokAccount(accountId, model)
+          break
         default:
           testResult = {
             success: false,
@@ -297,6 +300,18 @@ class AccountTestSchedulerService {
   async _testOpenAIAccount(accountId, model) {
     const openaiAccountService = require('./account/openaiAccountService')
     return await openaiAccountService.testAccountConnection(accountId, model)
+  }
+
+  async _testGrokAccount(accountId, model) {
+    const grokQuotaService = require('./grokQuotaService')
+    const startedAt = Date.now()
+    const data = await grokQuotaService.testAccount(accountId, model || 'grok-4.5')
+    return {
+      success: true,
+      latencyMs: Date.now() - startedAt,
+      data,
+      timestamp: new Date().toISOString()
+    }
   }
 
   /**

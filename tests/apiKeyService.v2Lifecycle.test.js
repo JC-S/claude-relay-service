@@ -141,8 +141,8 @@ describe('apiKeyService v2 lifecycle fixes', () => {
   })
 
   test.each([
-    ['all', ['claude', 'gemini', 'openai']],
-    ['', ['claude', 'gemini', 'openai']],
+    ['all', ['claude', 'gemini', 'openai', 'grok']],
+    ['', ['claude', 'gemini', 'openai', 'grok']],
     ['["claude"]', ['claude']],
     ['["openai","droid"]', ['openai']],
     ['claude,gemini', ['claude', 'gemini']]

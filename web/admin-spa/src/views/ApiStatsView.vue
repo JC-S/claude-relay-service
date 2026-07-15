@@ -192,6 +192,14 @@
                       <i class="fas fa-code text-green-500" />
                       Codex
                     </button>
+                    <button
+                      v-if="canTestGrok"
+                      class="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                      @click="openTestModal('grok')"
+                    >
+                      <i class="fas fa-bolt text-cyan-600" />
+                      Grok
+                    </button>
                   </div>
                 </div>
               </div>
@@ -699,9 +707,16 @@ const canTestOpenAI = computed(() => {
   return permissions.includes('openai')
 })
 
+const canTestGrok = computed(() => {
+  if (statsData.value?.enableGrokEndpoint !== true) return false
+  const permissions = parsePermissions(statsData.value?.permissions)
+  if (permissions.length === 0) return true
+  return permissions.includes('grok')
+})
+
 // 检查是否有任何测试权限
 const hasAnyTestPermission = computed(() => {
-  return canTestClaude.value || canTestGemini.value || canTestOpenAI.value
+  return canTestClaude.value || canTestGemini.value || canTestOpenAI.value || canTestGrok.value
 })
 
 // 可用服务文本
@@ -712,7 +727,8 @@ const availableServicesText = computed(() => {
     claude: 'Claude',
     gemini: 'Gemini',
     openai: 'OpenAI',
-    droid: 'Droid'
+    droid: 'Droid',
+    grok: 'Grok'
   }
   return permissions.map((s) => serviceNames[s] || s).join(', ')
 })

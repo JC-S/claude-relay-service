@@ -5,6 +5,7 @@ const claudeConsoleAccountService = require('../../services/account/claudeConsol
 const geminiAccountService = require('../../services/account/geminiAccountService')
 const openaiAccountService = require('../../services/account/openaiAccountService')
 const droidAccountService = require('../../services/account/droidAccountService')
+const grokAccountService = require('../../services/account/grokAccountService')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 
@@ -112,6 +113,9 @@ router.get('/:groupId/members', authenticateAdmin, async (req, res) => {
         case 'openai':
           account = await openaiAccountService.getAccount(memberId)
           break
+        case 'grok':
+          account = await grokAccountService.getSafeAccount(memberId)
+          break
         case 'claude':
         default:
           account = await claudeAccountService.getAccount(memberId)
@@ -136,6 +140,9 @@ router.get('/:groupId/members', authenticateAdmin, async (req, res) => {
       }
       if (!account && group.platform !== 'droid') {
         account = await droidAccountService.getAccount(memberId)
+      }
+      if (!account && group.platform !== 'grok') {
+        account = await grokAccountService.getSafeAccount(memberId)
       }
 
       if (account) {

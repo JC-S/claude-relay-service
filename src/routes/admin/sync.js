@@ -12,6 +12,7 @@ const claudeAccountService = require('../../services/account/claudeAccountServic
 const claudeConsoleAccountService = require('../../services/account/claudeConsoleAccountService')
 const openaiAccountService = require('../../services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../../services/account/openaiResponsesAccountService')
+const grokAccountService = require('../../services/account/grokAccountService')
 const logger = require('../../utils/logger')
 
 function toBool(value, defaultValue = false) {
@@ -441,6 +442,51 @@ router.get('/sync/export-accounts', authenticateAdmin, async (req, res) => {
       })
     }
 
+    const grokAccounts = []
+    const grokSummaries = await grokAccountService.getAllAccounts(true)
+    for (const summary of grokSummaries) {
+      const full = await grokAccountService.getAccount(summary.id)
+      if (!full) {
+        continue
+      }
+      const credentials =
+        full.authType === 'oauth'
+          ? {
+              access_token: full.accessToken,
+              refresh_token: full.refreshToken,
+              id_token: full.idToken || undefined,
+              expires_at: full.expiresAt || undefined,
+              scope: full.scope || undefined,
+              token_type: full.tokenType || 'Bearer'
+            }
+          : { api_key: full.apiKey }
+      grokAccounts.push({
+        kind: 'grok-account',
+        id: full.id,
+        name: full.name,
+        description: full.description || '',
+        platform: 'grok',
+        authType: full.authType,
+        accountType: full.accountType,
+        isActive: full.isActive,
+        schedulable: full.schedulable,
+        priority: full.priority,
+        concurrency: full.concurrency,
+        status: full.status,
+        proxy: normalizeProxy(full.proxy),
+        supportedModels: full.supportedModels,
+        modelMapping: full.modelMapping,
+        credentials,
+        extra: {
+          crs_account_id: full.id,
+          crs_kind: 'grok-account',
+          crs_platform: 'grok',
+          crs_email: full.email || undefined,
+          crs_subscription_tier: full.subscriptionTier || undefined
+        }
+      })
+    }
+
     return res.json({
       success: true,
       data: {
@@ -448,7 +494,8 @@ router.get('/sync/export-accounts', authenticateAdmin, async (req, res) => {
         claudeAccounts,
         claudeConsoleAccounts,
         openaiOAuthAccounts,
-        openaiResponsesAccounts
+        openaiResponsesAccounts,
+        grokAccounts
       }
     })
   } catch (error) {

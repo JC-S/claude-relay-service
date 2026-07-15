@@ -350,6 +350,68 @@ describe('apiKeyService v2 billing', () => {
     )
   })
 
+  test('recordUsage persists Grok relay metadata without copying arbitrary request fields', async () => {
+    CostCalculator.calculateCost.mockReturnValue({
+      costs: { total: 0.001, input: 0.0004, output: 0.0006, cacheCreate: 0, cacheRead: 0 }
+    })
+    const requestMeta = {
+      requestId: 'grok-request-1',
+      endpoint: '/grok/responses',
+      method: 'POST',
+      statusCode: 200,
+      stream: true,
+      durationMs: 1250,
+      clientIp: '203.0.113.10',
+      upstreamRequestId: 'xai-request-1',
+      downstreamHttpStatus: 200,
+      upstreamHttpStatus: 200,
+      upstreamSemanticStatus: 429,
+      terminalType: 'response.failed',
+      errorType: 'rate_limit_error',
+      errorCode: 'rate_limit_exceeded',
+      requestedModel: 'grok-latest',
+      mappedModel: 'grok-4.5',
+      actualModel: 'grok-4.5-20260701',
+      billingModel: 'grok-4.5',
+      firstTokenLatencyMs: 87,
+      requestBody: { input: 'must not be copied into the usage record' },
+      authorization: 'Bearer must-not-leak'
+    }
+
+    await apiKeyService.recordUsage(
+      CHILD_ID,
+      200,
+      100,
+      0,
+      0,
+      'grok-4.5',
+      'grok-account-1',
+      'grok',
+      null,
+      requestMeta
+    )
+
+    const usageRecord = redis.addUsageRecord.mock.calls[0][1]
+    expect(usageRecord).toMatchObject({
+      requestId: 'grok-request-1',
+      clientIp: '203.0.113.10',
+      upstreamRequestId: 'xai-request-1',
+      downstreamHttpStatus: 200,
+      upstreamHttpStatus: 200,
+      upstreamSemanticStatus: 429,
+      terminalType: 'response.failed',
+      errorType: 'rate_limit_error',
+      errorCode: 'rate_limit_exceeded',
+      requestedModel: 'grok-latest',
+      mappedModel: 'grok-4.5',
+      actualModel: 'grok-4.5-20260701',
+      billingModel: 'grok-4.5',
+      firstTokenLatencyMs: 87
+    })
+    expect(usageRecord).not.toHaveProperty('requestBody')
+    expect(usageRecord).not.toHaveProperty('authorization')
+  })
+
   // 3. recordUsageWithDetails：同样把倍率后成本写入父总账
   test('recordUsageWithDetails also rolls up rated cost to parent total', async () => {
     CostCalculator.calculateCost.mockReturnValue({

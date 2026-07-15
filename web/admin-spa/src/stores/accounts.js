@@ -15,7 +15,8 @@ const PLATFORM_CONFIG = {
     endpoint: 'openai-responses-accounts',
     stateKey: 'openaiResponsesAccounts'
   },
-  droid: { endpoint: 'droid-accounts', stateKey: 'droidAccounts' }
+  droid: { endpoint: 'droid-accounts', stateKey: 'droidAccounts' },
+  grok: { endpoint: 'grok-accounts', stateKey: 'grokAccounts' }
 }
 
 export const useAccountsStore = defineStore('accounts', () => {
@@ -27,6 +28,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   const azureOpenaiAccounts = ref([])
   const openaiResponsesAccounts = ref([])
   const droidAccounts = ref([])
+  const grokAccounts = ref([])
   const loading = ref(false)
   const error = ref(null)
   const sortBy = ref('')
@@ -41,7 +43,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     openaiAccounts,
     azureOpenaiAccounts,
     openaiResponsesAccounts,
-    droidAccounts
+    droidAccounts,
+    grokAccounts
   }
 
   // 通用获取账户
@@ -75,6 +78,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   const fetchOpenAIResponsesAccounts = () =>
     fetchAccounts(httpApis.getOpenAIResponsesAccountsApi, openaiResponsesAccounts)
   const fetchDroidAccounts = () => fetchAccounts(httpApis.getDroidAccountsApi, droidAccounts)
+  const fetchGrokAccounts = () => fetchAccounts(httpApis.getGrokAccountsApi, grokAccounts)
 
   const fetchAllAccounts = async () => {
     loading.value = true
@@ -86,7 +90,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       fetchOpenAIAccounts(),
       fetchAzureOpenAIAccounts(),
       fetchOpenAIResponsesAccounts(),
-      fetchDroidAccounts()
+      fetchDroidAccounts(),
+      fetchGrokAccounts()
     ])
     loading.value = false
   }
@@ -104,6 +109,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     mutateAccount(httpApis.createOpenAIAccountApi, fetchOpenAIAccounts, data)
   const createDroidAccount = (data) =>
     mutateAccount(httpApis.createDroidAccountApi, fetchDroidAccounts, data)
+  const createGrokAccount = (data) =>
+    mutateAccount(httpApis.createGrokAccountApi, fetchGrokAccounts, data)
   const createAzureOpenAIAccount = (data) =>
     mutateAccount(httpApis.createAzureOpenAIAccountApi, fetchAzureOpenAIAccounts, data)
   const createOpenAIResponsesAccount = (data) =>
@@ -130,6 +137,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     mutateAccount(httpApis.updateGeminiApiAccountApi, fetchGeminiAccounts, id, data)
   const updateDroidAccount = (id, data) =>
     mutateAccount(httpApis.updateDroidAccountApi, fetchDroidAccounts, id, data)
+  const updateGrokAccount = (id, data) =>
+    mutateAccount(httpApis.updateGrokAccountApi, fetchGrokAccounts, id, data)
 
   // 重新授权 Claude OAuth 账户（OAuth 换新 token 后就地更新并重置状态，成功后自动刷新列表）
   const reauthClaudeAccount = (id, data) =>
@@ -139,12 +148,18 @@ export const useAccountsStore = defineStore('accounts', () => {
   const reauthOpenAIAccount = (id, data) =>
     mutateAccount(httpApis.reauthOpenAIAccountApi, fetchOpenAIAccounts, id, data)
 
+  const reauthGrokAccount = (id, data) =>
+    mutateAccount(httpApis.reauthGrokAccountApi, fetchGrokAccounts, id, data)
+
   // 切换账户状态
   const toggleAccount = async (platform, id) => {
     const config = PLATFORM_CONFIG[platform]
     if (!config) return { success: false, message: '未知平台' }
     loading.value = true
-    const res = await httpApis.toggleAccountStatusApi(`/admin/${config.endpoint}/${id}/toggle`)
+    const res =
+      platform === 'grok'
+        ? await httpApis.toggleGrokAccountApi(id)
+        : await httpApis.toggleAccountStatusApi(`/admin/${config.endpoint}/${id}/toggle`)
     if (res.success)
       await fetchAccounts(
         httpApis[
@@ -172,7 +187,8 @@ export const useAccountsStore = defineStore('accounts', () => {
         openai: fetchOpenAIAccounts,
         azure_openai: fetchAzureOpenAIAccounts,
         'openai-responses': fetchOpenAIResponsesAccounts,
-        droid: fetchDroidAccounts
+        droid: fetchDroidAccounts,
+        grok: fetchGrokAccounts
       }
       await fetchMap[platform]()
     } else {
@@ -261,6 +277,24 @@ export const useAccountsStore = defineStore('accounts', () => {
 
   const exchangeDroidCode = (data) => httpApis.exchangeDroidCodeApi(data)
 
+  const generateGrokAuthUrl = async (proxyConfig) => {
+    const res = await httpApis.generateGrokAuthUrlApi(proxyConfig)
+    if (!res.success) error.value = res.message
+    return res.success ? res.data : null
+  }
+
+  const exchangeGrokCode = async (data) => {
+    const res = await httpApis.exchangeGrokCodeApi(data)
+    if (!res.success) error.value = res.message
+    return res.success ? res.data : null
+  }
+
+  const validateGrokRefreshToken = async (data) => {
+    const res = await httpApis.validateGrokRefreshTokenApi(data)
+    if (!res.success) error.value = res.message
+    return res.success ? res.data : null
+  }
+
   const sortAccounts = (field) => {
     if (sortBy.value === field) {
       sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
@@ -279,6 +313,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     azureOpenaiAccounts.value = []
     openaiResponsesAccounts.value = []
     droidAccounts.value = []
+    grokAccounts.value = []
     loading.value = false
     error.value = null
     sortBy.value = ''
@@ -294,6 +329,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     azureOpenaiAccounts,
     openaiResponsesAccounts,
     droidAccounts,
+    grokAccounts,
     loading,
     error,
     sortBy,
@@ -306,6 +342,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     fetchAzureOpenAIAccounts,
     fetchOpenAIResponsesAccounts,
     fetchDroidAccounts,
+    fetchGrokAccounts,
     fetchAllAccounts,
     createClaudeAccount,
     createClaudeConsoleAccount,
@@ -313,7 +350,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     createGeminiAccount,
     createOpenAIAccount,
     createDroidAccount,
+    createGrokAccount,
     updateDroidAccount,
+    updateGrokAccount,
     createAzureOpenAIAccount,
     createOpenAIResponsesAccount,
     createGeminiApiAccount,
@@ -324,6 +363,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     updateOpenAIAccount,
     reauthClaudeAccount,
     reauthOpenAIAccount,
+    reauthGrokAccount,
     updateAzureOpenAIAccount,
     updateOpenAIResponsesAccount,
     updateGeminiApiAccount,
@@ -342,6 +382,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     exchangeOpenAICode,
     generateDroidAuthUrl,
     exchangeDroidCode,
+    generateGrokAuthUrl,
+    exchangeGrokCode,
+    validateGrokRefreshToken,
     sortAccounts,
     reset
   }

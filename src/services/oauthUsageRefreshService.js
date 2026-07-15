@@ -2,6 +2,8 @@ const redis = require('../models/redis')
 const logger = require('../utils/logger')
 const claudeAccountService = require('./account/claudeAccountService')
 const openaiAccountService = require('./account/openaiAccountService')
+const grokAccountService = require('./account/grokAccountService')
+const grokQuotaService = require('./grokQuotaService')
 
 const DEFAULT_INTERVAL_MINUTES = 30
 const DEFAULT_MAX_STALENESS_MINUTES = 120
@@ -128,23 +130,25 @@ class OAuthUsageRefreshService {
     try {
       const claude = await this.refreshClaudeAccounts()
       const openai = await this.refreshOpenAIAccounts()
-      const refreshed = claude.refreshed + openai.refreshed
-      const failed = claude.failed + openai.failed
+      const grok = await this.refreshGrokAccounts()
+      const refreshed = claude.refreshed + openai.refreshed + grok.refreshed
+      const failed = claude.failed + openai.failed + grok.failed
 
       if (refreshed > 0 || failed > 0) {
         logger.info(
-          `📊 OAuth usage refresh completed: Claude ${claude.refreshed}/${claude.stale} refreshed, OpenAI ${openai.refreshed}/${openai.stale} refreshed, failed ${failed}, elapsed ${Date.now() - startedAt}ms`
+          `📊 OAuth usage refresh completed: Claude ${claude.refreshed}/${claude.stale}, OpenAI ${openai.refreshed}/${openai.stale}, Grok ${grok.refreshed}/${grok.stale}, failed ${failed}, elapsed ${Date.now() - startedAt}ms`
         )
       } else {
         logger.debug(
-          `📊 OAuth usage refresh completed: no stale accounts (Claude scanned ${claude.scanned}, OpenAI scanned ${openai.scanned})`
+          `📊 OAuth usage refresh completed: no stale accounts (Claude ${claude.scanned}, OpenAI ${openai.scanned}, Grok ${grok.scanned})`
         )
       }
 
       return {
         skipped: false,
         claude,
-        openai
+        openai,
+        grok
       }
     } finally {
       this.isRunning = false
@@ -236,6 +240,42 @@ class OAuthUsageRefreshService {
       }
     })
 
+    return summary
+  }
+
+  async refreshGrokAccounts() {
+    const accounts = await grokAccountService.getAllAccounts(true)
+    const now = Date.now()
+    const candidates = accounts.filter(
+      (account) =>
+        account.authType === 'oauth' &&
+        account.isActive === true &&
+        account.schedulable === true &&
+        account.status === 'active' &&
+        account.hasRefreshToken === true &&
+        isSnapshotStale(account.billingSnapshot?.observedAt, this.refreshThresholdMs, now)
+    )
+    const summary = {
+      scanned: accounts.length,
+      stale: candidates.length,
+      refreshed: 0,
+      failed: 0
+    }
+    await this.processInBatches(candidates, async (account) => {
+      try {
+        const snapshot = await grokQuotaService.queryBilling(account.id)
+        if (snapshot?.billing) {
+          summary.refreshed += 1
+        } else {
+          summary.failed += 1
+        }
+      } catch (error) {
+        summary.failed += 1
+        logger.warn(
+          `⚠️ Grok OAuth billing refresh failed for ${account.name || account.id}: ${error.message}`
+        )
+      }
+    })
     return summary
   }
 

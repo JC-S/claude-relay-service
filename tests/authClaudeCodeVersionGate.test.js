@@ -182,4 +182,25 @@ describe('authenticateApiKey Claude Code version gate', () => {
     expect(res.status).toHaveBeenCalledWith(403)
     expect(next).not.toHaveBeenCalled()
   })
+
+  test('does not apply API key client restrictions to the Grok endpoint', async () => {
+    mockValidApiKey({
+      permissions: ['grok'],
+      enableGrokEndpoint: true,
+      allowedClients: ['claude_code']
+    })
+    const req = createReq('grok-build/0.2.93')
+    req.baseUrl = '/grok'
+    req.path = '/responses'
+    req.originalUrl = '/grok/responses'
+    req.body = { model: 'grok-4.5', input: 'test', stream: true }
+    const res = createRes()
+    const next = jest.fn()
+
+    await authenticateApiKey(req, res, next)
+
+    expect(redis.client.get).not.toHaveBeenCalled()
+    expect(res.status).not.toHaveBeenCalledWith(403)
+    expect(next).toHaveBeenCalled()
+  })
 })

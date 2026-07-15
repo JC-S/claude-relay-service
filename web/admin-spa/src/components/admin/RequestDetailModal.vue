@@ -184,6 +184,67 @@
         </div>
 
         <div
+          v-if="hasGrokRelayMetadata"
+          class="rounded-xl border border-cyan-200 bg-slate-50 p-4 shadow-sm dark:border-cyan-900/60 dark:bg-slate-900/40"
+        >
+          <h4 class="section-title">Grok 转发详情</h4>
+          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div v-if="hasValue(detail.downstreamHttpStatus)">
+              <p class="field-label">下游 HTTP 状态</p>
+              <p class="field-value">{{ detail.downstreamHttpStatus }}</p>
+            </div>
+            <div v-if="hasValue(detail.upstreamHttpStatus)">
+              <p class="field-label">上游 HTTP 状态</p>
+              <p class="field-value">{{ detail.upstreamHttpStatus }}</p>
+            </div>
+            <div v-if="hasValue(detail.upstreamSemanticStatus)">
+              <p class="field-label">上游语义状态</p>
+              <p class="field-value">{{ detail.upstreamSemanticStatus }}</p>
+            </div>
+            <div v-if="detail.terminalType">
+              <p class="field-label">终态事件</p>
+              <p class="field-value">{{ detail.terminalType }}</p>
+            </div>
+            <div v-if="detail.errorType">
+              <p class="field-label">错误类型</p>
+              <p class="field-value">{{ detail.errorType }}</p>
+            </div>
+            <div v-if="detail.errorCode">
+              <p class="field-label">错误代码</p>
+              <p class="field-value">{{ detail.errorCode }}</p>
+            </div>
+            <div v-if="detail.upstreamRequestId">
+              <p class="field-label">上游请求 ID</p>
+              <p class="field-value break-all">{{ detail.upstreamRequestId }}</p>
+            </div>
+            <div v-if="detail.clientIp">
+              <p class="field-label">客户端 IP</p>
+              <p class="field-value break-all">{{ detail.clientIp }}</p>
+            </div>
+            <div v-if="hasValue(detail.firstTokenLatencyMs)">
+              <p class="field-label">首 Token 延迟</p>
+              <p class="field-value">{{ formatDuration(detail.firstTokenLatencyMs) }}</p>
+            </div>
+            <div v-if="detail.requestedModel">
+              <p class="field-label">请求模型</p>
+              <p class="field-value">{{ detail.requestedModel }}</p>
+            </div>
+            <div v-if="detail.mappedModel">
+              <p class="field-label">映射模型</p>
+              <p class="field-value">{{ detail.mappedModel }}</p>
+            </div>
+            <div v-if="detail.actualModel">
+              <p class="field-label">上游实际模型</p>
+              <p class="field-value">{{ detail.actualModel }}</p>
+            </div>
+            <div v-if="detail.billingModel">
+              <p class="field-label">计费模型</p>
+              <p class="field-value">{{ detail.billingModel }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div
           class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
         >
           <h4 class="section-title">费用拆分</h4>
@@ -271,6 +332,28 @@ const hasImageUsage = computed(
     detail.value?.textInputTokens !== undefined ||
     detail.value?.imageInputTokens !== undefined ||
     detail.value?.imageOutputTokens !== undefined
+)
+
+const hasValue = (value) => value !== null && value !== undefined && value !== ''
+const grokMetadataFields = [
+  'downstreamHttpStatus',
+  'upstreamHttpStatus',
+  'upstreamSemanticStatus',
+  'terminalType',
+  'errorType',
+  'errorCode',
+  'upstreamRequestId',
+  'clientIp',
+  'firstTokenLatencyMs',
+  'requestedModel',
+  'mappedModel',
+  'actualModel',
+  'billingModel'
+]
+const hasGrokRelayMetadata = computed(
+  () =>
+    detail.value?.accountType === 'grok' &&
+    grokMetadataFields.some((field) => hasValue(detail.value?.[field]))
 )
 
 const costBreakdown = computed(() => {
