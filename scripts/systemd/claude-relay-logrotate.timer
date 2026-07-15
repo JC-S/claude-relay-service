@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Claude Relay Service logs for rotation hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+Unit=claude-relay-logrotate.service
+
+[Install]
+WantedBy=timers.target

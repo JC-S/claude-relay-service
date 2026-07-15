@@ -1,0 +1,9 @@
+[Unit]
+Description=Rotate Claude Relay Service stdout and stderr logs
+ConditionPathExists=/etc/claude-relay-service/logrotate.conf
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/sbin/logrotate -s /var/lib/logrotate/claude-relay-service.status /etc/claude-relay-service/logrotate.conf
