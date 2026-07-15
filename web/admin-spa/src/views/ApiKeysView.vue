@@ -2303,9 +2303,13 @@
 
     <UsageDetailModal
       :api-key="selectedApiKeyForDetail || {}"
+      :error="usageDetailError"
+      :loading="usageDetailLoading"
       :show="showUsageDetailModal"
-      @close="showUsageDetailModal = false"
+      :stats="usageDetailStats"
+      @close="closeUsageDetails"
       @open-timeline="openTimeline"
+      @retry="loadUsageDetailStats"
     />
 
     <TagManagementModal
@@ -2497,6 +2501,10 @@ const editingExpiryKey = ref(null)
 const expiryEditModalRef = ref(null)
 const showUsageDetailModal = ref(false)
 const selectedApiKeyForDetail = ref(null)
+const usageDetailStats = ref(null)
+const usageDetailLoading = ref(false)
+const usageDetailError = ref('')
+let usageDetailRequestSequence = 0
 
 const API_KEYS_TAG_FILTER_STORAGE_KEY = 'apiKeysSelectedTagFilter'
 
@@ -4746,45 +4754,53 @@ const formatWindowTime = (seconds) => {
 //   return Math.min(percentage, 100)
 // }
 
-// 显示使用详情
-const showUsageDetails = (apiKey) => {
-  const cachedStats = getCachedStats(apiKey.id)
+const loadUsageDetailStats = async () => {
+  const keyId = selectedApiKeyForDetail.value?.id
+  if (!keyId) return
 
-  const enrichedApiKey = {
-    ...apiKey,
-    dailyCost: cachedStats?.dailyCost ?? apiKey.dailyCost ?? 0,
-    weeklyOpusCost: cachedStats?.weeklyOpusCost ?? apiKey.weeklyOpusCost ?? 0,
-    weeklyFableCost: cachedStats?.weeklyFableCost ?? apiKey.weeklyFableCost ?? 0,
-    currentWindowCost: cachedStats?.currentWindowCost ?? apiKey.currentWindowCost ?? 0,
-    currentWindowRequests: cachedStats?.currentWindowRequests ?? apiKey.currentWindowRequests ?? 0,
-    currentWindowTokens: cachedStats?.currentWindowTokens ?? apiKey.currentWindowTokens ?? 0,
-    windowRemainingSeconds: cachedStats?.windowRemainingSeconds ?? apiKey.windowRemainingSeconds,
-    windowStartTime: cachedStats?.windowStartTime ?? apiKey.windowStartTime ?? null,
-    windowEndTime: cachedStats?.windowEndTime ?? apiKey.windowEndTime ?? null,
-    usage: {
-      ...apiKey.usage,
-      total: {
-        ...apiKey.usage?.total,
-        requests: cachedStats?.requests ?? apiKey.usage?.total?.requests ?? 0,
-        tokens: cachedStats?.tokens ?? apiKey.usage?.total?.tokens ?? 0,
-        cost: cachedStats?.allTimeCost ?? apiKey.usage?.total?.cost ?? 0,
-        inputTokens: cachedStats?.inputTokens ?? apiKey.usage?.total?.inputTokens ?? 0,
-        outputTokens: cachedStats?.outputTokens ?? apiKey.usage?.total?.outputTokens ?? 0,
-        cacheCreateTokens:
-          cachedStats?.cacheCreateTokens ?? apiKey.usage?.total?.cacheCreateTokens ?? 0,
-        cacheReadTokens: cachedStats?.cacheReadTokens ?? apiKey.usage?.total?.cacheReadTokens ?? 0
-      }
-    }
+  const requestSequence = ++usageDetailRequestSequence
+  usageDetailLoading.value = true
+  usageDetailError.value = ''
+  usageDetailStats.value = null
+
+  const response = await httpApis.getApiKeyStatsApi(keyId)
+  if (
+    requestSequence !== usageDetailRequestSequence ||
+    selectedApiKeyForDetail.value?.id !== keyId ||
+    !showUsageDetailModal.value
+  ) {
+    return
   }
 
-  selectedApiKeyForDetail.value = enrichedApiKey
+  usageDetailLoading.value = false
+  if (response.success && response.stats) {
+    usageDetailStats.value = response.stats
+    return
+  }
+
+  usageDetailError.value = response.message || response.error || '无法获取统计数据'
+}
+
+// 显示使用详情
+const showUsageDetails = (apiKey) => {
+  selectedApiKeyForDetail.value = apiKey
   showUsageDetailModal.value = true
+  loadUsageDetailStats()
+}
+
+const closeUsageDetails = () => {
+  usageDetailRequestSequence += 1
+  showUsageDetailModal.value = false
+  selectedApiKeyForDetail.value = null
+  usageDetailStats.value = null
+  usageDetailLoading.value = false
+  usageDetailError.value = ''
 }
 
 const openTimeline = (keyId) => {
   const id = keyId || selectedApiKeyForDetail.value?.id
   if (!id) return
-  showUsageDetailModal.value = false
+  closeUsageDetails()
   router.push(`/api-keys/${id}/usage-records`)
 }
 

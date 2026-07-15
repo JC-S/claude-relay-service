@@ -27,8 +27,33 @@
 
         <!-- 内容区 -->
         <div class="modal-scroll-content custom-scrollbar flex-1 overflow-y-auto">
+          <div v-if="loading" aria-live="polite" class="space-y-6">
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div
+                v-for="index in 4"
+                :key="index"
+                class="h-28 animate-pulse rounded-lg bg-gray-100 dark:bg-gray-700/60"
+              />
+            </div>
+            <div class="h-40 animate-pulse rounded-lg bg-gray-100 dark:bg-gray-700/60" />
+            <p class="text-center text-sm text-gray-500 dark:text-gray-400">正在加载统计数据...</p>
+          </div>
+
+          <div
+            v-else-if="error"
+            class="flex min-h-64 flex-col items-center justify-center rounded-lg border border-red-200 bg-red-50 p-6 text-center dark:border-red-800 dark:bg-red-900/20"
+            role="alert"
+          >
+            <i class="fas fa-exclamation-circle mb-3 text-2xl text-red-500" />
+            <p class="text-sm font-medium text-red-700 dark:text-red-300">统计数据加载失败</p>
+            <p class="mt-1 text-xs text-red-600/80 dark:text-red-400">{{ error }}</p>
+            <button class="btn btn-primary mt-4 px-4 py-2 text-sm" type="button" @click="retry">
+              重试
+            </button>
+          </div>
+
           <!-- 总体统计卡片 -->
-          <div class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div v-if="stats" class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
             <!-- 请求统计卡片 -->
             <div
               class="rounded-lg border border-blue-200 bg-gradient-to-br from-blue-50 to-blue-100 p-4 dark:border-blue-700 dark:from-blue-900/20 dark:to-blue-800/20"
@@ -88,18 +113,22 @@
               <div class="space-y-1 text-sm">
                 <div class="flex justify-between">
                   <span class="text-gray-600 dark:text-gray-400">RPM:</span>
-                  <span class="font-semibold text-gray-900 dark:text-gray-100">{{ rpm }}</span>
+                  <span class="font-semibold text-gray-900 dark:text-gray-100">{{
+                    rpm.toFixed(2)
+                  }}</span>
                 </div>
                 <div class="flex justify-between">
                   <span class="text-gray-600 dark:text-gray-400">TPM:</span>
-                  <span class="font-semibold text-gray-900 dark:text-gray-100">{{ tpm }}</span>
+                  <span class="font-semibold text-gray-900 dark:text-gray-100">{{
+                    tpm.toFixed(2)
+                  }}</span>
                 </div>
               </div>
             </div>
           </div>
 
           <!-- Token详细分布 -->
-          <div class="mb-6">
+          <div v-if="stats" class="mb-6">
             <h4
               class="mb-3 flex items-center text-sm font-semibold text-gray-700 dark:text-gray-300"
             >
@@ -147,7 +176,7 @@
           </div>
 
           <!-- 限制信息 -->
-          <div v-if="hasLimits" class="mb-6">
+          <div v-if="stats && hasLimits" class="mb-6">
             <h4
               class="mb-3 flex items-center text-sm font-semibold text-gray-700 dark:text-gray-300"
             >
@@ -238,18 +267,18 @@
                 </div>
                 <WindowCountdown
                   :cost-limit="apiKey.rateLimitCost"
-                  :current-cost="apiKey.currentWindowCost"
-                  :current-requests="apiKey.currentWindowRequests"
-                  :current-tokens="apiKey.currentWindowTokens"
+                  :current-cost="currentWindowCost"
+                  :current-requests="currentWindowRequests"
+                  :current-tokens="currentWindowTokens"
                   label="窗口状态"
                   :rate-limit-window="apiKey.rateLimitWindow"
                   :request-limit="apiKey.rateLimitRequests"
                   :show-progress="true"
                   :show-tooltip="true"
                   :token-limit="apiKey.tokenLimit"
-                  :window-end-time="apiKey.windowEndTime"
-                  :window-remaining-seconds="apiKey.windowRemainingSeconds"
-                  :window-start-time="apiKey.windowStartTime"
+                  :window-end-time="windowEndTime"
+                  :window-remaining-seconds="windowRemainingSeconds"
+                  :window-start-time="windowStartTime"
                 />
               </div>
 
@@ -348,29 +377,49 @@ const props = defineProps({
   apiKey: {
     type: Object,
     required: true
+  },
+  stats: {
+    type: Object,
+    default: null
+  },
+  loading: {
+    type: Boolean,
+    default: false
+  },
+  error: {
+    type: String,
+    default: ''
   }
 })
 
-const emit = defineEmits(['close', 'open-timeline'])
+const emit = defineEmits(['close', 'open-timeline', 'retry'])
 
 // 计算属性
-const totalRequests = computed(() => props.apiKey.usage?.total?.requests || 0)
-const dailyRequests = computed(() => props.apiKey.usage?.daily?.requests || 0)
-const totalTokens = computed(() => props.apiKey.usage?.total?.tokens || 0)
-const dailyTokens = computed(() => props.apiKey.usage?.daily?.tokens || 0)
-const totalCost = computed(() => props.apiKey.usage?.total?.cost || 0)
-const dailyCost = computed(() => props.apiKey.dailyCost || 0)
+const totalRequests = computed(() => Number(props.stats?.total?.requests) || 0)
+const dailyRequests = computed(() => Number(props.stats?.today?.requests) || 0)
+const totalTokens = computed(() => Number(props.stats?.total?.tokens) || 0)
+const dailyTokens = computed(() => Number(props.stats?.today?.tokens) || 0)
+const totalCost = computed(() => Number(props.stats?.total?.cost) || 0)
+const dailyCost = computed(() => Number(props.stats?.today?.cost) || 0)
 const totalCostLimit = computed(() => props.apiKey.totalCostLimit || 0)
-const weeklyOpusCost = computed(() => props.apiKey.weeklyOpusCost || 0)
+const weeklyOpusCost = computed(() => Number(props.stats?.limits?.weeklyOpusCost) || 0)
 const weeklyOpusCostLimit = computed(() => props.apiKey.weeklyOpusCostLimit || 0)
-const weeklyFableCost = computed(() => props.apiKey.weeklyFableCost || 0)
+const weeklyFableCost = computed(() => Number(props.stats?.limits?.weeklyFableCost) || 0)
 const weeklyFableCostLimit = computed(() => props.apiKey.weeklyFableCostLimit || 0)
-const inputTokens = computed(() => props.apiKey.usage?.total?.inputTokens || 0)
-const outputTokens = computed(() => props.apiKey.usage?.total?.outputTokens || 0)
-const cacheCreateTokens = computed(() => props.apiKey.usage?.total?.cacheCreateTokens || 0)
-const cacheReadTokens = computed(() => props.apiKey.usage?.total?.cacheReadTokens || 0)
-const rpm = computed(() => props.apiKey.usage?.averages?.rpm || 0)
-const tpm = computed(() => props.apiKey.usage?.averages?.tpm || 0)
+const inputTokens = computed(() => Number(props.stats?.total?.inputTokens) || 0)
+const outputTokens = computed(() => Number(props.stats?.total?.outputTokens) || 0)
+const cacheCreateTokens = computed(() => Number(props.stats?.total?.cacheCreateTokens) || 0)
+const cacheReadTokens = computed(() => Number(props.stats?.total?.cacheReadTokens) || 0)
+const rpm = computed(() => Number(props.stats?.averages?.rpm) || 0)
+const tpm = computed(() => Number(props.stats?.averages?.tpm) || 0)
+const currentWindowCost = computed(() => Number(props.stats?.limits?.currentWindowCost) || 0)
+const currentWindowRequests = computed(
+  () => Number(props.stats?.limits?.currentWindowRequests) || 0
+)
+const currentWindowTokens = computed(() => Number(props.stats?.limits?.currentWindowTokens) || 0)
+const windowRemainingSeconds = computed(() => props.stats?.limits?.windowRemainingSeconds ?? null)
+const windowStartTime = computed(() => props.stats?.limits?.windowStartTime ?? null)
+const windowEndTime = computed(() => props.stats?.limits?.windowEndTime ?? null)
 
 const enableModelRestriction = computed(
   () =>
@@ -456,5 +505,9 @@ const close = () => {
 
 const openTimeline = () => {
   emit('open-timeline', props.apiKey?.id)
+}
+
+const retry = () => {
+  emit('retry')
 }
 </script>

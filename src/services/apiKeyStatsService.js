@@ -12,6 +12,14 @@ class ApiKeyStatsValidationError extends Error {
   }
 }
 
+class ApiKeyStatsNotFoundError extends Error {
+  constructor(keyId) {
+    super(`API key not found: ${keyId}`)
+    this.name = 'ApiKeyStatsNotFoundError'
+    this.code = 'API_KEY_STATS_NOT_FOUND'
+  }
+}
+
 function formatApiKeyListCost(cost) {
   const numericCost = Number(cost)
   if (!Number.isFinite(numericCost) || numericCost === 0) {
@@ -448,9 +456,91 @@ async function calculateKeyStats(keyId, timeRange = 'all', startDate, endDate) {
   }
 }
 
+function toFiniteNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function normalizeUsageStats(stats, cost) {
+  const normalizedCost = toFiniteNumber(cost)
+  return {
+    requests: toFiniteNumber(stats?.requests),
+    tokens: toFiniteNumber(stats?.tokens),
+    inputTokens: toFiniteNumber(stats?.inputTokens),
+    outputTokens: toFiniteNumber(stats?.outputTokens),
+    cacheCreateTokens: toFiniteNumber(stats?.cacheCreateTokens),
+    cacheReadTokens: toFiniteNumber(stats?.cacheReadTokens),
+    cost: normalizedCost,
+    formattedCost: formatApiKeyListCost(normalizedCost)
+  }
+}
+
+/**
+ * 获取详情弹窗使用的固定口径统计：累计、今日、生命周期平均和实时限制。
+ * @param {string} keyId - API Key ID
+ * @param {Object} options - 测试时可注入 now
+ * @returns {Object} 详情统计
+ */
+async function calculateKeyDetailStats(keyId, options = {}) {
+  const apiKey = await redis.getApiKey(keyId)
+  if (!apiKey || Object.keys(apiKey).length === 0) {
+    throw new ApiKeyStatsNotFoundError(keyId)
+  }
+
+  const [allStats, todayStats] = await Promise.all([
+    calculateKeyStats(keyId, 'all'),
+    calculateKeyStats(keyId, 'today')
+  ])
+
+  const persistentTotalCost = toFiniteNumber(allStats.allTimeCost)
+  const aggregateTotalCost = toFiniteNumber(allStats.cost)
+  const totalCost = persistentTotalCost !== 0 ? persistentTotalCost : aggregateTotalCost
+  const total = normalizeUsageStats(allStats, totalCost)
+  const today = normalizeUsageStats(todayStats, todayStats.cost)
+
+  const nowValue = options.now instanceof Date ? options.now.getTime() : Number(options.now)
+  const now = Number.isFinite(nowValue) ? nowValue : Date.now()
+  const createdAt = new Date(apiKey.createdAt).getTime()
+  const elapsedMinutes = Math.max(
+    1,
+    Number.isFinite(createdAt) && createdAt <= now ? (now - createdAt) / 60000 : 1
+  )
+
+  return {
+    total,
+    today,
+    averages: {
+      rpm: Number((total.requests / elapsedMinutes).toFixed(2)),
+      tpm: Number((total.tokens / elapsedMinutes).toFixed(2))
+    },
+    limits: {
+      weeklyOpusCost: toFiniteNumber(todayStats.weeklyOpusCost),
+      weeklyFableCost: toFiniteNumber(todayStats.weeklyFableCost),
+      currentWindowCost: toFiniteNumber(todayStats.currentWindowCost),
+      currentWindowRequests: toFiniteNumber(todayStats.currentWindowRequests),
+      currentWindowTokens: toFiniteNumber(todayStats.currentWindowTokens),
+      windowRemainingSeconds:
+        todayStats.windowRemainingSeconds === null ||
+        todayStats.windowRemainingSeconds === undefined
+          ? null
+          : toFiniteNumber(todayStats.windowRemainingSeconds),
+      windowStartTime:
+        todayStats.windowStartTime === null || todayStats.windowStartTime === undefined
+          ? null
+          : toFiniteNumber(todayStats.windowStartTime),
+      windowEndTime:
+        todayStats.windowEndTime === null || todayStats.windowEndTime === undefined
+          ? null
+          : toFiniteNumber(todayStats.windowEndTime)
+    }
+  }
+}
+
 module.exports = {
+  ApiKeyStatsNotFoundError,
   ApiKeyStatsValidationError,
   VALID_STATS_TIME_RANGES,
+  calculateKeyDetailStats,
   calculateKeyStats,
   formatApiKeyListCost,
   validateStatsTimeRange

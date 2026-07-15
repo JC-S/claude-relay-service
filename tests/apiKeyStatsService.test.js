@@ -27,7 +27,12 @@ jest.mock('../src/utils/logger', () => ({
 }))
 
 const redis = require('../src/models/redis')
-const { calculateKeyStats, validateStatsTimeRange } = require('../src/services/apiKeyStatsService')
+const {
+  ApiKeyStatsNotFoundError,
+  calculateKeyDetailStats,
+  calculateKeyStats,
+  validateStatsTimeRange
+} = require('../src/services/apiKeyStatsService')
 
 function globToRegex(pattern) {
   return new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`)
@@ -36,12 +41,10 @@ function globToRegex(pattern) {
 describe('apiKeyStatsService', () => {
   let dataByKey
   let client
-  let pipelineKeys
 
   beforeEach(() => {
     jest.clearAllMocks()
     dataByKey = new Map()
-    pipelineKeys = []
 
     client = {
       scan: jest.fn(async (_cursor, _match, pattern) => {
@@ -50,12 +53,15 @@ describe('apiKeyStatsService', () => {
         return ['0', keys]
       }),
       get: jest.fn(async () => '0'),
-      pipeline: jest.fn(() => ({
-        hgetall: jest.fn((key) => {
-          pipelineKeys.push(key)
-        }),
-        exec: jest.fn(async () => pipelineKeys.map((key) => [null, dataByKey.get(key) || {}]))
-      }))
+      pipeline: jest.fn(() => {
+        const keys = []
+        return {
+          hgetall: jest.fn((key) => {
+            keys.push(key)
+          }),
+          exec: jest.fn(async () => keys.map((key) => [null, dataByKey.get(key) || {}]))
+        }
+      })
     }
 
     redis.getClientSafe.mockReturnValue(client)
@@ -145,7 +151,6 @@ describe('apiKeyStatsService', () => {
     expect(sevenDays.requests).toBe(3)
     expect(sevenDays.cost).toBe(3)
 
-    pipelineKeys = []
     const custom = await calculateKeyStats(
       'key-1',
       'custom',
@@ -211,6 +216,137 @@ describe('apiKeyStatsService', () => {
     expect(redis.getWeeklyFableCost).toHaveBeenCalledWith('child-1', 5, 6)
     expect(redis.getV2ParentWeeklyFableCost).not.toHaveBeenCalled()
     expect(stats.weeklyFableCost).toBe(56.78)
+  })
+
+  test('detail stats separate all-time and today and include today cost without a daily limit', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      createdAt: '2026-06-02T11:00:00.000Z',
+      isV2Parent: 'false',
+      dailyCostLimit: '0',
+      weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '0',
+      rateLimitWindow: '0'
+    })
+    client.get.mockImplementation(async (key) => (key === 'usage:cost:total:key-1' ? '12.5' : '0'))
+    dataByKey.set('usage:key-1:model:alltime:gpt-5.5', {
+      totalRequests: '10',
+      totalInputTokens: '1000',
+      totalOutputTokens: '500',
+      totalCacheCreateTokens: '200',
+      totalCacheReadTokens: '300',
+      ratedCostMicro: '10000000',
+      realCostMicro: '10000000'
+    })
+    dataByKey.set('usage:key-1:model:daily:gpt-5.5:2026-06-02', {
+      totalRequests: '2',
+      totalInputTokens: '100',
+      totalOutputTokens: '50',
+      totalCacheCreateTokens: '20',
+      totalCacheReadTokens: '30',
+      ratedCostMicro: '2500000',
+      realCostMicro: '2500000'
+    })
+
+    const stats = await calculateKeyDetailStats('key-1', {
+      now: new Date('2026-06-02T12:00:00.000Z')
+    })
+
+    expect(redis.getDailyCost).not.toHaveBeenCalled()
+    expect(stats.total).toMatchObject({ requests: 10, tokens: 2000, cost: 12.5 })
+    expect(stats.today).toMatchObject({ requests: 2, tokens: 200, cost: 2.5 })
+    expect(stats.averages).toEqual({ rpm: 0.17, tpm: 33.33 })
+  })
+
+  test('detail stats fall back to aggregated model cost and keep invalid dates finite', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'key-1',
+      createdAt: 'invalid',
+      isV2Parent: 'false',
+      dailyCostLimit: '0',
+      weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '0',
+      rateLimitWindow: '0'
+    })
+    dataByKey.set('usage:key-1:model:alltime:gpt-5.5', {
+      totalRequests: '1',
+      totalInputTokens: '10',
+      totalOutputTokens: '5',
+      ratedCostMicro: '1500000',
+      realCostMicro: '1500000'
+    })
+
+    const stats = await calculateKeyDetailStats('key-1', { now: 0 })
+
+    expect(stats.total.cost).toBe(1.5)
+    expect(stats.averages).toEqual({ rpm: 1, tpm: 15 })
+    expect(Number.isFinite(stats.averages.rpm)).toBe(true)
+    expect(Number.isFinite(stats.averages.tpm)).toBe(true)
+  })
+
+  test('detail stats preserve v2 parent usage aggregation and ledger costs', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'parent-1',
+      createdAt: '2026-06-02T11:00:00.000Z',
+      isV2Parent: 'true',
+      dailyCostLimit: '0',
+      weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '0',
+      rateLimitWindow: '0'
+    })
+    redis.getV2ParentSourceKeyIds.mockResolvedValue(['parent-1', 'child-1'])
+    redis.getV2ParentLedgerCostStats.mockImplementation(async (_keyId, options) => ({
+      total: 50,
+      daily: options.timeRange === 'today' ? 5 : 0,
+      period: options.timeRange === 'today' ? 5 : 50
+    }))
+    dataByKey.set('usage:parent-1:model:alltime:claude-opus-4-7', {
+      totalRequests: '2',
+      totalInputTokens: '100',
+      totalOutputTokens: '50',
+      ratedCostMicro: '1000000',
+      realCostMicro: '1000000'
+    })
+    dataByKey.set('usage:child-1:model:alltime:claude-opus-4-7', {
+      totalRequests: '3',
+      totalInputTokens: '200',
+      totalOutputTokens: '100',
+      ratedCostMicro: '2000000',
+      realCostMicro: '2000000'
+    })
+    dataByKey.set('usage:child-1:model:daily:claude-opus-4-7:2026-06-02', {
+      totalRequests: '1',
+      totalInputTokens: '20',
+      totalOutputTokens: '10',
+      ratedCostMicro: '500000',
+      realCostMicro: '500000'
+    })
+
+    const stats = await calculateKeyDetailStats('parent-1', {
+      now: new Date('2026-06-02T12:00:00.000Z')
+    })
+
+    expect(stats.total).toMatchObject({ requests: 5, tokens: 450, cost: 50 })
+    expect(stats.today).toMatchObject({ requests: 1, tokens: 30, cost: 5 })
+    expect(redis.getV2ParentLedgerCostStats).toHaveBeenCalledWith('parent-1', {
+      timeRange: 'all',
+      startDate: undefined,
+      endDate: undefined
+    })
+    expect(redis.getV2ParentLedgerCostStats).toHaveBeenCalledWith('parent-1', {
+      timeRange: 'today',
+      startDate: undefined,
+      endDate: undefined
+    })
+  })
+
+  test('detail stats reject missing API keys', async () => {
+    redis.getApiKey.mockResolvedValue({})
+
+    await expect(calculateKeyDetailStats('missing')).rejects.toBeInstanceOf(
+      ApiKeyStatsNotFoundError
+    )
+    expect(client.scan).not.toHaveBeenCalled()
   })
 
   test('validates supported time ranges and custom ranges', () => {

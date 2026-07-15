@@ -7,9 +7,11 @@ const config = require('../../../config/config')
 const requestBodyRuleService = require('../../services/requestBodyRuleService')
 const { validateIpWhitelist } = require('../../utils/ipWhitelistHelper')
 const {
+  calculateKeyDetailStats,
   calculateKeyStats,
   validateStatsTimeRange,
-  ApiKeyStatsValidationError
+  ApiKeyStatsValidationError,
+  ApiKeyStatsNotFoundError
 } = require('../../services/apiKeyStatsService')
 
 const router = express.Router()
@@ -1130,6 +1132,35 @@ router.post('/api-keys/batch-stats', authenticateAdmin, async (req, res) => {
       success: false,
       error: 'Failed to calculate stats',
       message: error.message
+    })
+  }
+})
+
+/**
+ * 获取单个 API Key 的详情统计。
+ * GET /admin/api-keys/:keyId/stats
+ */
+router.get('/api-keys/:keyId/stats', authenticateAdmin, async (req, res) => {
+  const { keyId } = req.params
+  try {
+    const stats = await calculateKeyDetailStats(keyId)
+    return res.json({ success: true, stats })
+  } catch (error) {
+    if (error instanceof ApiKeyStatsNotFoundError || error?.code === 'API_KEY_STATS_NOT_FOUND') {
+      return res.status(404).json({
+        success: false,
+        error: 'API key not found'
+      })
+    }
+
+    logger.error('Failed to calculate API key detail stats', {
+      keyId,
+      errorName: error?.name || 'Error',
+      errorCode: error?.code || 'UNKNOWN'
+    })
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to calculate API key detail stats'
     })
   }
 })

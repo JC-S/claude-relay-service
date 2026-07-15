@@ -57,8 +57,8 @@ export const useApiKeysStore = defineStore('apiKeys', () => {
     return res
   }
 
-  const fetchApiKeyStats = async (id, timeRange = 'all') => {
-    const res = await httpApis.getApiKeyStatsApi(id, { timeRange })
+  const fetchApiKeyStats = async (id) => {
+    const res = await httpApis.getApiKeyStatsApi(id)
     return res.success ? res.stats : null
   }
 

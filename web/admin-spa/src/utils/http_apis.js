@@ -76,8 +76,8 @@ export const updateApiKeyApi = (id, data) =>
 export const toggleApiKeyApi = (id) =>
   request({ url: `/admin/api-keys/${id}/toggle`, method: 'PUT' })
 export const deleteApiKeyApi = (id) => request({ url: `/admin/api-keys/${id}`, method: 'DELETE' })
-export const getApiKeyStatsApi = (id, params) =>
-  request({ url: `/admin/api-keys/${id}/stats`, method: 'GET', params })
+export const getApiKeyStatsApi = (id) =>
+  request({ url: `/admin/api-keys/${id}/stats`, method: 'GET' })
 export const getApiKeyModelStatsApi = (id, params) =>
   request({ url: `/admin/api-keys/${id}/model-stats`, method: 'GET', params })
 export const getApiKeyTagsApi = () => request({ url: '/admin/api-keys/tags', method: 'GET' })
