@@ -35,6 +35,7 @@ const DEFAULT_CONFIG = {
   requestDetailBodyPreviewEnabled: false, // 是否保存请求体预览快照
   exportControlledClaudeModelBlockEnabled: true, // 是否拦截受出口管制限制的 Claude 模型
   openAIImageStreamKeepAliveEnabled: false, // 是否为 GPT-Image 流式请求启用提前 SSE 保活
+  anthropicCacheTtl1hInjectionEnabled: false, // 是否将官方 Claude 请求中的缓存 TTL 注入为 1 小时
   // 排队健康检查配置
   concurrentRequestQueueHealthCheckEnabled: true, // 是否启用排队健康检查（默认开启）
   concurrentRequestQueueHealthThreshold: 0.8, // 健康检查阈值（P90 >= 超时 × 阈值时拒绝新请求）
@@ -139,7 +140,8 @@ class ClaudeRelayConfigService {
         concurrentRequestQueueEnabled: updatedConfig.concurrentRequestQueueEnabled,
         exportControlledClaudeModelBlockEnabled:
           updatedConfig.exportControlledClaudeModelBlockEnabled,
-        openAIImageStreamKeepAliveEnabled: updatedConfig.openAIImageStreamKeepAliveEnabled
+        openAIImageStreamKeepAliveEnabled: updatedConfig.openAIImageStreamKeepAliveEnabled,
+        anthropicCacheTtl1hInjectionEnabled: updatedConfig.anthropicCacheTtl1hInjectionEnabled
       })
 
       return updatedConfig
@@ -183,6 +185,15 @@ class ClaudeRelayConfigService {
   async isOpenAIImageStreamKeepAliveEnabled() {
     const cfg = await this.getConfig()
     return cfg.openAIImageStreamKeepAliveEnabled === true
+  }
+
+  /**
+   * 检查是否将 Anthropic ephemeral 缓存 TTL 注入为 1 小时
+   * @returns {Promise<boolean>}
+   */
+  async isAnthropicCacheTtl1hInjectionEnabled() {
+    const cfg = await this.getConfig()
+    return cfg.anthropicCacheTtl1hInjectionEnabled === true
   }
 
   /**

@@ -887,6 +887,44 @@
               </div>
             </div>
 
+            <!-- Anthropic 缓存 TTL 1 小时注入 -->
+            <div
+              class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
+            >
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="flex items-center">
+                    <div
+                      class="mr-3 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg"
+                    >
+                      <i class="fas fa-clock"></i>
+                    </div>
+                    <div>
+                      <h2 class="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                        Anthropic 缓存 TTL 1 小时注入
+                      </h2>
+                      <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                        开启后，仅对 Claude 官方 OAuth/Setup Token 请求中已有的 ephemeral
+                        缓存断点强制设置 1 小时 TTL（自动附加所需 beta
+                        头）；不会新增缓存断点，响应用量仍按 5 分钟缓存写入归类计费。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <label class="relative inline-flex cursor-pointer items-center">
+                  <input
+                    v-model="claudeConfig.anthropicCacheTtl1hInjectionEnabled"
+                    class="peer sr-only"
+                    type="checkbox"
+                    @change="saveClaudeConfig"
+                  />
+                  <div
+                    class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-emerald-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 dark:border-gray-600 dark:bg-gray-700 dark:peer-focus:ring-emerald-800"
+                  ></div>
+                </label>
+              </div>
+            </div>
+
             <!-- 全局会话绑定 -->
             <div
               class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
@@ -2194,6 +2232,7 @@ const claudeConfig = ref({
   requestDetailBodyPreviewEnabled: false,
   exportControlledClaudeModelBlockEnabled: true,
   openAIImageStreamKeepAliveEnabled: false,
+  anthropicCacheTtl1hInjectionEnabled: false,
   updatedAt: null,
   updatedBy: null
 })
@@ -2602,6 +2641,8 @@ const loadClaudeConfig = async () => {
           response.config?.exportControlledClaudeModelBlockEnabled ?? true,
         openAIImageStreamKeepAliveEnabled:
           response.config?.openAIImageStreamKeepAliveEnabled ?? false,
+        anthropicCacheTtl1hInjectionEnabled:
+          response.config?.anthropicCacheTtl1hInjectionEnabled ?? false,
         updatedAt: response.config?.updatedAt || null,
         updatedBy: response.config?.updatedBy || null
       }
@@ -2648,7 +2689,8 @@ const saveClaudeConfig = async (options = {}) => {
       requestDetailBodyPreviewEnabled,
       exportControlledClaudeModelBlockEnabled:
         claudeConfig.value.exportControlledClaudeModelBlockEnabled,
-      openAIImageStreamKeepAliveEnabled: claudeConfig.value.openAIImageStreamKeepAliveEnabled
+      openAIImageStreamKeepAliveEnabled: claudeConfig.value.openAIImageStreamKeepAliveEnabled,
+      anthropicCacheTtl1hInjectionEnabled: claudeConfig.value.anthropicCacheTtl1hInjectionEnabled
     }
 
     if (options.purgeRequestDetailBodySnapshots === true) {
@@ -2673,6 +2715,9 @@ const saveClaudeConfig = async (options = {}) => {
         openAIImageStreamKeepAliveEnabled:
           response.config?.openAIImageStreamKeepAliveEnabled ??
           claudeConfig.value.openAIImageStreamKeepAliveEnabled,
+        anthropicCacheTtl1hInjectionEnabled:
+          response.config?.anthropicCacheTtl1hInjectionEnabled ??
+          claudeConfig.value.anthropicCacheTtl1hInjectionEnabled,
         updatedAt: response.config?.updatedAt || new Date().toISOString(),
         updatedBy: response.config?.updatedBy || null
       }

@@ -14,6 +14,7 @@ const redis = require('../../models/redis')
 const ClaudeCodeValidator = require('../../validators/clients/claudeCodeValidator')
 const { formatDateWithTimezone } = require('../../utils/dateHelper')
 const requestIdentityService = require('../requestIdentityService')
+const claudeRelayConfigService = require('../claudeRelayConfigService')
 const { createClaudeTestPayload } = require('../../utils/testPayloadHelper')
 const userMessageQueueService = require('../userMessageQueueService')
 const { isStreamWritable } = require('../../utils/streamHelper')
@@ -45,11 +46,12 @@ class ClaudeRelayService {
   }
 
   // 🔧 根据模型ID和客户端传递的 anthropic-beta 获取最终的 header
-  _getBetaHeader(modelId, clientBetaHeader) {
+  _getBetaHeader(modelId, clientBetaHeader, enableCacheTtl1hInjection = false) {
     const OAUTH_BETA = 'oauth-2025-04-20'
     const CLAUDE_CODE_BETA = 'claude-code-20250219'
     const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14'
     const TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14'
+    const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11'
 
     const isHaikuModel = modelId && modelId.toLowerCase().includes('haiku')
     const baseBetas = isHaikuModel
@@ -67,6 +69,10 @@ class ClaudeRelayService {
     }
 
     baseBetas.forEach(addBeta)
+
+    if (enableCacheTtl1hInjection) {
+      addBeta(EXTENDED_CACHE_TTL_BETA)
+    }
 
     if (clientBetaHeader) {
       clientBetaHeader
@@ -960,9 +966,16 @@ class ClaudeRelayService {
 
       // 获取有效的访问token
       const accessToken = await claudeAccountService.getValidAccessToken(accountId)
+      const enableCacheTtl1hInjection =
+        await claudeRelayConfigService.isAnthropicCacheTtl1hInjectionEnabled()
 
       const isRealClaudeCodeRequest = this._isActualClaudeCodeRequest(requestBody, clientHeaders)
-      const processedBody = this._processRequestBody(requestBody, account, isRealClaudeCodeRequest)
+      const processedBody = this._processRequestBody(
+        requestBody,
+        account,
+        isRealClaudeCodeRequest,
+        enableCacheTtl1hInjection
+      )
       // 🧹 内存优化：存储到 bodyStore，避免闭包捕获
       const originalBodyString = JSON.stringify(processedBody)
       bodyStoreIdNonStream = ++this._bodyStoreIdCounter
@@ -1030,7 +1043,7 @@ class ClaudeRelayService {
         return { response, retryCount }
       }
 
-      let requestOptions = options
+      let requestOptions = { ...options, enableCacheTtl1hInjection }
       let { response, retryCount } = await makeRequestWithRetries(requestOptions)
 
       if (
@@ -1437,6 +1450,13 @@ class ClaudeRelayService {
         }
       }
 
+      if (
+        enableCacheTtl1hInjection &&
+        (response.statusCode === 200 || response.statusCode === 201)
+      ) {
+        this._reclassifyCacheCreationInResponse(response)
+      }
+
       // 记录成功的API调用并打印详细的usage数据
       let responseBody = null
       try {
@@ -1580,7 +1600,12 @@ class ClaudeRelayService {
   }
 
   // 🔄 处理请求体
-  _processRequestBody(body, account = null, isRealClaudeCodeOverride = undefined) {
+  _processRequestBody(
+    body,
+    account = null,
+    isRealClaudeCodeOverride = undefined,
+    enableCacheTtl1hInjection = false
+  ) {
     if (!body) {
       return body
     }
@@ -1706,12 +1731,130 @@ class ClaudeRelayService {
       delete processedBody.top_p
     }
 
+    if (enableCacheTtl1hInjection) {
+      this._injectAnthropicCacheTtl1h(processedBody)
+    }
+
     // 处理统一的客户端标识
     if (account && account.useUnifiedClientId === 'true' && account.unifiedClientId) {
       this._replaceClientId(processedBody, account.unifiedClientId)
     }
 
     return processedBody
+  }
+
+  _injectAnthropicCacheTtl1h(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return false
+    }
+
+    let changed = false
+    const injectNode = (node) => {
+      if (!node || typeof node !== 'object' || Array.isArray(node)) {
+        return
+      }
+      const cacheControl = node.cache_control
+      if (
+        !cacheControl ||
+        typeof cacheControl !== 'object' ||
+        Array.isArray(cacheControl) ||
+        cacheControl.type !== 'ephemeral'
+      ) {
+        return
+      }
+      if (cacheControl.ttl !== '1h') {
+        cacheControl.ttl = '1h'
+        changed = true
+      }
+    }
+
+    injectNode(body)
+    if (Array.isArray(body.system)) {
+      body.system.forEach(injectNode)
+    }
+    if (Array.isArray(body.messages)) {
+      body.messages.forEach((message) => {
+        if (message && Array.isArray(message.content)) {
+          message.content.forEach(injectNode)
+        }
+      })
+    }
+    if (Array.isArray(body.tools)) {
+      body.tools.forEach(injectNode)
+    }
+
+    return changed
+  }
+
+  _reclassifyAnthropicCacheCreationUsage(usage) {
+    if (!usage || typeof usage !== 'object' || Array.isArray(usage)) {
+      return false
+    }
+    const cacheCreation = usage.cache_creation
+    if (!cacheCreation || typeof cacheCreation !== 'object' || Array.isArray(cacheCreation)) {
+      return false
+    }
+
+    const toNonNegativeFiniteNumber = (value) => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+    }
+    const ephemeral5m = toNonNegativeFiniteNumber(cacheCreation.ephemeral_5m_input_tokens)
+    const ephemeral1h = toNonNegativeFiniteNumber(cacheCreation.ephemeral_1h_input_tokens)
+    const total = ephemeral5m + ephemeral1h
+
+    if (total <= 0 || ephemeral1h <= 0) {
+      return false
+    }
+
+    cacheCreation.ephemeral_5m_input_tokens = total
+    cacheCreation.ephemeral_1h_input_tokens = 0
+    return true
+  }
+
+  _rewriteAnthropicCacheUsageSseLine(line) {
+    if (typeof line !== 'string' || !line.startsWith('data:')) {
+      return line
+    }
+    const jsonStr = line.slice(5).trimStart()
+    if (!jsonStr || jsonStr === '[DONE]') {
+      return line
+    }
+
+    try {
+      const data = JSON.parse(jsonStr)
+      let usage = null
+      if (data.type === 'message_start') {
+        usage = data.message?.usage
+      } else if (data.type === 'message_delta') {
+        ;({ usage } = data)
+      }
+      if (!this._reclassifyAnthropicCacheCreationUsage(usage)) {
+        return line
+      }
+      return `data: ${JSON.stringify(data)}`
+    } catch {
+      return line
+    }
+  }
+
+  _reclassifyCacheCreationInResponse(response) {
+    if (!response || (response.statusCode !== 200 && response.statusCode !== 201)) {
+      return false
+    }
+
+    try {
+      const parsedBody =
+        typeof response.body === 'string' ? JSON.parse(response.body) : response.body
+      if (!parsedBody || !this._reclassifyAnthropicCacheCreationUsage(parsedBody.usage)) {
+        return false
+      }
+      response.body = typeof response.body === 'string' ? JSON.stringify(parsedBody) : parsedBody
+      return true
+    } catch (error) {
+      logger.debug(`Failed to reclassify Anthropic cache creation usage: ${error.message}`)
+      return false
+    }
   }
 
   // 🔄 替换请求中的客户端标识
@@ -2070,7 +2213,11 @@ class ClaudeRelayService {
     // 根据模型和客户端传递的 anthropic-beta 动态设置 header
     const modelId = requestPayload?.model || body?.model
     const clientBetaHeader = this._getHeaderValueCaseInsensitive(clientHeaders, 'anthropic-beta')
-    headers['anthropic-beta'] = this._getBetaHeader(modelId, clientBetaHeader)
+    headers['anthropic-beta'] = this._getBetaHeader(
+      modelId,
+      clientBetaHeader,
+      requestOptions.enableCacheTtl1hInjection === true
+    )
     return {
       requestPayload,
       bodyString,
@@ -2470,9 +2617,16 @@ class ClaudeRelayService {
 
       // 获取有效的访问token
       const accessToken = await claudeAccountService.getValidAccessToken(accountId)
+      const enableCacheTtl1hInjection =
+        await claudeRelayConfigService.isAnthropicCacheTtl1hInjectionEnabled()
 
       const isRealClaudeCodeRequest = this._isActualClaudeCodeRequest(requestBody, clientHeaders)
-      const processedBody = this._processRequestBody(requestBody, account, isRealClaudeCodeRequest)
+      const processedBody = this._processRequestBody(
+        requestBody,
+        account,
+        isRealClaudeCodeRequest,
+        enableCacheTtl1hInjection
+      )
       // 🧹 内存优化：存储到 bodyStore，不放入 requestOptions 避免闭包捕获
       const originalBodyString = JSON.stringify(processedBody)
       const bodyStoreId = ++this._bodyStoreIdCounter
@@ -2502,6 +2656,7 @@ class ClaudeRelayService {
           ...options,
           bodyStoreId,
           isRealClaudeCodeRequest,
+          enableCacheTtl1hInjection,
           enableClaudeThinkingSignatureLossyFallback:
             this._isClaudeThinkingSignatureLossyFallbackEnabled(apiKeyData)
         },
@@ -3168,21 +3323,121 @@ class ClaudeRelayService {
           })
         }
 
+        const processSseLine = (originalLine) => {
+          const line = requestOptions.enableCacheTtl1hInjection
+            ? this._rewriteAnthropicCacheUsageSseLine(originalLine)
+            : originalLine
+
+          if (!line.startsWith('data:')) {
+            return line
+          }
+          const jsonStr = line.slice(5).trimStart()
+          if (!jsonStr || jsonStr === '[DONE]') {
+            return line
+          }
+
+          try {
+            const data = JSON.parse(jsonStr)
+
+            if (data.type === 'message_start' && data.message && data.message.usage) {
+              if (
+                currentUsageData.input_tokens !== undefined &&
+                currentUsageData.output_tokens !== undefined
+              ) {
+                allUsageData.push({ ...currentUsageData })
+                currentUsageData = {}
+              }
+
+              currentUsageData.input_tokens = data.message.usage.input_tokens || 0
+              currentUsageData.cache_creation_input_tokens =
+                data.message.usage.cache_creation_input_tokens || 0
+              currentUsageData.cache_read_input_tokens =
+                data.message.usage.cache_read_input_tokens || 0
+              currentUsageData.model = data.message.model
+
+              if (
+                data.message.usage.cache_creation &&
+                typeof data.message.usage.cache_creation === 'object'
+              ) {
+                currentUsageData.cache_creation = {
+                  ephemeral_5m_input_tokens:
+                    data.message.usage.cache_creation.ephemeral_5m_input_tokens || 0,
+                  ephemeral_1h_input_tokens:
+                    data.message.usage.cache_creation.ephemeral_1h_input_tokens || 0
+                }
+                logger.debug(
+                  '📊 Collected detailed cache creation data:',
+                  JSON.stringify(currentUsageData.cache_creation)
+                )
+              }
+
+              logger.debug(
+                '📊 Collected input/cache data from message_start:',
+                JSON.stringify(currentUsageData)
+              )
+            }
+
+            if (data.type === 'message_delta' && data.usage) {
+              if (data.usage.cache_creation && typeof data.usage.cache_creation === 'object') {
+                currentUsageData.cache_creation = {
+                  ephemeral_5m_input_tokens:
+                    data.usage.cache_creation.ephemeral_5m_input_tokens || 0,
+                  ephemeral_1h_input_tokens:
+                    data.usage.cache_creation.ephemeral_1h_input_tokens || 0
+                }
+              }
+
+              if (data.usage.output_tokens !== undefined) {
+                currentUsageData.output_tokens = data.usage.output_tokens || 0
+
+                logger.debug(
+                  '📊 Collected output data from message_delta:',
+                  JSON.stringify(currentUsageData)
+                )
+
+                if (currentUsageData.input_tokens !== undefined) {
+                  logger.debug(
+                    '🎯 Complete usage data collected for model:',
+                    currentUsageData.model,
+                    '- Input:',
+                    currentUsageData.input_tokens,
+                    'Output:',
+                    currentUsageData.output_tokens
+                  )
+                  allUsageData.push({ ...currentUsageData })
+                  currentUsageData = {}
+                }
+              }
+            }
+
+            if (
+              data.type === 'error' &&
+              data.error &&
+              data.error.message &&
+              data.error.message.toLowerCase().includes("exceed your account's rate limit")
+            ) {
+              rateLimitDetected = true
+              rateLimitErrorEvent = data
+              logger.warn(`🚫 Rate limit detected in stream for account ${accountId}`)
+            }
+          } catch (parseError) {
+            logger.debug('🔍 SSE line not JSON or no usage data:', line.slice(0, 100))
+          }
+
+          return line
+        }
+
         dataSource.on('data', (chunk) => {
           try {
-            const chunkStr = chunk.toString()
+            buffer += chunk.toString()
 
-            buffer += chunkStr
-
-            // 处理完整的SSE行
             const lines = buffer.split('\n')
-            buffer = lines.pop() || '' // 保留最后的不完整行
+            buffer = lines.pop() || ''
+            const processedLines = lines.map(processSseLine)
 
-            // 转发已处理的完整行到客户端
-            if (lines.length > 0) {
+            if (processedLines.length > 0) {
               if (isStreamWritable(responseStream)) {
-                const linesToForward = lines.join('\n') + (lines.length > 0 ? '\n' : '')
-                // 如果有流转换器，应用转换
+                const linesToForward = `${processedLines.join('\n')}\n`
                 if (toolNameStreamTransformer) {
                   const transformed = toolNameStreamTransformer(linesToForward)
                   if (transformed) {
@@ -3192,110 +3447,9 @@ class ClaudeRelayService {
                   responseStream.write(linesToForward)
                 }
               } else {
-                // 客户端连接已断开，记录警告（但仍继续解析usage）
                 logger.warn(
-                  `⚠️ [Official] Client disconnected during stream, skipping ${lines.length} lines for account: ${accountId}`
+                  `⚠️ [Official] Client disconnected during stream, skipping ${processedLines.length} lines for account: ${accountId}`
                 )
-              }
-            }
-
-            for (const line of lines) {
-              // 解析SSE数据寻找usage信息
-              if (line.startsWith('data:')) {
-                const jsonStr = line.slice(5).trimStart()
-                if (!jsonStr || jsonStr === '[DONE]') {
-                  continue
-                }
-                try {
-                  const data = JSON.parse(jsonStr)
-
-                  // 收集来自不同事件的usage数据
-                  if (data.type === 'message_start' && data.message && data.message.usage) {
-                    // 新的消息开始，如果之前有数据，先保存
-                    if (
-                      currentUsageData.input_tokens !== undefined &&
-                      currentUsageData.output_tokens !== undefined
-                    ) {
-                      allUsageData.push({ ...currentUsageData })
-                      currentUsageData = {}
-                    }
-
-                    // message_start包含input tokens、cache tokens和模型信息
-                    currentUsageData.input_tokens = data.message.usage.input_tokens || 0
-                    currentUsageData.cache_creation_input_tokens =
-                      data.message.usage.cache_creation_input_tokens || 0
-                    currentUsageData.cache_read_input_tokens =
-                      data.message.usage.cache_read_input_tokens || 0
-                    currentUsageData.model = data.message.model
-
-                    // 检查是否有详细的 cache_creation 对象
-                    if (
-                      data.message.usage.cache_creation &&
-                      typeof data.message.usage.cache_creation === 'object'
-                    ) {
-                      currentUsageData.cache_creation = {
-                        ephemeral_5m_input_tokens:
-                          data.message.usage.cache_creation.ephemeral_5m_input_tokens || 0,
-                        ephemeral_1h_input_tokens:
-                          data.message.usage.cache_creation.ephemeral_1h_input_tokens || 0
-                      }
-                      logger.debug(
-                        '📊 Collected detailed cache creation data:',
-                        JSON.stringify(currentUsageData.cache_creation)
-                      )
-                    }
-
-                    logger.debug(
-                      '📊 Collected input/cache data from message_start:',
-                      JSON.stringify(currentUsageData)
-                    )
-                  }
-
-                  // message_delta包含最终的output tokens
-                  if (
-                    data.type === 'message_delta' &&
-                    data.usage &&
-                    data.usage.output_tokens !== undefined
-                  ) {
-                    currentUsageData.output_tokens = data.usage.output_tokens || 0
-
-                    logger.debug(
-                      '📊 Collected output data from message_delta:',
-                      JSON.stringify(currentUsageData)
-                    )
-
-                    // 如果已经收集到了input数据和output数据，这是一个完整的usage
-                    if (currentUsageData.input_tokens !== undefined) {
-                      logger.debug(
-                        '🎯 Complete usage data collected for model:',
-                        currentUsageData.model,
-                        '- Input:',
-                        currentUsageData.input_tokens,
-                        'Output:',
-                        currentUsageData.output_tokens
-                      )
-                      // 保存到列表中，但不立即触发回调
-                      allUsageData.push({ ...currentUsageData })
-                      // 重置当前数据，准备接收下一个
-                      currentUsageData = {}
-                    }
-                  }
-
-                  // 检查是否有限流错误
-                  if (
-                    data.type === 'error' &&
-                    data.error &&
-                    data.error.message &&
-                    data.error.message.toLowerCase().includes("exceed your account's rate limit")
-                  ) {
-                    rateLimitDetected = true
-                    rateLimitErrorEvent = data
-                    logger.warn(`🚫 Rate limit detected in stream for account ${accountId}`)
-                  }
-                } catch (parseError) {
-                  // 忽略JSON解析错误，继续处理
-                  logger.debug('🔍 SSE line not JSON or no usage data:', line.slice(0, 100))
-                }
               }
             }
           } catch (error) {
@@ -3317,14 +3471,17 @@ class ClaudeRelayService {
         dataSource.on('end', async () => {
           try {
             // 处理缓冲区中剩余的数据
-            if (buffer.trim() && isStreamWritable(responseStream)) {
-              if (toolNameStreamTransformer) {
-                const transformed = toolNameStreamTransformer(buffer)
-                if (transformed) {
-                  responseStream.write(transformed)
+            if (buffer) {
+              const processedBuffer = processSseLine(buffer)
+              if (isStreamWritable(responseStream)) {
+                if (toolNameStreamTransformer) {
+                  const transformed = toolNameStreamTransformer(processedBuffer)
+                  if (transformed) {
+                    responseStream.write(transformed)
+                  }
+                } else {
+                  responseStream.write(processedBuffer)
                 }
-              } else {
-                responseStream.write(buffer)
               }
             }
 
@@ -3922,6 +4079,8 @@ class ClaudeRelayService {
 
     try {
       const { account, accessToken, proxyAgent } = await this._prepareAccountForTest(accountId)
+      const enableCacheTtl1hInjection =
+        await claudeRelayConfigService.isAnthropicCacheTtl1hInjectionEnabled()
 
       logger.info(`🧪 Testing Claude account connection: ${account.name} (${accountId})`)
 
@@ -3953,7 +4112,7 @@ class ClaudeRelayService {
         'claude-official', // accountType
         null, // sessionHash - 测试不需要会话
         streamTransformer, // 使用转换器将 Claude API 格式转为前端期望格式
-        {}, // requestOptions
+        { enableCacheTtl1hInjection }, // requestOptions
         false // isDedicatedOfficialAccount
       )
 
@@ -3982,6 +4141,8 @@ class ClaudeRelayService {
     try {
       // 使用公共方法准备测试所需的账户信息、token 和代理
       const { account, accessToken, proxyAgent } = await this._prepareAccountForTest(accountId)
+      const enableCacheTtl1hInjection =
+        await claudeRelayConfigService.isAnthropicCacheTtl1hInjectionEnabled()
 
       logger.info(`🧪 Testing Claude account connection (sync): ${account.name} (${accountId})`)
 
@@ -4045,7 +4206,7 @@ class ClaudeRelayService {
         'claude-official', // accountType
         null, // sessionHash - 测试不需要会话
         null, // streamTransformer - 不需要转换，直接解析原始格式
-        {}, // requestOptions
+        { enableCacheTtl1hInjection }, // requestOptions
         false // isDedicatedOfficialAccount
       )
 

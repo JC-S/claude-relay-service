@@ -54,6 +54,7 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       requestDetailBodyPreviewEnabled,
       exportControlledClaudeModelBlockEnabled,
       openAIImageStreamKeepAliveEnabled,
+      anthropicCacheTtl1hInjectionEnabled,
       purgeRequestDetailBodySnapshots
     } = req.body
 
@@ -213,6 +214,15 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
 
     if (
+      anthropicCacheTtl1hInjectionEnabled !== undefined &&
+      typeof anthropicCacheTtl1hInjectionEnabled !== 'boolean'
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'anthropicCacheTtl1hInjectionEnabled must be a boolean' })
+    }
+
+    if (
       purgeRequestDetailBodySnapshots !== undefined &&
       typeof purgeRequestDetailBodySnapshots !== 'boolean'
     ) {
@@ -267,6 +277,9 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
     if (openAIImageStreamKeepAliveEnabled !== undefined) {
       updateData.openAIImageStreamKeepAliveEnabled = openAIImageStreamKeepAliveEnabled
+    }
+    if (anthropicCacheTtl1hInjectionEnabled !== undefined) {
+      updateData.anthropicCacheTtl1hInjectionEnabled = anthropicCacheTtl1hInjectionEnabled
     }
 
     const updatedConfig = await claudeRelayConfigService.updateConfig(
