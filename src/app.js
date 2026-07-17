@@ -10,6 +10,7 @@ const config = require('../config/config')
 const logger = require('./utils/logger')
 const redis = require('./models/redis')
 const pricingService = require('./services/pricingService')
+const requestDetailIndex = require('./services/requestDetailIndex')
 const cacheMonitor = require('./utils/cacheMonitor')
 const { getSafeMessage } = require('./utils/errorSanitizer')
 
@@ -46,6 +47,7 @@ class Application {
   constructor() {
     this.app = express()
     this.server = null
+    this.shuttingDown = false
   }
 
   async initialize() {
@@ -426,7 +428,8 @@ class Application {
             },
             components: {
               redis: redisHealth,
-              logger: loggerHealth
+              logger: loggerHealth,
+              requestDetailIndex: requestDetailIndex.getHealth()
             },
             providers: {
               grok: {
@@ -457,6 +460,7 @@ class Application {
             ...stats,
             uptime: process.uptime(),
             memory: process.memoryUsage(),
+            requestDetailIndex: requestDetailIndex.getHealth(),
             timestamp: new Date().toISOString()
           }
 
@@ -627,6 +631,31 @@ class Application {
         logger.info(`⚙️  Admin API: http://${config.server.host}:${config.server.port}/admin`)
         logger.info(`🏥 Health check: http://${config.server.host}:${config.server.port}/health`)
         logger.info(`📊 Metrics: http://${config.server.host}:${config.server.port}/metrics`)
+
+        // The SQLite Worker must only exist after this process owns the HTTP listening socket.
+        requestDetailIndex.start().catch((error) => {
+          logger.warn(`Request detail SQLite index did not start: ${error.message}`)
+        })
+      })
+
+      this.server.once('error', (error) => {
+        logger.error('HTTP server error:', error)
+        requestDetailIndex
+          .stop()
+          .catch(() => {})
+          .finally(() => {
+            if (!this.shuttingDown) {
+              process.exit(1)
+            }
+          })
+      })
+      this.server.once('close', () => {
+        if (!this.shuttingDown) {
+          requestDetailIndex
+            .stop()
+            .catch(() => {})
+            .finally(() => process.exit(1))
+        }
       })
 
       const serverTimeout = 600000 // 默认10分钟
@@ -853,9 +882,22 @@ class Application {
 
   setupGracefulShutdown() {
     const shutdown = async (signal) => {
+      if (this.shuttingDown) {
+        return
+      }
+      this.shuttingDown = true
       logger.info(`🛑 Received ${signal}, starting graceful shutdown...`)
 
       if (this.server) {
+        // Close/terminate the SQLite Worker before releasing the HTTP socket. This preserves
+        // the single-owner invariant even when long-lived HTTP connections delay server.close().
+        try {
+          await requestDetailIndex.stop()
+          logger.info('Request detail SQLite index stopped')
+        } catch (error) {
+          logger.error('Error stopping request detail SQLite index:', error)
+        }
+
         this.server.close(async () => {
           logger.info('🚪 HTTP server closed')
 

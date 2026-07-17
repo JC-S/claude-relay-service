@@ -1455,6 +1455,10 @@ if expiresAt > 0 then
 else
   redis.call('SET', KEYS[1], ARGV[2])
 end
+if #KEYS >= 3 and ARGV[4] and ARGV[4] ~= '' then
+  redis.call('HSET', KEYS[2], ARGV[4], ARGV[5])
+  redis.call('ZADD', KEYS[3], ARGV[6], ARGV[4])
+end
 return 'applied'
 `
 
@@ -1566,13 +1570,30 @@ async function applyJsonFieldsOperation(client, operation, direction) {
   }
 
   const targetRaw = JSON.stringify(applyCapturedFields(parsed, target))
+  const requestId =
+    operation.metadata?.requestId || operation.key.replace('request_detail:item:', '')
+  const enqueueIndex =
+    config.requestDetailIndex?.enabled === true &&
+    operation.key.startsWith('request_detail:item:') &&
+    requestId
+  const sourceVersion = enqueueIndex ? `${Date.now()}-${crypto.randomBytes(6).toString('hex')}` : ''
+  const keys = enqueueIndex
+    ? [
+        operation.key,
+        'request_detail:sqlite_index:pending_version',
+        'request_detail:sqlite_index:pending_age'
+      ]
+    : [operation.key]
   return client.eval(
     ATOMIC_SET_SCRIPT,
-    1,
-    operation.key,
+    keys.length,
+    ...keys,
     raw,
     targetRaw,
-    String(operation.expiresAt || 0)
+    String(operation.expiresAt || 0),
+    enqueueIndex ? requestId : '',
+    sourceVersion,
+    String(Date.now())
   )
 }
 

@@ -21,15 +21,22 @@ const {
   CACHE_HIT_FORMULA
 } = require('../utils/requestDetailHelper')
 const { applyDisplayModelToRecord } = require('../utils/modelVariantHelper')
+const requestDetailIndex = require('./requestDetailIndex')
+const {
+  PENDING_AGE_KEY,
+  PENDING_VERSION_KEY,
+  REQUEST_DETAIL_DAY_INDEX_PREFIX,
+  REQUEST_DETAIL_ITEM_PREFIX,
+  SNAPSHOT_BACKEND
+} = require('./requestDetailIndex/constants')
 
-const REQUEST_DETAIL_ITEM_PREFIX = 'request_detail:item:'
-const REQUEST_DETAIL_DAY_INDEX_PREFIX = 'request_detail:index:day:'
 const REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX = 'request_detail:query_snapshot:'
 const DEFAULT_RETENTION_HOURS = 6
 const MAX_RETENTION_HOURS = 30 * 24
 const REQUEST_DETAIL_QUERY_BATCH_SIZE = 200
 const REQUEST_DETAIL_SCAN_BATCH_SIZE = 200
 const REQUEST_DETAIL_QUERY_SNAPSHOT_TTL_SECONDS = 30
+const REQUEST_DETAIL_SQLITE_SNAPSHOT_TTL_SECONDS = 120
 const MAX_REQUEST_DETAIL_SNAPSHOT_POINTERS = 25000
 const MAX_REQUEST_DETAIL_SNAPSHOT_BYTES = 2 * 1024 * 1024
 
@@ -880,13 +887,35 @@ class RequestDetailService {
       const dayKey = `${REQUEST_DETAIL_DAY_INDEX_PREFIX}${formatDayKey(new Date(timestampMs))}`
       const ttlSeconds = Math.max(3600, settings.retentionHours * 3600)
       const indexTtlSeconds = ttlSeconds + 86400
-
-      await client
+      const indexEnabled = requestDetailIndex.isEnabled()
+      const sourceVersion = indexEnabled
+        ? `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`
+        : null
+      const transaction = client
         .multi()
         .set(itemKey, JSON.stringify(normalized), 'EX', ttlSeconds)
         .zadd(dayKey, timestampMs, requestId)
         .expire(dayKey, indexTtlSeconds)
-        .exec()
+      if (indexEnabled) {
+        transaction
+          .hset(PENDING_VERSION_KEY, requestId, sourceVersion)
+          .zadd(PENDING_AGE_KEY, Date.now(), requestId)
+      }
+      await transaction.exec()
+
+      if (indexEnabled) {
+        requestDetailIndex
+          .notifyCapture(
+            {
+              ...normalized,
+              expiresAtMs: Date.now() + ttlSeconds * 1000
+            },
+            sourceVersion
+          )
+          .catch((error) => {
+            logger.debug(`Request detail SQLite notification deferred: ${error.message}`)
+          })
+      }
 
       return { captured: true, requestId }
     } catch (error) {
@@ -988,7 +1017,11 @@ class RequestDetailService {
 
     await this._scanRequestDetailItemKeys(async (keys, client) => {
       const rawItems = await client.mget(keys)
-      const pipeline = typeof client.pipeline === 'function' ? client.pipeline() : client.multi()
+      const pipeline = requestDetailIndex.isEnabled()
+        ? client.multi()
+        : typeof client.pipeline === 'function'
+          ? client.pipeline()
+          : client.multi()
       let hasMutations = false
 
       rawItems.forEach((rawItem, index) => {
@@ -1001,8 +1034,21 @@ class RequestDetailService {
           return
         }
 
+        const resolvedServiceTier = resolveRequestDetailServiceTier(
+          parsed,
+          parsed.requestBodySnapshot
+        )
+        if (resolvedServiceTier) {
+          parsed.serviceTier = resolvedServiceTier
+        }
         delete parsed.requestBodySnapshot
         pipeline.set(keys[index], JSON.stringify(parsed), 'KEEPTTL')
+        if (requestDetailIndex.isEnabled()) {
+          const requestId = parsed.requestId || keys[index].slice(REQUEST_DETAIL_ITEM_PREFIX.length)
+          const sourceVersion = `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`
+          pipeline.hset(PENDING_VERSION_KEY, requestId, sourceVersion)
+          pipeline.zadd(PENDING_AGE_KEY, Date.now(), requestId)
+        }
         hasMutations = true
         updatedRecords += 1
       })
@@ -1474,14 +1520,26 @@ class RequestDetailService {
       return null
     }
 
+    const snapshotTtl =
+      parsedSnapshot.backend === SNAPSHOT_BACKEND
+        ? REQUEST_DETAIL_SQLITE_SNAPSHOT_TTL_SECONDS
+        : REQUEST_DETAIL_QUERY_SNAPSHOT_TTL_SECONDS
+    if (parsedSnapshot.backend === SNAPSHOT_BACKEND) {
+      parsedSnapshot.expiresAt = Date.now() + snapshotTtl * 1000
+    }
     if (typeof client.expire === 'function') {
       try {
-        await client.expire(
-          `${REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX}${snapshotId}`,
-          REQUEST_DETAIL_QUERY_SNAPSHOT_TTL_SECONDS
-        )
+        await client.expire(`${REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX}${snapshotId}`, snapshotTtl)
       } catch (error) {
         logger.warn(`⚠️ Failed to renew request detail query snapshot TTL: ${error.message}`)
+      }
+    }
+
+    if (parsedSnapshot.backend === SNAPSHOT_BACKEND) {
+      return {
+        ...parsedSnapshot,
+        snapshotId,
+        filters: parsedSnapshot.filters || null
       }
     }
 
@@ -1542,6 +1600,318 @@ class RequestDetailService {
     }
 
     return snapshotId
+  }
+
+  async _storeSqliteQuerySnapshot(filterSignature, queryData, responseFilters, sortOrder) {
+    const client = redis.getClient()
+    if (!client || typeof client.set !== 'function') {
+      return null
+    }
+    const snapshotId = makeRequestDetailQuerySnapshotId()
+    const payload = {
+      backend: SNAPSHOT_BACKEND,
+      filterSignature,
+      generation: queryData.generation,
+      mutationEpoch: queryData.mutationEpoch,
+      snapshotSequence: queryData.snapshotSequence,
+      snapshotCreatedAt: queryData.snapshotCreatedAt,
+      expiresAt: Date.now() + REQUEST_DETAIL_SQLITE_SNAPSHOT_TTL_SECONDS * 1000,
+      startMs: queryData.startMs,
+      endMs: queryData.endMs,
+      dynamicKeyIds: queryData.dynamicKeyIds,
+      dynamicAccounts: queryData.dynamicAccounts,
+      summary: queryData.summary,
+      availableFilters: queryData.availableFilters,
+      totalRecords: queryData.totalRecords,
+      filters: responseFilters,
+      sortOrder,
+      createdAt: new Date().toISOString()
+    }
+    try {
+      await client.set(
+        `${REQUEST_DETAIL_QUERY_SNAPSHOT_PREFIX}${snapshotId}`,
+        JSON.stringify(payload),
+        'EX',
+        REQUEST_DETAIL_SQLITE_SNAPSHOT_TTL_SECONDS
+      )
+      return snapshotId
+    } catch (error) {
+      logger.warn(`⚠️ Failed to store SQLite request detail query snapshot: ${error.message}`)
+      return null
+    }
+  }
+
+  async _resolveSqliteDimensions(phaseA, keyword) {
+    const accumulator = createAvailableFilterAccumulator()
+    const apiKeyCache = new Map()
+    const accountCache = new Map()
+    const normalizedKeyword = String(keyword || '')
+      .trim()
+      .toLowerCase()
+    const dynamicKeyIds = []
+    const dynamicAccounts = []
+
+    for (const keyId of phaseA.apiKeyIds || []) {
+      const name = (await this._getApiKeyName(keyId, apiKeyCache)) || keyId
+      accumulator.apiKeyMap.set(keyId, { id: keyId, name })
+      if (normalizedKeyword && String(name).toLowerCase().includes(normalizedKeyword)) {
+        dynamicKeyIds.push(keyId)
+      }
+    }
+
+    const representativeById = new Map(
+      (phaseA.accountRepresentatives || []).map((account) => [account.accountId, account])
+    )
+    for (const account of phaseA.accounts || []) {
+      const info = await this._resolveAccountInfo(
+        account.accountId,
+        account.accountType,
+        accountCache
+      )
+      if (normalizedKeyword && info?.accountType !== account.accountType) {
+        const error = new Error('Resolved request detail account type differs from stored type')
+        error.code = 'REQUEST_DETAIL_SQLITE_PARITY_FALLBACK'
+        throw error
+      }
+      const representative = representativeById.get(account.accountId) || account
+      let entry = accumulator.accountMap.get(account.accountId)
+      if (!entry && representative.accountType === account.accountType) {
+        entry = {
+          id: account.accountId,
+          name: info?.accountName || account.accountId,
+          accountType: info?.accountType || account.accountType || 'unknown',
+          accountTypeName:
+            info?.accountTypeName ||
+            accountTypeNames[account.accountType] ||
+            accountTypeNames.unknown
+        }
+        accumulator.accountMap.set(account.accountId, entry)
+      }
+      entry ||= {
+        id: account.accountId,
+        name: info?.accountName || account.accountId,
+        accountType: info?.accountType || account.accountType || 'unknown',
+        accountTypeName:
+          info?.accountTypeName || accountTypeNames[account.accountType] || accountTypeNames.unknown
+      }
+      if (
+        normalizedKeyword &&
+        [entry.name, entry.accountTypeName].some((value) =>
+          String(value || '')
+            .toLowerCase()
+            .includes(normalizedKeyword)
+        )
+      ) {
+        dynamicAccounts.push({
+          accountId: account.accountId,
+          accountType: account.accountType
+        })
+      }
+    }
+
+    for (const model of phaseA.models || []) {
+      accumulator.modelSet.add(model)
+    }
+    for (const endpoint of phaseA.endpoints || []) {
+      accumulator.endpointSet.add(endpoint)
+    }
+    accumulator.earliest = phaseA.source?.earliest ?? null
+    accumulator.latest = phaseA.source?.latest ?? null
+    if (dynamicKeyIds.length + dynamicAccounts.length * 2 > 450) {
+      const error = new Error('Too many dynamic request detail keyword bindings')
+      error.code = 'REQUEST_DETAIL_SQLITE_PARITY_FALLBACK'
+      throw error
+    }
+    return {
+      availableFilters: finalizeAvailableFilters(accumulator),
+      dynamicKeyIds,
+      dynamicAccounts
+    }
+  }
+
+  async _applySqliteEligibleCostAdjustment(aggregate, eligible = []) {
+    let totalCostMicros = Number(aggregate.cost_micros || 0)
+    if (!eligible.length) {
+      return totalCostMicros
+    }
+    const client = redis.getClient()
+    const rawItems = await client.mget(
+      eligible.map(({ requestId }) => `${REQUEST_DETAIL_ITEM_PREFIX}${requestId}`)
+    )
+    rawItems.forEach((rawItem, index) => {
+      const record = safeJsonParse(rawItem)
+      if (!record) {
+        return
+      }
+      const displayRecord = prepareRecordForDisplay(record)
+      totalCostMicros +=
+        Math.round(normalizeNumber(displayRecord.cost, 6) * 1e6) -
+        Number(eligible[index].costMicros || 0)
+    })
+    return totalCostMicros
+  }
+
+  _finalizeSqliteSummary(aggregate, totalCostMicros) {
+    const totalRequests = Number(aggregate.total_requests || 0)
+    const numerator = Number(aggregate.cache_hit_numerator || 0)
+    const denominator = Number(aggregate.cache_hit_denominator || 0)
+    return {
+      totalRequests,
+      inputTokens: Number(aggregate.input_tokens || 0),
+      outputTokens: Number(aggregate.output_tokens || 0),
+      cacheReadTokens: Number(aggregate.cache_read_tokens || 0),
+      cacheCreateTokens: Number(aggregate.cache_create_tokens || 0),
+      totalCost: Number((totalCostMicros / 1e6).toFixed(6)),
+      avgDurationMs:
+        totalRequests > 0 ? Math.round(Number(aggregate.duration_ms || 0) / totalRequests) : 0,
+      cacheHitRate: denominator > 0 ? Number(((numerator / denominator) * 100).toFixed(2)) : 0,
+      cacheHitNumerator: numerator,
+      cacheHitDenominator: denominator,
+      cacheHitFormula: CACHE_HIT_FORMULA,
+      cacheCreateNotApplicable:
+        totalRequests > 0 && Number(aggregate.cache_na_count || 0) === totalRequests
+    }
+  }
+
+  async _buildSqliteListResponse({
+    settings,
+    filters,
+    responseFilters,
+    filterSignature,
+    effectiveStart,
+    effectiveEnd,
+    page,
+    pageSize,
+    sortOrder
+  }) {
+    const sessionId = requestDetailIndex.beginQuerySession()
+    if (!sessionId) {
+      throw new Error('Request detail SQLite query admission rejected')
+    }
+    try {
+      const phaseA = await requestDetailIndex.phaseA(sessionId, {
+        startMs: effectiveStart.getTime(),
+        endMs: effectiveEnd.getTime(),
+        snapshotCreatedAt: Date.now(),
+        sortOrder,
+        hasKeyword: Boolean(filters.keyword?.trim())
+      })
+      if (!phaseA.source?.count) {
+        requestDetailIndex.endQuerySession(sessionId)
+        return {
+          ...this._emptyListResult(settings, filters),
+          filters: responseFilters
+        }
+      }
+      const dimensions = await this._resolveSqliteDimensions(phaseA, filters.keyword)
+      const phaseB = await requestDetailIndex.phaseB(sessionId, {
+        startMs: effectiveStart.getTime(),
+        endMs: effectiveEnd.getTime(),
+        snapshotCreatedAt: phaseA.snapshotCreatedAt,
+        snapshotSequence: phaseA.snapshotSequence,
+        filters,
+        dynamicKeyIds: dimensions.dynamicKeyIds,
+        dynamicAccounts: dimensions.dynamicAccounts,
+        page,
+        pageSize,
+        sortOrder,
+        recomputeLimit: requestDetailIndex.config.recomputeLimit
+      })
+      if (Number(phaseB.aggregate.eligible_count || 0) > requestDetailIndex.config.recomputeLimit) {
+        const error = new Error('Request detail SQLite pricing recompute limit exceeded')
+        error.code = 'REQUEST_DETAIL_SQLITE_RECOMPUTE_LIMIT'
+        throw error
+      }
+      const totalCostMicros = await this._applySqliteEligibleCostAdjustment(
+        phaseB.aggregate,
+        phaseB.eligible
+      )
+      const summary = this._finalizeSqliteSummary(phaseB.aggregate, totalCostMicros)
+      const queryData = {
+        generation: phaseA.meta.generation,
+        mutationEpoch: Number(phaseA.meta.mutation_epoch || 0),
+        snapshotSequence: phaseA.snapshotSequence,
+        snapshotCreatedAt: phaseA.snapshotCreatedAt,
+        startMs: effectiveStart.getTime(),
+        endMs: effectiveEnd.getTime(),
+        dynamicKeyIds: dimensions.dynamicKeyIds,
+        dynamicAccounts: dimensions.dynamicAccounts,
+        summary,
+        availableFilters: dimensions.availableFilters,
+        totalRecords: phaseB.totalRecords
+      }
+      const snapshotId = await this._storeSqliteQuerySnapshot(
+        filterSignature,
+        queryData,
+        responseFilters,
+        sortOrder
+      )
+      const records = await this._buildPageRecords(phaseB.pointers)
+      return {
+        captureEnabled: settings.captureEnabled,
+        retentionHours: settings.retentionHours,
+        bodyPreviewEnabled: settings.bodyPreviewEnabled,
+        snapshotId,
+        records,
+        pagination: {
+          currentPage: phaseB.currentPage,
+          pageSize,
+          totalRecords: phaseB.totalRecords,
+          totalPages: phaseB.totalPages,
+          hasNextPage: phaseB.totalPages > 0 && phaseB.currentPage < phaseB.totalPages,
+          hasPreviousPage: phaseB.totalPages > 0 && phaseB.currentPage > 1
+        },
+        filters: responseFilters,
+        availableFilters: dimensions.availableFilters,
+        summary
+      }
+    } catch (error) {
+      requestDetailIndex.endQuerySession(sessionId)
+      throw error
+    }
+  }
+
+  async _buildSqliteSnapshotPage(snapshot, settings, responseFilters, filters, page, pageSize) {
+    const result = await requestDetailIndex.page({
+      generation: snapshot.generation,
+      mutationEpoch: snapshot.mutationEpoch,
+      expiresAt: snapshot.expiresAt,
+      startMs: snapshot.startMs,
+      endMs: snapshot.endMs,
+      snapshotCreatedAt: snapshot.snapshotCreatedAt,
+      snapshotSequence: snapshot.snapshotSequence,
+      filters,
+      dynamicKeyIds: snapshot.dynamicKeyIds || [],
+      dynamicAccounts: snapshot.dynamicAccounts || [],
+      totalRecords: snapshot.totalRecords,
+      page,
+      pageSize,
+      sortOrder: snapshot.sortOrder
+    })
+    if (result.stale) {
+      const error = new Error('Request detail SQLite snapshot is stale')
+      error.code = 'REQUEST_DETAIL_SQLITE_STALE_SNAPSHOT'
+      throw error
+    }
+    const records = await this._buildPageRecords(result.pointers)
+    return {
+      captureEnabled: settings.captureEnabled,
+      retentionHours: settings.retentionHours,
+      bodyPreviewEnabled: settings.bodyPreviewEnabled,
+      snapshotId: snapshot.snapshotId,
+      records,
+      pagination: {
+        currentPage: result.currentPage,
+        pageSize,
+        totalRecords: snapshot.totalRecords,
+        totalPages: result.totalPages,
+        hasNextPage: result.totalPages > 0 && result.currentPage < result.totalPages,
+        hasPreviousPage: result.totalPages > 0 && result.currentPage > 1
+      },
+      filters: snapshot.filters || responseFilters,
+      availableFilters: snapshot.availableFilters,
+      summary: snapshot.summary
+    }
   }
 
   async _buildListResponse({
@@ -1632,7 +2002,28 @@ class RequestDetailService {
       settings.retentionHours
     )
 
-    const snapshot = await this._loadQuerySnapshot(filters.snapshotId, filterSignature)
+    let snapshot = await this._loadQuerySnapshot(filters.snapshotId, filterSignature)
+    if (snapshot) {
+      if (snapshot.backend === SNAPSHOT_BACKEND) {
+        if (requestDetailIndex.shouldUseSqlite() && (await requestDetailIndex.prepareForQuery())) {
+          try {
+            return await this._buildSqliteSnapshotPage(
+              snapshot,
+              settings,
+              responseFilters,
+              filters,
+              page,
+              pageSize
+            )
+          } catch (error) {
+            logger.debug(`Request detail SQLite page fallback: ${error.message}`)
+            requestDetailIndex.recordFallback(error.code || 'page_error')
+          }
+        }
+        snapshot = null
+        filters = { ...filters, snapshotId: null }
+      }
+    }
     if (snapshot) {
       return this._buildListResponse({
         settings,
@@ -1644,6 +2035,25 @@ class RequestDetailService {
         pageSize,
         snapshotId: snapshot.snapshotId
       })
+    }
+
+    if (requestDetailIndex.shouldUseSqlite() && (await requestDetailIndex.prepareForQuery())) {
+      try {
+        return await this._buildSqliteListResponse({
+          settings,
+          filters,
+          responseFilters,
+          filterSignature,
+          effectiveStart,
+          effectiveEnd,
+          page,
+          pageSize,
+          sortOrder
+        })
+      } catch (error) {
+        logger.debug(`Request detail SQLite query fallback: ${error.message}`)
+        requestDetailIndex.recordFallback(error.code || 'query_error')
+      }
     }
 
     const queryData = await this._buildListQueryData(

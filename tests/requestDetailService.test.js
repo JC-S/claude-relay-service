@@ -43,6 +43,7 @@ const openaiAccountService = require('../src/services/account/openaiAccountServi
 const bedrockAccountService = require('../src/services/account/bedrockAccountService')
 const CostCalculator = require('../src/utils/costCalculator')
 const requestDetailService = require('../src/services/requestDetailService')
+const requestDetailIndex = require('../src/services/requestDetailIndex')
 
 describe('requestDetailService', () => {
   beforeEach(() => {
@@ -110,6 +111,46 @@ describe('requestDetailService', () => {
     expect(storedPayload.reasoningSource).toBe('reasoning.effort')
     expect(multi.zadd).toHaveBeenCalled()
     expect(exec).toHaveBeenCalled()
+  })
+
+  test('atomically appends a versioned SQLite pending entry when the index is enabled', async () => {
+    const originalConfig = requestDetailIndex.config
+    requestDetailIndex.config = { ...originalConfig, enabled: true }
+    const exec = jest.fn().mockResolvedValue([])
+    const multi = {
+      set: jest.fn().mockReturnThis(),
+      zadd: jest.fn().mockReturnThis(),
+      expire: jest.fn().mockReturnThis(),
+      hset: jest.fn().mockReturnThis(),
+      exec
+    }
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: false
+    })
+    redis.getClient.mockReturnValue({ multi: jest.fn(() => multi) })
+
+    try {
+      await requestDetailService.captureRequestDetail({
+        requestId: 'req_pending',
+        timestamp: '2026-04-07T12:00:00.000Z',
+        model: 'gpt-5.5'
+      })
+      expect(multi.hset).toHaveBeenCalledWith(
+        'request_detail:sqlite_index:pending_version',
+        'req_pending',
+        expect.any(String)
+      )
+      expect(multi.zadd).toHaveBeenCalledWith(
+        'request_detail:sqlite_index:pending_age',
+        expect.any(Number),
+        'req_pending'
+      )
+      expect(exec).toHaveBeenCalledTimes(1)
+    } finally {
+      requestDetailIndex.config = originalConfig
+    }
   })
 
   test('captureRequestDetail marks gpt priority requests as fast display models', async () => {
@@ -2066,7 +2107,7 @@ describe('requestDetailService', () => {
         JSON.stringify({
           requestId: 'req_1',
           model: 'gpt-5.4',
-          requestBodySnapshot: { model: 'gpt-5.4' }
+          requestBodySnapshot: { model: 'gpt-5.4', service_tier: 'priority' }
         }),
         JSON.stringify({
           requestId: 'req_2',
@@ -2084,7 +2125,8 @@ describe('requestDetailService', () => {
       'request_detail:item:req_1',
       JSON.stringify({
         requestId: 'req_1',
-        model: 'gpt-5.4'
+        model: 'gpt-5.4',
+        serviceTier: 'priority'
       }),
       'KEEPTTL'
     )

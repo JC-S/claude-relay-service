@@ -4,12 +4,16 @@ FROM node:18-alpine AS backend-deps
 # 📁 设置工作目录
 WORKDIR /app
 
+# better-sqlite3 may need to compile on arm64/musl when no prebuilt binary is available.
+RUN apk add --no-cache --virtual .native-build-deps python3 make g++
+
 # 📦 复制 package 文件
 COPY package*.json ./
 
 # 🔽 安装依赖 (生产环境) - 使用 BuildKit 缓存加速
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --only=production
+    npm ci --only=production && \
+    apk del .native-build-deps
 
 # 🎯 前端构建阶段 (与后端依赖并行)
 FROM node:18-alpine AS frontend-builder

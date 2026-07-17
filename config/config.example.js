@@ -177,6 +177,23 @@ const config = {
     requestTimeoutMs: parseInt(process.env.OAUTH_USAGE_REFRESH_REQUEST_TIMEOUT_MS, 10) || 30000
   },
 
+  // 请求明细 SQLite 仅作为可重建读索引；Redis 始终是权威数据源。
+  requestDetailIndex: {
+    enabled: process.env.REQUEST_DETAIL_SQLITE_INDEX_ENABLED === 'true',
+    queryBackend: process.env.REQUEST_DETAIL_QUERY_BACKEND === 'sqlite' ? 'sqlite' : 'redis',
+    sqlitePath:
+      process.env.REQUEST_DETAIL_SQLITE_PATH ||
+      path.join(__dirname, '..', 'data', 'request-details-index.sqlite3'),
+    cacheMb: parseInt(process.env.REQUEST_DETAIL_SQLITE_CACHE_MB, 10) || 128,
+    mmapMb: parseInt(process.env.REQUEST_DETAIL_SQLITE_MMAP_MB, 10) || 256,
+    pendingBatchSize: parseInt(process.env.REQUEST_DETAIL_SQLITE_PENDING_BATCH_SIZE, 10) || 200,
+    slowQueryMs: parseInt(process.env.REQUEST_DETAIL_SQLITE_SLOW_QUERY_MS, 10) || 500,
+    recomputeLimit:
+      process.env.REQUEST_DETAIL_SQLITE_RECOMPUTE_LIMIT === '0'
+        ? 0
+        : parseInt(process.env.REQUEST_DETAIL_SQLITE_RECOMPUTE_LIMIT, 10) || 256
+  },
+
   // xAI Grok Responses provider
   grok: {
     enabled: process.env.GROK_PROVIDER_ENABLED === 'true',

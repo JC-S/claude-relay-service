@@ -12,6 +12,7 @@ const {
   sealManifest,
   verifyManifestChecksum
 } = require('../src/cli/backfillGpt56FastPricing')
+const config = require('../config/config')
 
 const MODEL = 'gpt-5.6-sol'
 const KEY_ID = 'key-1'
@@ -561,5 +562,41 @@ describe('GPT-5.6 fast pricing backfill', () => {
       })
     ).resolves.toBe('missing')
     expect(client.strings.has('expiring')).toBe(false)
+  })
+
+  test('atomically enqueues changed request details when the SQLite index is enabled', async () => {
+    const original = config.requestDetailIndex?.enabled
+    config.requestDetailIndex ||= {}
+    config.requestDetailIndex.enabled = true
+    const record = createDetail()
+    const client = {
+      get: jest.fn().mockResolvedValue(JSON.stringify(record)),
+      eval: jest.fn().mockResolvedValue('applied')
+    }
+    try {
+      await applyOperation(client, {
+        type: 'json-fields',
+        key: `request_detail:item:${REQUEST_ID}`,
+        oldFields: captureFields(record),
+        targetFields: buildScaledFieldSnapshot(record, TIMESTAMP),
+        expiresAt: Date.now() + 60000,
+        metadata: { requestId: REQUEST_ID }
+      })
+      expect(client.eval).toHaveBeenCalledWith(
+        expect.any(String),
+        3,
+        `request_detail:item:${REQUEST_ID}`,
+        'request_detail:sqlite_index:pending_version',
+        'request_detail:sqlite_index:pending_age',
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        REQUEST_ID,
+        expect.any(String),
+        expect.any(String)
+      )
+    } finally {
+      config.requestDetailIndex.enabled = original
+    }
   })
 })
