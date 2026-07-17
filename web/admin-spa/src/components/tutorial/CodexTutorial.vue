@@ -125,11 +125,11 @@ const configTomlLines = computed(() => [
   'model_provider = "crs"',
   'model = "gpt-5.5"',
   'model_reasoning_effort = "high"',
-  'disable_response_storage = true',
   'preferred_auth_method = "apikey"',
+  'web_search = "live"',
   '',
   '[model_providers.crs]',
-  'name = "crs"',
+  'name = "OpenAI"',
   `base_url = "${openaiBaseUrl.value}"`,
   'wire_api = "responses"',
   'requires_openai_auth = true'

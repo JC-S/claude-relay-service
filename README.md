@@ -507,11 +507,11 @@ gemini  # 或其他 Gemini CLI 命令
 model_provider = "crs"
 model = "gpt-5.5"
 model_reasoning_effort = "high"
-disable_response_storage = true
 preferred_auth_method = "apikey"
+web_search = "live"
 
 [model_providers.crs]
-name = "crs"
+name = "OpenAI"
 base_url = "http://127.0.0.1:3000/openai"  # 根据实际填写你服务器的ip地址或者域名
 wire_api = "responses"
 requires_openai_auth = true
