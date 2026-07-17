@@ -2511,6 +2511,26 @@ class RedisClient {
     await this.client.expire(weeklyKey, 14 * 24 * 3600)
   }
 
+  async setWeeklyClaudeCostSnapshot(
+    keyId,
+    { periodString, ratedCost = 0, realCost = 0, fableRatedCost = 0, fableRealCost = 0 }
+  ) {
+    const ttlSeconds = 14 * 24 * 3600
+    const pipeline = this.client.pipeline()
+    const values = [
+      [`usage:opus:weekly:${keyId}:${periodString}`, ratedCost],
+      [`usage:opus:real:weekly:${keyId}:${periodString}`, realCost],
+      [`usage:fable:weekly:${keyId}:${periodString}`, fableRatedCost],
+      [`usage:fable:real:weekly:${keyId}:${periodString}`, fableRealCost]
+    ]
+
+    for (const [key, value] of values) {
+      pipeline.set(key, String(Number(value) || 0))
+      pipeline.expire(key, ttlSeconds)
+    }
+    await pipeline.exec()
+  }
+
   _buildUsageFromModelStats(modelUsage, fieldPrefix = '') {
     const fieldName = (name) =>
       fieldPrefix ? `${fieldPrefix}${name.charAt(0).toUpperCase()}${name.slice(1)}` : name

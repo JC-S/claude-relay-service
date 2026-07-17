@@ -8,8 +8,10 @@ jest.mock('../src/models/redis', () => ({
   setAccountLock: jest.fn(),
   releaseAccountLock: jest.fn(),
   getApiKey: jest.fn(),
+  getV2ChildIds: jest.fn(),
   setWeeklyOpusCost: jest.fn(),
-  setWeeklyFableCost: jest.fn()
+  setWeeklyFableCost: jest.fn(),
+  setWeeklyClaudeCostSnapshot: jest.fn()
 }))
 
 jest.mock('../src/services/pricingService', () => ({
@@ -107,6 +109,8 @@ describe('weeklyClaudeCostInitService', () => {
     redis.releaseAccountLock.mockResolvedValue()
     redis.setWeeklyOpusCost.mockResolvedValue()
     redis.setWeeklyFableCost.mockResolvedValue()
+    redis.setWeeklyClaudeCostSnapshot.mockResolvedValue()
+    redis.getV2ChildIds.mockResolvedValue([])
     serviceRatesService.getService.mockReturnValue('claude')
     serviceRatesService.getServiceRate.mockResolvedValue(1)
     pricingService.calculateCost.mockReturnValue({ totalCost: 0 })
@@ -159,7 +163,17 @@ describe('weeklyClaudeCostInitService', () => {
         },
         {
           op: 'set',
+          key: 'usage:opus:real:weekly:child-key:2026-06-04T19',
+          value: '9'
+        },
+        {
+          op: 'set',
           key: 'usage:fable:weekly:child-key:2026-06-04T19',
+          value: '4'
+        },
+        {
+          op: 'set',
+          key: 'usage:fable:real:weekly:child-key:2026-06-04T19',
           value: '4'
         },
         {
@@ -207,7 +221,73 @@ describe('weeklyClaudeCostInitService', () => {
 
     expect(result.success).toBe(true)
     expect(pricingService.calculateCost).toHaveBeenCalledTimes(1)
-    expect(redis.setWeeklyOpusCost).toHaveBeenCalledWith('child-key', 6, '2026-06-04T19')
-    expect(redis.setWeeklyFableCost).toHaveBeenCalledWith('child-key', 0, '2026-06-04T19')
+    expect(redis.setWeeklyClaudeCostSnapshot).toHaveBeenCalledWith('child-key', {
+      periodString: '2026-06-04T19',
+      ratedCost: 6,
+      realCost: 2,
+      fableRatedCost: 0,
+      fableRealCost: 0
+    })
+  })
+
+  test('backfills shared-pool Claude usage without a direct account binding', async () => {
+    redis.scanApiKeyIds.mockResolvedValue(['shared-key'])
+    dataByKey.set('apikey:shared-key', {
+      id: 'shared-key',
+      permissions: '["claude"]',
+      weeklyOpusCostLimit: '200',
+      weeklyResetDay: '4',
+      weeklyResetHour: '19',
+      serviceRates: '{}'
+    })
+    dataByKey.set('usage:shared-key:model:daily:claude-sonnet-4-6:2026-06-05', {
+      ratedCostMicro: '34000000',
+      realCostMicro: '17000000'
+    })
+
+    const result = await weeklyClaudeCostInitService.backfillCurrentWeekClaudeCosts()
+
+    expect(result.success).toBe(true)
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        {
+          op: 'set',
+          key: 'usage:opus:weekly:shared-key:2026-06-04T19',
+          value: '34'
+        },
+        {
+          op: 'set',
+          key: 'usage:opus:real:weekly:shared-key:2026-06-04T19',
+          value: '17'
+        }
+      ])
+    )
+  })
+
+  test('backfills a v2 parent and all child keys when its reset window changes', async () => {
+    redis.getApiKey.mockImplementation(async (id) => {
+      if (id === 'parent-key') {
+        return {
+          id: 'parent-key',
+          isV2Parent: 'true',
+          weeklyResetDay: '4',
+          weeklyResetHour: '19'
+        }
+      }
+      return {
+        id,
+        parentKeyId: 'parent-key'
+      }
+    })
+    redis.getV2ChildIds.mockResolvedValue(['child-a', 'child-b'])
+    const backfillSpy = jest
+      .spyOn(weeklyClaudeCostInitService, 'backfillSingleKey')
+      .mockResolvedValue({ success: true })
+
+    const result = await weeklyClaudeCostInitService.backfillKeyFamily('parent-key')
+
+    expect(result.success).toBe(true)
+    expect(backfillSpy.mock.calls.map(([id]) => id)).toEqual(['parent-key', 'child-a', 'child-b'])
+    backfillSpy.mockRestore()
   })
 })

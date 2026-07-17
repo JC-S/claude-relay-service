@@ -2300,17 +2300,19 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         // 执行更新
         await apiKeyService.updateApiKey(keyId, finalUpdates)
 
-        // 重置配置变更后触发单 Key 回填
-        if (
-          finalUpdates.weeklyResetDay !== undefined ||
-          finalUpdates.weeklyResetHour !== undefined
-        ) {
+        const resetConfigChanged =
+          (finalUpdates.weeklyResetDay !== undefined &&
+            finalUpdates.weeklyResetDay !== parseInt(currentKey.weeklyResetDay || 1, 10)) ||
+          (finalUpdates.weeklyResetHour !== undefined &&
+            finalUpdates.weeklyResetHour !== parseInt(currentKey.weeklyResetHour || 0, 10))
+
+        if (resetConfigChanged) {
           setImmediate(async () => {
             try {
               const weeklyInitService = require('../../services/weeklyClaudeCostInitService')
-              await weeklyInitService.backfillSingleKey(keyId)
+              await weeklyInitService.backfillKeyFamily(keyId)
             } catch (err) {
-              logger.error(`❌ 批量编辑回填单 Key 周费用失败 (${keyId})：`, err)
+              logger.error(`❌ 批量编辑回填 Key 周费用失败 (${keyId})：`, err)
             }
           })
         }
@@ -2702,6 +2704,13 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
 
     // 处理周费用重置配置
     let resetConfigChanged = false
+    let existingKeyData = null
+    if (
+      (weeklyResetDay !== undefined && weeklyResetDay !== null && weeklyResetDay !== '') ||
+      (weeklyResetHour !== undefined && weeklyResetHour !== null && weeklyResetHour !== '')
+    ) {
+      existingKeyData = await redis.getApiKey(keyId)
+    }
     if (weeklyResetDay !== undefined && weeklyResetDay !== null && weeklyResetDay !== '') {
       const day = Number(weeklyResetDay)
       if (!Number.isInteger(day) || day < 1 || day > 7) {
@@ -2710,7 +2719,8 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
           .json({ error: 'Weekly reset day must be an integer from 1 (Mon) to 7 (Sun)' })
       }
       updates.weeklyResetDay = day
-      resetConfigChanged = true
+      resetConfigChanged =
+        resetConfigChanged || day !== parseInt(existingKeyData?.weeklyResetDay || 1, 10)
     }
     if (weeklyResetHour !== undefined && weeklyResetHour !== null && weeklyResetHour !== '') {
       const hour = Number(weeklyResetHour)
@@ -2718,7 +2728,8 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'Weekly reset hour must be an integer from 0 to 23' })
       }
       updates.weeklyResetHour = hour
-      resetConfigChanged = true
+      resetConfigChanged =
+        resetConfigChanged || hour !== parseInt(existingKeyData?.weeklyResetHour || 0, 10)
     }
 
     // 处理活跃/禁用状态状态, 放在过期处理后，以确保后续增加禁用key功能
@@ -2775,9 +2786,9 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       setImmediate(async () => {
         try {
           const weeklyInitService = require('../../services/weeklyClaudeCostInitService')
-          await weeklyInitService.backfillSingleKey(keyId)
+          await weeklyInitService.backfillKeyFamily(keyId)
         } catch (err) {
-          logger.error(`❌ 回填单 Key 周费用失败 (${keyId})：`, err)
+          logger.error(`❌ 回填 Key 周费用失败 (${keyId})：`, err)
         }
       })
     }

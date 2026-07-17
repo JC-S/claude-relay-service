@@ -14,9 +14,6 @@ function formatTzDateYmd(tzDate) {
   return `${tzDate.getUTCFullYear()}-${pad2(tzDate.getUTCMonth() + 1)}-${pad2(tzDate.getUTCDate())}`
 }
 
-// 推断账户类型的辅助函数（与运行时 recordOpusCost 一致，只统计 claude-official/claude-console/ccr）
-const OPUS_ACCOUNT_TYPES = ['claude-official', 'claude-console', 'ccr']
-
 function inferAccountType(keyData) {
   if (keyData?.ccrAccountId) {
     return 'ccr'
@@ -78,15 +75,24 @@ class WeeklyClaudeCostInitService {
       map.set(keyId, new Map())
     }
     const bucketMap = map.get(keyId)
-    bucketMap.set(bucketId, (bucketMap.get(bucketId) || 0) + cost)
+    const current = bucketMap.get(bucketId) || { ratedMicro: 0, realMicro: 0 }
+    bucketMap.set(bucketId, {
+      ratedMicro: current.ratedMicro + cost.ratedMicro,
+      realMicro: current.realMicro + cost.realMicro
+    })
   }
 
   _getBucketCost(map, keyId, bucket) {
     const bucketMap = map.get(keyId)
     if (!bucketMap) {
-      return 0
+      return { ratedMicro: 0, realMicro: 0 }
     }
-    return bucketMap.get(this._buildBucketId(bucket)) || 0
+    return (
+      bucketMap.get(this._buildBucketId(bucket)) || {
+        ratedMicro: 0,
+        realMicro: 0
+      }
+    )
   }
 
   _iterPeriodBuckets(periodStart, nowTz = redis.getDateInTimezone(new Date())) {
@@ -191,19 +197,19 @@ class WeeklyClaudeCostInitService {
     return usage
   }
 
-  async _calculateFallbackRatedCost(data, model, configKeyData, accountType, globalRateCache) {
+  async _calculateFallbackCosts(data, model, configKeyData, accountType, globalRateCache) {
     if (!pricingService || !pricingService.pricingData) {
-      return 0
+      return { ratedMicro: 0, realMicro: 0 }
     }
 
     const usage = this._buildUsageFromStats(data)
     const costInfo = pricingService.calculateCost(usage, model)
     const realCost = costInfo && costInfo.totalCost ? costInfo.totalCost : 0
     if (realCost <= 0) {
-      return 0
+      return { ratedMicro: 0, realMicro: 0 }
     }
 
-    const service = serviceRatesService.getService(accountType, model)
+    const service = serviceRatesService.getService(accountType || 'claude-official', model)
 
     let globalRate = globalRateCache.get(service)
     if (globalRate === undefined) {
@@ -218,28 +224,52 @@ class WeeklyClaudeCostInitService {
       keyRates = {}
     }
     const keyRate = keyRates[service] ?? 1.0
-    return realCost * globalRate * keyRate
+    return {
+      ratedMicro: Math.round(realCost * globalRate * keyRate * 1000000),
+      realMicro: Math.round(realCost * 1000000)
+    }
   }
 
-  async _getRatedCostFromStats(data, model, configKeyData, accountType, globalRateCache, counters) {
-    if (hasOwn(data, 'ratedCostMicro')) {
+  async _getCostsFromStats(data, model, configKeyData, accountType, globalRateCache, counters) {
+    const hasRatedCost = hasOwn(data, 'ratedCostMicro')
+    const hasRealCost = hasOwn(data, 'realCostMicro')
+
+    if (hasRatedCost && hasRealCost) {
       counters.storedRatedCostHits++
-      return toFiniteNumber(data.ratedCostMicro) / 1000000
+      counters.storedRealCostHits++
+      return {
+        ratedMicro: Math.round(toFiniteNumber(data.ratedCostMicro)),
+        realMicro: Math.round(toFiniteNumber(data.realCostMicro))
+      }
     }
 
-    if (hasOwn(data, 'realCostMicro')) {
-      counters.storedRealCostFallbacks++
-      return toFiniteNumber(data.realCostMicro) / 1000000
-    }
-
-    counters.recomputedCostFallbacks++
-    return await this._calculateFallbackRatedCost(
+    const fallbackCosts = await this._calculateFallbackCosts(
       data,
       model,
       configKeyData,
       accountType,
       globalRateCache
     )
+
+    if (hasRatedCost) {
+      counters.storedRatedCostHits++
+      counters.recomputedRealCostFallbacks++
+      return {
+        ratedMicro: Math.round(toFiniteNumber(data.ratedCostMicro)),
+        realMicro: fallbackCosts.realMicro || Math.round(toFiniteNumber(data.ratedCostMicro))
+      }
+    }
+
+    if (hasRealCost) {
+      counters.storedRealCostFallbacks++
+      return {
+        ratedMicro: fallbackCosts.ratedMicro || Math.round(toFiniteNumber(data.realCostMicro)),
+        realMicro: Math.round(toFiniteNumber(data.realCostMicro))
+      }
+    }
+
+    counters.recomputedCostFallbacks++
+    return fallbackCosts
   }
 
   async _collectBucketCosts({
@@ -291,30 +321,24 @@ class WeeklyClaudeCostInitService {
             keyData?.parentKeyId && keyDataCache.get(keyData.parentKeyId)
               ? keyDataCache.get(keyData.parentKeyId)
               : keyData
-          const accountType = inferAccountType(configKeyData)
-
-          if (!accountType || !OPUS_ACCOUNT_TYPES.includes(accountType)) {
-            continue
-          }
-
-          const ratedCost = await this._getRatedCostFromStats(
+          const costs = await this._getCostsFromStats(
             data,
             entry.model,
             configKeyData,
-            accountType,
+            inferAccountType(configKeyData),
             globalRateCache,
             counters
           )
-          if (ratedCost <= 0) {
+          if (costs.ratedMicro <= 0 && costs.realMicro <= 0) {
             continue
           }
 
           const bucketId = this._buildBucketId(entry.bucket)
-          this._addBucketCost(costByKeyBucket, entry.keyId, bucketId, ratedCost)
+          this._addBucketCost(costByKeyBucket, entry.keyId, bucketId, costs)
 
           if (isClaudeFableModel(entry.model)) {
             counters.matchedFableKeys++
-            this._addBucketCost(fableCostByKeyBucket, entry.keyId, bucketId, ratedCost)
+            this._addBucketCost(fableCostByKeyBucket, entry.keyId, bucketId, costs)
           }
         }
       } while (cursor !== '0')
@@ -329,7 +353,7 @@ class WeeklyClaudeCostInitService {
    * 说明：
    * - 回填最近 8 天数据（覆盖任意重置配置的完整 7 天周期）
    * - 会加分布式锁，避免多实例重复跑
-   * - 会写 done 标记：同一天内重启默认不重复回填
+   * - 每次启动都校验一次，确保 Redis 周计数可自动修复
    */
   async backfillCurrentWeekClaudeCosts() {
     const client = redis.getClientSafe()
@@ -343,17 +367,6 @@ class WeeklyClaudeCostInitService {
     }
 
     const todayStr = redis.getDateStringInTimezone()
-    const doneKey = `init:weekly_claude_cost:v2:${todayStr}:done`
-
-    try {
-      const alreadyDone = await client.get(doneKey)
-      if (alreadyDone) {
-        logger.info(`ℹ️ Claude 周费用回填已完成（${todayStr}），跳过`)
-        return { success: true, skipped: true }
-      }
-    } catch (e) {
-      // 尽力而为：读取失败不阻断启动回填流程。
-    }
 
     const lockKey = `lock:init:weekly_claude_cost:v2:${todayStr}`
     const lockValue = `${process.pid}:${Date.now()}`
@@ -401,7 +414,9 @@ class WeeklyClaudeCostInitService {
         matchedClaudeKeys: 0,
         matchedFableKeys: 0,
         storedRatedCostHits: 0,
+        storedRealCostHits: 0,
         storedRealCostFallbacks: 0,
+        recomputedRealCostFallbacks: 0,
         recomputedCostFallbacks: 0
       }
       const patterns = []
@@ -448,36 +463,45 @@ class WeeklyClaudeCostInitService {
 
           // 汇总该 key 在当前周期内的费用
           const periodBuckets = this._iterPeriodBuckets(periodStart)
-          let periodCost = 0
-          let periodFableCost = 0
+          let periodRatedMicro = 0
+          let periodRealMicro = 0
+          let periodFableRatedMicro = 0
+          let periodFableRealMicro = 0
           for (const bucket of periodBuckets) {
-            periodCost += this._getBucketCost(costByKeyBucket, keyId, bucket)
-            periodFableCost += this._getBucketCost(fableCostByKeyBucket, keyId, bucket)
+            const costs = this._getBucketCost(costByKeyBucket, keyId, bucket)
+            const fableCosts = this._getBucketCost(fableCostByKeyBucket, keyId, bucket)
+            periodRatedMicro += costs.ratedMicro
+            periodRealMicro += costs.realMicro
+            periodFableRatedMicro += fableCosts.ratedMicro
+            periodFableRealMicro += fableCosts.realMicro
           }
 
-          if (periodCost > 0) {
+          if (periodRatedMicro > 0 || periodRealMicro > 0) {
             filledCount++
           }
-          if (periodFableCost > 0) {
+          if (periodFableRatedMicro > 0 || periodFableRealMicro > 0) {
             fableFilledCount++
           }
 
           const weeklyKey = this._buildWeeklyOpusKey(keyId, periodString)
+          const realWeeklyKey = `usage:opus:real:weekly:${keyId}:${periodString}`
           const weeklyFableKey = this._buildWeeklyFableKey(keyId, periodString)
-          pipeline.set(weeklyKey, String(periodCost))
+          const realWeeklyFableKey = `usage:fable:real:weekly:${keyId}:${periodString}`
+          pipeline.set(weeklyKey, String(periodRatedMicro / 1000000))
           pipeline.expire(weeklyKey, ttlSeconds)
-          pipeline.set(weeklyFableKey, String(periodFableCost))
+          pipeline.set(realWeeklyKey, String(periodRealMicro / 1000000))
+          pipeline.expire(realWeeklyKey, ttlSeconds)
+          pipeline.set(weeklyFableKey, String(periodFableRatedMicro / 1000000))
           pipeline.expire(weeklyFableKey, ttlSeconds)
+          pipeline.set(realWeeklyFableKey, String(periodFableRealMicro / 1000000))
+          pipeline.expire(realWeeklyFableKey, ttlSeconds)
         }
         await pipeline.exec()
       }
 
-      // 写入 done 标记（保留 2 天，每天重新回填一次）
-      await client.set(doneKey, new Date().toISOString(), 'EX', 2 * 24 * 3600)
-
       const durationMs = Date.now() - startedAt
       logger.info(
-        `✅ Claude 周费用回填完成（${todayStr}）：keys=${keyIds.length}, scanned=${counters.scannedKeys}, matchedClaude=${counters.matchedClaudeKeys}, matchedFable=${counters.matchedFableKeys}, storedRated=${counters.storedRatedCostHits}, realFallback=${counters.storedRealCostFallbacks}, recomputed=${counters.recomputedCostFallbacks}, filled=${filledCount}, fableFilled=${fableFilledCount}（${durationMs}ms）`
+        `✅ Claude 周费用回填完成（${todayStr}）：keys=${keyIds.length}, scanned=${counters.scannedKeys}, matchedClaude=${counters.matchedClaudeKeys}, matchedFable=${counters.matchedFableKeys}, storedRated=${counters.storedRatedCostHits}, storedReal=${counters.storedRealCostHits}, ratedFallback=${counters.storedRealCostFallbacks}, realFallback=${counters.recomputedRealCostFallbacks}, recomputed=${counters.recomputedCostFallbacks}, filled=${filledCount}, fableFilled=${fableFilledCount}（${durationMs}ms）`
       )
 
       return {
@@ -488,7 +512,9 @@ class WeeklyClaudeCostInitService {
         matchedClaudeKeys: counters.matchedClaudeKeys,
         matchedFableKeys: counters.matchedFableKeys,
         storedRatedCostHits: counters.storedRatedCostHits,
+        storedRealCostHits: counters.storedRealCostHits,
         storedRealCostFallbacks: counters.storedRealCostFallbacks,
+        recomputedRealCostFallbacks: counters.recomputedRealCostFallbacks,
         recomputedCostFallbacks: counters.recomputedCostFallbacks,
         filledKeys: filledCount,
         fableFilledKeys: fableFilledCount,
@@ -538,15 +564,6 @@ class WeeklyClaudeCostInitService {
       const resetDay = parseInt(configKeyData.weeklyResetDay || 1)
       const resetHour = parseInt(configKeyData.weeklyResetHour || 0)
 
-      const accountType = inferAccountType(configKeyData)
-      if (!accountType || !OPUS_ACCOUNT_TYPES.includes(accountType)) {
-        // 非 Claude 账户，写入 0 即可
-        const periodString = redis.getPeriodString(resetDay, resetHour)
-        await redis.setWeeklyOpusCost(keyId, 0, periodString)
-        await redis.setWeeklyFableCost(keyId, 0, periodString)
-        return { success: true, cost: 0, fableCost: 0, reason: 'non_claude_account' }
-      }
-
       const periodStart = redis.getPeriodStartDate(resetDay, resetHour)
       const periodString = redis.getPeriodString(resetDay, resetHour)
 
@@ -567,11 +584,15 @@ class WeeklyClaudeCostInitService {
         matchedClaudeKeys: 0,
         matchedFableKeys: 0,
         storedRatedCostHits: 0,
+        storedRealCostHits: 0,
         storedRealCostFallbacks: 0,
+        recomputedRealCostFallbacks: 0,
         recomputedCostFallbacks: 0
       }
-      let totalCost = 0
-      let fableCost = 0
+      let ratedMicro = 0
+      let realMicro = 0
+      let fableRatedMicro = 0
+      let fableRealMicro = 0
 
       await this._collectBucketCosts({
         client,
@@ -584,8 +605,12 @@ class WeeklyClaudeCostInitService {
       })
 
       for (const bucket of periodBuckets) {
-        totalCost += this._getBucketCost(costByKeyBucket, keyId, bucket)
-        fableCost += this._getBucketCost(fableCostByKeyBucket, keyId, bucket)
+        const costs = this._getBucketCost(costByKeyBucket, keyId, bucket)
+        const fableCosts = this._getBucketCost(fableCostByKeyBucket, keyId, bucket)
+        ratedMicro += costs.ratedMicro
+        realMicro += costs.realMicro
+        fableRatedMicro += fableCosts.ratedMicro
+        fableRealMicro += fableCosts.realMicro
       }
 
       if (counters.storedRealCostFallbacks > 0) {
@@ -594,16 +619,54 @@ class WeeklyClaudeCostInitService {
         )
       }
 
-      await redis.setWeeklyOpusCost(keyId, totalCost, periodString)
-      await redis.setWeeklyFableCost(keyId, fableCost, periodString)
+      const totalCost = ratedMicro / 1000000
+      const realCost = realMicro / 1000000
+      const fableCost = fableRatedMicro / 1000000
+      const realFableCost = fableRealMicro / 1000000
+      await redis.setWeeklyClaudeCostSnapshot(keyId, {
+        periodString,
+        ratedCost: totalCost,
+        realCost,
+        fableRatedCost: fableCost,
+        fableRealCost: realFableCost
+      })
       logger.info(
-        `💰 单 Key 回填完成 (${keyId})：period=${periodString}, cost=$${totalCost.toFixed(6)}, fable=$${fableCost.toFixed(6)}`
+        `💰 单 Key 回填完成 (${keyId})：period=${periodString}, rated=$${totalCost.toFixed(6)}, real=$${realCost.toFixed(6)}, fableRated=$${fableCost.toFixed(6)}, fableReal=$${realFableCost.toFixed(6)}`
       )
 
-      return { success: true, cost: totalCost, fableCost, periodString }
+      return {
+        success: true,
+        cost: totalCost,
+        realCost,
+        fableCost,
+        realFableCost,
+        periodString
+      }
     } catch (error) {
       logger.error(`❌ 单 Key 回填失败 (${keyId})：`, error)
       return { success: false, error: error.message }
+    }
+  }
+
+  async backfillKeyFamily(keyId) {
+    const keyData = await redis.getApiKey(keyId)
+    if (!keyData || Object.keys(keyData).length === 0) {
+      return { success: false, reason: 'key_not_found' }
+    }
+
+    const targetIds =
+      keyData.isV2Parent === 'true' || keyData.isV2Parent === true
+        ? [keyId, ...(await redis.getV2ChildIds(keyId))]
+        : [keyId]
+    const results = []
+    for (const targetId of targetIds) {
+      results.push(await this.backfillSingleKey(targetId))
+    }
+
+    return {
+      success: results.every((result) => result.success),
+      targetIds,
+      results
     }
   }
 }
