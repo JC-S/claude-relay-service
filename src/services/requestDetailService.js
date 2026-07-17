@@ -914,7 +914,10 @@ class RequestDetailService {
           : normalizeNumber(detail.firstTokenLatencyMs),
       isLongContextRequest: detail.isLongContextRequest === true,
       reasoningDisplay: detail.reasoningDisplay || reasoningInfo.reasoningDisplay || null,
-      reasoningSource: detail.reasoningSource || reasoningInfo.reasoningSource || null
+      reasoningSource: detail.reasoningSource || reasoningInfo.reasoningSource || null,
+      usageType: normalizeOptionalFilterValue(detail.usageType) || null,
+      webSearchCalls: normalizeNumber(detail.webSearchCalls),
+      responsesLite: detail.responsesLite === true
     })
 
     if (options.bodyPreviewEnabled && requestBodySource !== undefined) {

@@ -1456,6 +1456,7 @@ const authenticateApiKey = async (req, res, next) => {
       enableGeneralOpenAIEndpoint: validation.keyData.enableGeneralOpenAIEndpoint,
       enableGrokEndpoint: validation.keyData.enableGrokEndpoint,
       enableGeneralOpenAIImages: validation.keyData.enableGeneralOpenAIImages,
+      enableOpenAICodexLiteImages: validation.keyData.enableOpenAICodexLiteImages,
       enableGeneralPromptCacheAssist: validation.keyData.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback:
         validation.keyData.enableClaudeThinkingSignatureLossyFallback,

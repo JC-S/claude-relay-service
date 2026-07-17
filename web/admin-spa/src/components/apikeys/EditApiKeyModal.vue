@@ -795,6 +795,38 @@
                 </span>
               </label>
 
+              <label
+                :class="[
+                  'flex items-start gap-3',
+                  (form.permissions.length === 0 || form.permissions.includes('openai')) &&
+                  !apiKey.parentKeyId
+                    ? 'cursor-pointer'
+                    : 'cursor-not-allowed opacity-60'
+                ]"
+              >
+                <input
+                  v-model="form.enableOpenAICodexLiteImages"
+                  class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                  :disabled="
+                    apiKey.parentKeyId ||
+                    (form.permissions.length > 0 && !form.permissions.includes('openai'))
+                  "
+                  type="checkbox"
+                />
+                <span class="flex-1">
+                  <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    允许 Codex Lite 图片工具
+                  </span>
+                  <span class="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                    {{
+                      apiKey.parentKeyId
+                        ? '继承 V2 父账号配置'
+                        : '允许该 API Key 通过 /openai/images/* 使用 Codex 图片生成和编辑工具'
+                    }}
+                  </span>
+                </span>
+              </label>
+
               <label class="flex cursor-pointer items-start gap-3">
                 <input
                   v-model="form.enableOpenAIResponsesPayloadRules"
@@ -1626,6 +1658,7 @@ const form = reactive({
   enableGeneralOpenAIEndpoint: false,
   enableGrokEndpoint: false,
   enableGeneralOpenAIImages: false,
+  enableOpenAICodexLiteImages: false,
   enableGeneralPromptCacheAssist: false,
   enableClaudeThinkingSignatureLossyFallback: false,
   enableOpenAIResponsesCodexAdaptation: true,
@@ -1827,6 +1860,7 @@ const updateApiKey = async () => {
       enableGeneralOpenAIEndpoint: form.enableGeneralOpenAIEndpoint,
       enableGrokEndpoint: form.enableGrokEndpoint,
       enableGeneralOpenAIImages: form.enableGeneralOpenAIImages,
+      enableOpenAICodexLiteImages: form.enableOpenAICodexLiteImages,
       enableGeneralPromptCacheAssist: form.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation: form.enableOpenAIResponsesCodexAdaptation,
@@ -1846,6 +1880,9 @@ const updateApiKey = async () => {
         form.totalCostLimit !== '' && form.totalCostLimit !== null
           ? parseFloat(form.totalCostLimit)
           : 0
+    }
+    if (props.apiKey.parentKeyId) {
+      delete data.enableOpenAICodexLiteImages
     }
 
     // 处理Claude账户绑定（区分OAuth和Console）
@@ -2269,6 +2306,9 @@ onMounted(async () => {
   form.enableGeneralOpenAIImages =
     props.apiKey.enableGeneralOpenAIImages === true ||
     props.apiKey.enableGeneralOpenAIImages === 'true'
+  form.enableOpenAICodexLiteImages =
+    props.apiKey.enableOpenAICodexLiteImages === true ||
+    props.apiKey.enableOpenAICodexLiteImages === 'true'
   form.enableGeneralPromptCacheAssist =
     props.apiKey.enableGeneralPromptCacheAssist === true ||
     props.apiKey.enableGeneralPromptCacheAssist === 'true'

@@ -1314,6 +1314,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       enableGeneralOpenAIEndpoint,
       enableGrokEndpoint,
       enableGeneralOpenAIImages,
+      enableOpenAICodexLiteImages,
       enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
@@ -1497,6 +1498,12 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
     if (enableGeneralOpenAIImages !== undefined && typeof enableGeneralOpenAIImages !== 'boolean') {
       return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
     }
+    if (
+      enableOpenAICodexLiteImages !== undefined &&
+      typeof enableOpenAICodexLiteImages !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableOpenAICodexLiteImages must be a boolean' })
+    }
 
     if (
       enableGeneralPromptCacheAssist !== undefined &&
@@ -1598,6 +1605,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
       enableGrokEndpoint: enableGrokEndpoint === true,
       enableGeneralOpenAIImages: enableGeneralOpenAIImages === true,
+      enableOpenAICodexLiteImages: enableOpenAICodexLiteImages === true,
       enableGeneralPromptCacheAssist: enableGeneralPromptCacheAssist === true,
       enableClaudeThinkingSignatureLossyFallback:
         enableClaudeThinkingSignatureLossyFallback === true,
@@ -1862,6 +1870,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       enableGeneralOpenAIEndpoint,
       enableGrokEndpoint,
       enableGeneralOpenAIImages,
+      enableOpenAICodexLiteImages,
       enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback
     } = req.body
@@ -1935,6 +1944,12 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
     if (enableGeneralOpenAIImages !== undefined && typeof enableGeneralOpenAIImages !== 'boolean') {
       return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
     }
+    if (
+      enableOpenAICodexLiteImages !== undefined &&
+      typeof enableOpenAICodexLiteImages !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableOpenAICodexLiteImages must be a boolean' })
+    }
 
     if (
       enableGeneralPromptCacheAssist !== undefined &&
@@ -1995,6 +2010,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           enableGeneralOpenAIEndpoint: enableGeneralOpenAIEndpoint === true,
           enableGrokEndpoint: enableGrokEndpoint === true,
           enableGeneralOpenAIImages: enableGeneralOpenAIImages === true,
+          enableOpenAICodexLiteImages: enableOpenAICodexLiteImages === true,
           enableGeneralPromptCacheAssist: enableGeneralPromptCacheAssist === true,
           enableClaudeThinkingSignatureLossyFallback:
             enableClaudeThinkingSignatureLossyFallback === true
@@ -2100,6 +2116,12 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
       typeof updates.enableGeneralOpenAIImages !== 'boolean'
     ) {
       return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
+    }
+    if (
+      updates.enableOpenAICodexLiteImages !== undefined &&
+      typeof updates.enableOpenAICodexLiteImages !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableOpenAICodexLiteImages must be a boolean' })
     }
     if (
       updates.enableGeneralPromptCacheAssist !== undefined &&
@@ -2221,6 +2243,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         }
         if (updates.enableGeneralOpenAIImages !== undefined) {
           finalUpdates.enableGeneralOpenAIImages = updates.enableGeneralOpenAIImages
+        }
+        if (updates.enableOpenAICodexLiteImages !== undefined) {
+          finalUpdates.enableOpenAICodexLiteImages = updates.enableOpenAICodexLiteImages
         }
         if (updates.enableGeneralPromptCacheAssist !== undefined) {
           finalUpdates.enableGeneralPromptCacheAssist = updates.enableGeneralPromptCacheAssist
@@ -2391,6 +2416,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       enableGeneralOpenAIEndpoint,
       enableGrokEndpoint,
       enableGeneralOpenAIImages,
+      enableOpenAICodexLiteImages,
       enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback,
       enableOpenAIResponsesCodexAdaptation,
@@ -2655,6 +2681,13 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'enableGeneralOpenAIImages must be a boolean' })
       }
       updates.enableGeneralOpenAIImages = enableGeneralOpenAIImages
+    }
+
+    if (enableOpenAICodexLiteImages !== undefined) {
+      if (typeof enableOpenAICodexLiteImages !== 'boolean') {
+        return res.status(400).json({ error: 'enableOpenAICodexLiteImages must be a boolean' })
+      }
+      updates.enableOpenAICodexLiteImages = enableOpenAICodexLiteImages
     }
 
     if (enableGeneralPromptCacheAssist !== undefined) {

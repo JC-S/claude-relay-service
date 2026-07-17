@@ -646,7 +646,10 @@ function createRequestDetailMeta(req, overrides = {}) {
     durationMs: durationMs ?? (effectiveStart ? Math.max(0, nowMs - effectiveStart) : null),
     requestStartedAt: effectiveStart ? new Date(effectiveStart).toISOString() : null,
     requestBody,
-    upstreamNicIp: overrides.upstreamNicIp ?? req?.upstreamNicIp ?? null
+    upstreamNicIp: overrides.upstreamNicIp ?? req?.upstreamNicIp ?? null,
+    usageType: overrides.usageType ?? req?._responsesLiteUsageType ?? null,
+    webSearchCalls: overrides.webSearchCalls ?? null,
+    responsesLite: overrides.responsesLite ?? req?._responsesLite === true
   }
 }
 

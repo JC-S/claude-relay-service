@@ -8,6 +8,7 @@ const openaiRoutes = require('./openaiRoutes')
 const logger = require('../utils/logger')
 const CostCalculator = require('../utils/costCalculator')
 const { IMAGE_MODEL, prepareOpenAIImageRequest } = require('../utils/openaiImageRequestHelper')
+const { isModelRestricted } = require('../utils/apiKeyModelRestriction')
 
 const router = express.Router()
 const OPENAI_OAUTH_ONLY_OPTIONS = { allowedAccountTypes: ['openai'] }
@@ -53,15 +54,6 @@ function hasGeneralOpenAIAccess(apiKeyData = {}) {
   return (
     apiKeyData.enableGeneralOpenAIEndpoint === true &&
     apiKeyService.hasPermission(apiKeyData.permissions, 'openai')
-  )
-}
-
-function isModelRestricted(apiKeyData = {}, model) {
-  return (
-    Boolean(model) &&
-    apiKeyData.enableModelRestriction === true &&
-    Array.isArray(apiKeyData.restrictedModels) &&
-    apiKeyData.restrictedModels.includes(model)
   )
 }
 

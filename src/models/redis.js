@@ -1050,6 +1050,7 @@ class RedisClient {
       'disableGptFastMode',
       'enableGeneralOpenAIEndpoint',
       'enableGeneralOpenAIImages',
+      'enableOpenAICodexLiteImages',
       'enableGeneralPromptCacheAssist',
       'enableClaudeThinkingSignatureLossyFallback',
       'enableOpenAIResponsesCodexAdaptation',
@@ -1081,6 +1082,9 @@ class RedisClient {
     }
     if (parsed.enableGeneralOpenAIImages === undefined) {
       parsed.enableGeneralOpenAIImages = false
+    }
+    if (parsed.enableOpenAICodexLiteImages === undefined) {
+      parsed.enableOpenAICodexLiteImages = false
     }
     if (parsed.enableGeneralPromptCacheAssist === undefined) {
       parsed.enableGeneralPromptCacheAssist = false

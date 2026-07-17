@@ -106,6 +106,17 @@
                   {{ detail.reasoningSource ? `来源：${detail.reasoningSource}` : '未指定' }}
                 </p>
               </div>
+              <div v-if="detail.usageType || detail.responsesLite || detail.webSearchCalls">
+                <p class="field-label">请求类型</p>
+                <p class="field-value">{{ detail.usageType || 'OpenAI Responses' }}</p>
+                <p class="field-sub">
+                  <span v-if="detail.responsesLite">Responses Lite</span>
+                  <span v-else-if="detail.webSearchCalls">
+                    Web Search {{ detail.webSearchCalls }} 次
+                  </span>
+                  <span v-else>标准请求</span>
+                </p>
+              </div>
               <div>
                 <p class="field-label">出口本地 IP</p>
                 <p class="field-value">{{ detail.upstreamNicIp || '—' }}</p>

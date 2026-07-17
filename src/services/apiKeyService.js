@@ -233,6 +233,7 @@ const V2_INHERIT_CONFIG_FIELDS = [
   'enableGeneralOpenAIEndpoint',
   'enableGrokEndpoint',
   'enableGeneralOpenAIImages',
+  'enableOpenAICodexLiteImages',
   'enableGeneralPromptCacheAssist',
   'enableClaudeThinkingSignatureLossyFallback',
   'enableOpenAIResponsesCodexAdaptation',
@@ -248,6 +249,7 @@ const V2_ADMIN_BOOLEAN_INHERIT_FIELDS = new Set([
   'enableGeneralOpenAIEndpoint',
   'enableGrokEndpoint',
   'enableGeneralOpenAIImages',
+  'enableOpenAICodexLiteImages',
   'enableGeneralPromptCacheAssist',
   'enableClaudeThinkingSignatureLossyFallback',
   'enableOpenAIResponsesCodexAdaptation',
@@ -418,6 +420,7 @@ class ApiKeyService {
       enableGeneralOpenAIEndpoint = false,
       enableGrokEndpoint = false,
       enableGeneralOpenAIImages = false,
+      enableOpenAICodexLiteImages = false,
       enableGeneralPromptCacheAssist = false,
       enableClaudeThinkingSignatureLossyFallback = false,
       enableOpenAIResponsesCodexAdaptation = true,
@@ -508,6 +511,7 @@ class ApiKeyService {
       enableGeneralOpenAIEndpoint: String(enableGeneralOpenAIEndpoint === true),
       enableGrokEndpoint: String(enableGrokEndpoint === true),
       enableGeneralOpenAIImages: String(enableGeneralOpenAIImages === true),
+      enableOpenAICodexLiteImages: String(enableOpenAICodexLiteImages === true),
       enableGeneralPromptCacheAssist: String(enableGeneralPromptCacheAssist === true),
       enableClaudeThinkingSignatureLossyFallback: String(
         enableClaudeThinkingSignatureLossyFallback === true
@@ -605,6 +609,10 @@ class ApiKeyService {
       ),
       enableGrokEndpoint: parseBooleanWithDefault(keyData.enableGrokEndpoint, false),
       enableGeneralOpenAIImages: parseBooleanWithDefault(keyData.enableGeneralOpenAIImages, false),
+      enableOpenAICodexLiteImages: parseBooleanWithDefault(
+        keyData.enableOpenAICodexLiteImages,
+        false
+      ),
       enableGeneralPromptCacheAssist: parseBooleanWithDefault(
         keyData.enableGeneralPromptCacheAssist,
         false
@@ -855,6 +863,10 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIImages,
         false
       )
+      const enableOpenAICodexLiteImages = parseBooleanWithDefault(
+        keyData.enableOpenAICodexLiteImages,
+        false
+      )
       const enableGeneralPromptCacheAssist = parseBooleanWithDefault(
         keyData.enableGeneralPromptCacheAssist,
         false
@@ -908,6 +920,7 @@ class ApiKeyService {
           enableGeneralOpenAIEndpoint,
           enableGrokEndpoint,
           enableGeneralOpenAIImages,
+          enableOpenAICodexLiteImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
@@ -1044,6 +1057,10 @@ class ApiKeyService {
         keyData.enableGeneralOpenAIImages,
         false
       )
+      const enableOpenAICodexLiteImages = parseBooleanWithDefault(
+        keyData.enableOpenAICodexLiteImages,
+        false
+      )
       const enableGeneralPromptCacheAssist = parseBooleanWithDefault(
         keyData.enableGeneralPromptCacheAssist,
         false
@@ -1116,6 +1133,7 @@ class ApiKeyService {
           enableGeneralOpenAIEndpoint,
           enableGrokEndpoint,
           enableGeneralOpenAIImages,
+          enableOpenAICodexLiteImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
           enableOpenAIResponsesCodexAdaptation,
@@ -1406,6 +1424,10 @@ class ApiKeyService {
         key.enableGrokEndpoint = parseBooleanWithDefault(key.enableGrokEndpoint, false)
         key.enableGeneralOpenAIImages = parseBooleanWithDefault(
           key.enableGeneralOpenAIImages,
+          false
+        )
+        key.enableOpenAICodexLiteImages = parseBooleanWithDefault(
+          key.enableOpenAICodexLiteImages,
           false
         )
         key.enableGeneralPromptCacheAssist = parseBooleanWithDefault(
@@ -1730,6 +1752,10 @@ class ApiKeyService {
           key.enableGeneralOpenAIImages,
           false
         )
+        key.enableOpenAICodexLiteImages = parseBooleanWithDefault(
+          key.enableOpenAICodexLiteImages,
+          false
+        )
         key.enableGeneralPromptCacheAssist = parseBooleanWithDefault(
           key.enableGeneralPromptCacheAssist,
           false
@@ -1990,6 +2016,7 @@ class ApiKeyService {
         'enableGeneralOpenAIEndpoint',
         'enableGrokEndpoint',
         'enableGeneralOpenAIImages',
+        'enableOpenAICodexLiteImages',
         'enableGeneralPromptCacheAssist',
         'enableClaudeThinkingSignatureLossyFallback',
         'enableOpenAIResponsesCodexAdaptation',
@@ -2040,6 +2067,7 @@ class ApiKeyService {
             field === 'enableGeneralOpenAIEndpoint' ||
             field === 'enableGrokEndpoint' ||
             field === 'enableGeneralOpenAIImages' ||
+            field === 'enableOpenAICodexLiteImages' ||
             field === 'enableGeneralPromptCacheAssist' ||
             field === 'enableClaudeThinkingSignatureLossyFallback' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
@@ -2951,9 +2979,133 @@ class ApiKeyService {
       realCostBreakdown: usageRecord.realCostBreakdown || usageRecord.costBreakdown || null,
       pricingSource: usageRecord.pricingSource || null,
       usedFallbackPricing: usageRecord.usedFallbackPricing === true,
+      usageType: requestMeta?.usageType || usageRecord.usageType || null,
+      webSearchCalls: requestMeta?.webSearchCalls ?? usageRecord.webSearchCalls ?? 0,
+      responsesLite: requestMeta?.responsesLite === true || usageRecord.responsesLite === true,
       isLongContextRequest:
         usageRecord.isLongContext === true || usageRecord.isLongContextRequest === true
     })
+  }
+
+  async recordFixedCostUsage(
+    keyId,
+    {
+      realCost,
+      service,
+      model,
+      accountId = null,
+      accountType = null,
+      requestMeta = null,
+      usageType = null,
+      webSearchCalls = 0
+    } = {}
+  ) {
+    const normalizedRealCost = Number(realCost)
+    if (!Number.isFinite(normalizedRealCost) || normalizedRealCost < 0) {
+      throw new Error('Fixed usage realCost must be a non-negative number')
+    }
+    if (!service || !model) {
+      throw new Error('Fixed usage service and model are required')
+    }
+
+    const finalizedRequestMeta = finalizeRequestDetailMeta(requestMeta)
+    const ratedCost = await this.calculateRatedCost(keyId, service, normalizedRealCost)
+    const timestamp = new Date().toISOString()
+    let completedStep = 'calculate_rated_cost'
+
+    try {
+      await redis.incrementTokenUsage(
+        keyId,
+        0,
+        0,
+        0,
+        0,
+        0,
+        model,
+        0,
+        0,
+        false,
+        normalizedRealCost,
+        ratedCost
+      )
+      completedStep = 'increment_token_usage'
+
+      await redis.incrementDailyCost(keyId, ratedCost, normalizedRealCost)
+      completedStep = 'increment_daily_cost'
+
+      const keyData = await redis.getApiKey(keyId)
+      if (keyData?.parentKeyId && ratedCost > 0) {
+        await redis.incrementV2ParentTotalCost(keyData.parentKeyId, ratedCost)
+      }
+      completedStep = 'increment_v2_parent_cost'
+
+      const lastUsedAt = timestamp
+      await redis.updateApiKeyFields(keyId, { lastUsedAt })
+      try {
+        const apiKeyIndexService = require('./apiKeyIndexService')
+        await apiKeyIndexService.updateLastUsedAt(keyId, lastUsedAt)
+      } catch (_) {
+        // The source hash remains authoritative if the optional index update fails.
+      }
+      completedStep = 'update_last_used'
+
+      if (accountId) {
+        await redis.incrementAccountUsage(accountId, 0, 0, 0, 0, 0, 0, 0, model, false)
+      }
+      completedStep = 'increment_account_usage'
+
+      const usageRecord = {
+        timestamp,
+        model,
+        accountId,
+        accountType,
+        requestId: finalizedRequestMeta?.requestId || null,
+        endpoint: finalizedRequestMeta?.endpoint || null,
+        method: finalizedRequestMeta?.method || null,
+        statusCode: finalizedRequestMeta?.statusCode || 200,
+        stream: false,
+        durationMs: finalizedRequestMeta?.durationMs ?? null,
+        upstreamNicIp: finalizedRequestMeta?.upstreamNicIp || null,
+        ...pickRequestRecordMetadata(finalizedRequestMeta),
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreateTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 0,
+        cost: Number(ratedCost.toFixed(6)),
+        realCost: Number(normalizedRealCost.toFixed(6)),
+        costBreakdown: null,
+        realCostBreakdown: null,
+        parentKeyId: keyData?.parentKeyId || null,
+        usageType,
+        webSearchCalls,
+        responsesLite: false
+      }
+      await redis.addUsageRecord(keyId, usageRecord)
+      completedStep = 'add_usage_record'
+      await this._captureRequestDetail(keyId, usageRecord, {
+        ...finalizedRequestMeta,
+        usageType,
+        webSearchCalls,
+        responsesLite: false
+      })
+      completedStep = 'capture_request_detail'
+
+      return {
+        realCost: normalizedRealCost,
+        ratedCost,
+        recorded: true
+      }
+    } catch (error) {
+      logger.error('Failed to record fixed-cost usage', {
+        keyId,
+        requestId: finalizedRequestMeta?.requestId || null,
+        completedStep,
+        error: error.message
+      })
+      error.fixedUsageCompletedStep = completedStep
+      throw error
+    }
   }
 
   async _fetchAccountInfo(accountId, accountType, cache, client) {
@@ -3263,6 +3415,10 @@ class ApiKeyService {
         enableGrokEndpoint: parseBooleanWithDefault(keyData.enableGrokEndpoint, false),
         enableGeneralOpenAIImages: parseBooleanWithDefault(
           keyData.enableGeneralOpenAIImages,
+          false
+        ),
+        enableOpenAICodexLiteImages: parseBooleanWithDefault(
+          keyData.enableOpenAICodexLiteImages,
           false
         ),
         enableGeneralPromptCacheAssist: parseBooleanWithDefault(

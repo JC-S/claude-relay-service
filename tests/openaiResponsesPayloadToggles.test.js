@@ -1132,4 +1132,86 @@ describe('openai responses payload toggles', () => {
     expect(req.body.prompt_cache_key).toBe('compact-key')
     expect(req.body.instructions).toBe(openaiRoutes.CODEX_CLI_INSTRUCTIONS)
   })
+
+  test('keeps the exact Lite model and sends the normalized Lite protocol', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        model: 'gpt-5.6-sol',
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+      },
+      headers: {}
+    })
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-sol',
+        instructions: 'Use tools',
+        input: 'hello',
+        tools: [{ type: 'custom', name: 'exec' }],
+        stream: false
+      },
+      extraHeaders: {
+        'x-openai-internal-codex-responses-lite': 'true'
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(unifiedOpenAIScheduler.selectAccountForApiKey).toHaveBeenCalledWith(
+      req.apiKey,
+      null,
+      'gpt-5.6-sol',
+      { allowedAccountTypes: ['openai'] }
+    )
+    expect(axios.post.mock.calls[0][1]).toMatchObject({
+      model: 'gpt-5.6-sol',
+      reasoning: { context: 'all_turns' },
+      parallel_tool_calls: false,
+      store: false
+    })
+    expect(axios.post.mock.calls[0][1].instructions).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].tools).toBeUndefined()
+    expect(axios.post.mock.calls[0][1].input[0]).toMatchObject({
+      type: 'additional_tools',
+      role: 'developer'
+    })
+    expect(axios.post.mock.calls[0][2].headers['x-openai-internal-codex-responses-lite']).toBe(
+      'true'
+    )
+  })
+
+  test('does not recognize or forward non-exact Lite header values', async () => {
+    const req = createReq({
+      body: {
+        model: 'gpt-5-preview',
+        input: 'hello'
+      },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false
+      },
+      extraHeaders: {
+        'x-openai-internal-codex-responses-lite': 'TRUE'
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(req._responsesLite).toBe(false)
+    expect(unifiedOpenAIScheduler.selectAccountForApiKey).toHaveBeenCalledWith(
+      req.apiKey,
+      null,
+      'gpt-5'
+    )
+    expect(openaiResponsesRelayService.handleRequest).toHaveBeenCalled()
+  })
 })

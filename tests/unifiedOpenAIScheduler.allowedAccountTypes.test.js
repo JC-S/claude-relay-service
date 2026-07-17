@@ -102,6 +102,89 @@ describe('unifiedOpenAIScheduler allowed account types', () => {
     })
     expect(openaiResponsesAccountService.getAllAccounts).not.toHaveBeenCalled()
   })
+
+  test('does not touch lastUsedAt when touchLastUsed is false', async () => {
+    const openaiAccount = {
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      isActive: true,
+      status: 'active',
+      accountType: 'shared',
+      schedulable: 'true'
+    }
+    openaiAccountService.getAllAccounts.mockResolvedValue([openaiAccount])
+
+    await scheduler.selectAccountForApiKey({ name: 'Key', openaiAccountId: '' }, null, null, {
+      allowedAccountTypes: ['openai'],
+      touchLastUsed: false
+    })
+
+    expect(openaiAccountService.recordUsage).not.toHaveBeenCalled()
+  })
+
+  test('excludes failed shared accounts and selects the next candidate', async () => {
+    const accounts = [
+      {
+        id: 'openai-1',
+        name: 'First',
+        isActive: true,
+        status: 'active',
+        accountType: 'shared',
+        schedulable: 'true'
+      },
+      {
+        id: 'openai-2',
+        name: 'Second',
+        isActive: true,
+        status: 'active',
+        accountType: 'shared',
+        schedulable: 'true'
+      }
+    ]
+    openaiAccountService.getAllAccounts.mockResolvedValue(accounts)
+
+    const result = await scheduler.selectAccountForApiKey(
+      { name: 'Key', openaiAccountId: '' },
+      null,
+      null,
+      { allowedAccountTypes: ['openai'], excludedAccountIds: ['openai-1'] }
+    )
+
+    expect(result).toEqual({ accountId: 'openai-2', accountType: 'openai' })
+  })
+
+  test('does not fall back to shared pool when an excluded dedicated account is bound', async () => {
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'dedicated-1',
+      name: 'Dedicated',
+      isActive: 'true',
+      status: 'active',
+      schedulable: 'true'
+    })
+    openaiAccountService.getAllAccounts.mockResolvedValue([
+      {
+        id: 'shared-1',
+        name: 'Shared',
+        isActive: true,
+        status: 'active',
+        accountType: 'shared',
+        schedulable: 'true'
+      }
+    ])
+
+    await expect(
+      scheduler.selectAccountForApiKey(
+        { name: 'Key', openaiAccountId: 'dedicated-1' },
+        null,
+        null,
+        { allowedAccountTypes: ['openai'], excludedAccountIds: ['dedicated-1'] }
+      )
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'dedicated_account_excluded'
+    })
+    expect(openaiAccountService.getAllAccounts).not.toHaveBeenCalled()
+  })
 })
 
 describe('unifiedOpenAIScheduler OpenAI Responses auto protection', () => {

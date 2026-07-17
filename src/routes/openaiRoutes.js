@@ -28,13 +28,23 @@ const {
   MAX_UPSTREAM_BODY_BYTES,
   MAX_UPSTREAM_RESPONSE_BYTES,
   OpenAIImageSSEObserver,
-  createImageStreamKeepAlive
+  createImageStreamKeepAlive,
+  prepareOpenAIImageRequest
 } = require('../utils/openaiImageRequestHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
 const { removeGptFastModeFromBody } = require('../utils/gptFastModeHelper')
 const openaiNicSelector = require('../utils/openaiNicSelector')
 const { getHttpsAgentForLocalAddress } = require('../utils/performanceOptimizer')
 const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
+const openaiCodexModelsService = require('../services/openaiCodexModelsService')
+const openaiAlphaSearchService = require('../services/openaiAlphaSearchService')
+const CostCalculator = require('../utils/costCalculator')
+const { isModelRestricted } = require('../utils/apiKeyModelRestriction')
+const {
+  RESPONSES_LITE_HEADER,
+  isResponsesLiteRequest,
+  normalizeOpenAIResponsesLiteBody
+} = require('../utils/openaiResponsesLiteHelper')
 
 const CODEX_UPSTREAM_USER_AGENT =
   'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)'
@@ -202,7 +212,8 @@ function buildCodexUpstreamHeaders({
   accountHeader,
   isStream,
   body = {},
-  userAgentOverride = null
+  userAgentOverride = null,
+  isResponsesLite = false
 }) {
   const headers = {}
 
@@ -215,6 +226,9 @@ function buildCodexUpstreamHeaders({
     'x-client-request-id'
   ]
   passthroughHeaders.forEach((key) => copyHeaderIfPresent(headers, incoming, key))
+  if (isResponsesLite) {
+    headers[RESPONSES_LITE_HEADER] = 'true'
+  }
 
   const userAgent =
     (typeof userAgentOverride === 'string' && userAgentOverride.trim()) ||
@@ -1032,6 +1046,18 @@ const handleResponses = async (req, res) => {
     const compactRoute = isCompactResponsesRoute(req)
     const shouldUseToggleControlledFlow = standardResponsesRoute && !compactRoute
     const isGeneralOpenAIEndpoint = req._generalOpenAIEndpoint === true
+    const isNativeOpenAIResponsesRoute =
+      !isGeneralOpenAIEndpoint &&
+      !req._fromUnifiedEndpoint &&
+      (standardResponsesRoute || compactRoute)
+    const isResponsesLite =
+      isNativeOpenAIResponsesRoute && isResponsesLiteRequest(req.headers || {})
+    req._responsesLite = isResponsesLite
+    req._responsesLiteUsageType = isResponsesLite
+      ? compactRoute
+        ? 'openai_responses_compact_lite'
+        : 'openai_responses_lite'
+      : null
 
     if (isGeneralOpenAIEndpoint && compactRoute) {
       return res.status(404).json({
@@ -1043,7 +1069,29 @@ const handleResponses = async (req, res) => {
       })
     }
 
-    if (isGeneralOpenAIEndpoint && shouldUseToggleControlledFlow) {
+    if (isResponsesLite) {
+      if (shouldUseToggleControlledFlow && apiKeyData.enableOpenAIResponsesPayloadRules === true) {
+        req.body = requestBodyRuleService.applyRules(
+          req.body,
+          apiKeyData.openaiResponsesPayloadRules
+        )
+        logger.info('🧩 Responses Lite request applied API key payload rules')
+      }
+      try {
+        req.body = normalizeOpenAIResponsesLiteBody(req.body)
+      } catch (error) {
+        return res.status(error.statusCode || 400).json({
+          error: {
+            message: error.message,
+            type: error.type || 'invalid_request_error',
+            code: error.code || 'invalid_responses_lite_request'
+          }
+        })
+      }
+      logger.info(
+        `🪶 Responses Lite request normalized for ${compactRoute ? 'compact' : 'responses'}`
+      )
+    } else if (isGeneralOpenAIEndpoint && shouldUseToggleControlledFlow) {
       normalizeGpt5ModelForCodex(req.body)
 
       if (apiKeyData.enableOpenAIResponsesPayloadRules === true) {
@@ -1112,7 +1160,9 @@ const handleResponses = async (req, res) => {
     sessionHash = sessionId ? crypto.createHash('sha256').update(sessionId).digest('hex') : null
 
     const requestedModel = req.body?.model || null
-    const schedulerModel = getCodexCompatibleModel(requestedModel)
+    const schedulerModel = isResponsesLite
+      ? requestedModel
+      : getCodexCompatibleModel(requestedModel)
     const downstreamIsStream =
       typeof req._downstreamStream === 'boolean'
         ? req._downstreamStream
@@ -1131,7 +1181,12 @@ const handleResponses = async (req, res) => {
 
     // 使用调度器选择账户
     {
-      const schedulerOptions = req._openAISchedulerOptions || null
+      const schedulerOptions = isResponsesLite
+        ? {
+            ...(req._openAISchedulerOptions || {}),
+            allowedAccountTypes: ['openai']
+          }
+        : req._openAISchedulerOptions || null
       const tokenArgs = [apiKeyData, sessionId, schedulerModel]
       if (schedulerOptions && Object.keys(schedulerOptions).length > 0) {
         tokenArgs.push(schedulerOptions)
@@ -1147,7 +1202,7 @@ const handleResponses = async (req, res) => {
       return await openaiResponsesRelayService.handleRequest(req, res, account, apiKeyData)
     }
 
-    if (schedulerModel !== requestedModel) {
+    if (!isResponsesLite && schedulerModel !== requestedModel) {
       logger.info(
         `📝 Standard Responses request normalized model ${requestedModel} -> ${schedulerModel} for OpenAI Codex backend`
       )
@@ -1167,7 +1222,8 @@ const handleResponses = async (req, res) => {
       accountHeader: account.accountId || account.chatgptUserId || accountId,
       isStream: upstreamIsStream,
       body: req.body,
-      userAgentOverride
+      userAgentOverride,
+      isResponsesLite
     })
     if (!compactRoute) {
       req.body['store'] = false
@@ -1877,7 +1933,10 @@ const handleResponses = async (req, res) => {
       upstreamNicIp: req.upstreamNicIp || null
     })
     // 优先使用主动设置的 statusCode，然后是上游响应的状态码，最后默认 500
-    const status = error.statusCode || error.response?.status || 500
+    const status =
+      req._responsesLite === true && error.code === 'account_type_not_allowed'
+        ? 503
+        : error.statusCode || error.response?.status || 500
 
     if ((status === 401 || status === 402) && accountId) {
       const statusLabel = status === 401 ? '401错误' : '402错误'
@@ -1913,7 +1972,15 @@ const handleResponses = async (req, res) => {
     }
 
     let responsePayload = error.response?.data
-    if (!responsePayload) {
+    if (req._responsesLite === true && error.code === 'account_type_not_allowed') {
+      responsePayload = {
+        error: {
+          message: 'Codex Responses Lite requires a native OpenAI OAuth account',
+          type: 'server_error',
+          code: 'native_openai_oauth_required'
+        }
+      }
+    } else if (!responsePayload) {
       responsePayload = { error: { message: getSafeMessage(error) } }
     } else if (typeof responsePayload === 'string') {
       responsePayload = { error: { message: getSafeMessage(responsePayload) } }
@@ -1928,6 +1995,119 @@ const handleResponses = async (req, res) => {
     if (!res.headersSent) {
       res.status(status).json(responsePayload)
     }
+  }
+}
+
+function sendOpenAIError(
+  res,
+  status,
+  message,
+  type = 'permission_denied',
+  code = 'permission_denied'
+) {
+  return res.status(status).json({
+    error: {
+      message,
+      type,
+      code
+    }
+  })
+}
+
+async function handleCodexModels(req, res) {
+  if (!checkOpenAIPermissions(req.apiKey)) {
+    return sendOpenAIError(res, 403, 'This API key does not have permission to access OpenAI')
+  }
+  try {
+    const result = await openaiCodexModelsService.getManifest(req)
+    if (result.etag) {
+      res.setHeader('ETag', result.etag)
+    }
+    res.setHeader('Cache-Control', 'private, max-age=30, stale-if-error=300')
+    res.setHeader('X-Codex-Models-Cache', result.cacheState)
+    if (result.status === 304) {
+      return res.status(304).end()
+    }
+    return res.status(200).json(result.body)
+  } catch (error) {
+    const status = error.code === 'account_type_not_allowed' ? 503 : Number(error.statusCode) || 502
+    return sendOpenAIError(
+      res,
+      status,
+      error.code === 'account_type_not_allowed'
+        ? 'Codex private endpoints require a native OpenAI OAuth account'
+        : getSafeMessage(error),
+      status >= 500 ? 'server_error' : 'invalid_request_error',
+      error.code || 'models_manifest_failed'
+    )
+  }
+}
+
+async function handleAlphaSearch(req, res) {
+  if (!checkOpenAIPermissions(req.apiKey)) {
+    return sendOpenAIError(res, 403, 'This API key does not have permission to access OpenAI')
+  }
+  return openaiAlphaSearchService.handle(req, res)
+}
+
+async function handleCodexImageRequest(req, res, endpoint) {
+  let cleanup = async () => {}
+  try {
+    if (!checkOpenAIPermissions(req.apiKey)) {
+      return sendOpenAIError(res, 403, 'This API key does not have permission to access OpenAI')
+    }
+    if (req.apiKey.enableOpenAICodexLiteImages !== true) {
+      return sendOpenAIError(
+        res,
+        403,
+        'This API key is not allowed to access Codex image endpoints',
+        'permission_denied',
+        'codex_images_not_allowed'
+      )
+    }
+    const prepared = await prepareOpenAIImageRequest(req, { endpoint })
+    ;({ cleanup } = prepared)
+    if (isModelRestricted(req.apiKey, IMAGE_MODEL)) {
+      return sendOpenAIError(
+        res,
+        403,
+        `Model ${IMAGE_MODEL} is not allowed for this API key`,
+        'invalid_request_error',
+        'model_not_allowed'
+      )
+    }
+    try {
+      CostCalculator.getValidatedImagePricing(IMAGE_MODEL)
+    } catch (error) {
+      logger.warn(`Codex image pricing preflight failed: ${error.message}`)
+      return sendOpenAIError(
+        res,
+        503,
+        'Pricing is temporarily unavailable for GPT-Image-2',
+        'server_error',
+        'pricing_unavailable'
+      )
+    }
+    req.body = prepared.body
+    req._downstreamStream = prepared.stream
+    req._openAIImageEndpoint = endpoint
+    req._openAIImageRequestSnapshot = prepared.requestSnapshot
+    req._openAISchedulerOptions = { allowedAccountTypes: ['openai'] }
+    return await handleImages(req, res)
+  } catch (error) {
+    if (!res.headersSent) {
+      const status = Number(error.statusCode) || 500
+      return sendOpenAIError(
+        res,
+        status,
+        status >= 500 && !error.statusCode ? 'Internal server error' : error.message,
+        error.type || (status >= 500 ? 'server_error' : 'invalid_request_error'),
+        error.code || (status >= 500 ? 'internal_error' : 'invalid_request')
+      )
+    }
+    return undefined
+  } finally {
+    await cleanup()
   }
 }
 
@@ -2855,6 +3035,22 @@ const handleImages = async (req, res) => {
 }
 
 // 注册两个路由路径，都使用相同的处理函数
+router.get('/models', authenticateApiKey, handleCodexModels)
+router.get('/v1/models', authenticateApiKey, handleCodexModels)
+router.post('/alpha/search', authenticateApiKey, handleAlphaSearch)
+router.post('/v1/alpha/search', authenticateApiKey, handleAlphaSearch)
+router.post('/images/generations', authenticateApiKey, (req, res) =>
+  handleCodexImageRequest(req, res, 'generations')
+)
+router.post('/v1/images/generations', authenticateApiKey, (req, res) =>
+  handleCodexImageRequest(req, res, 'generations')
+)
+router.post('/images/edits', authenticateApiKey, (req, res) =>
+  handleCodexImageRequest(req, res, 'edits')
+)
+router.post('/v1/images/edits', authenticateApiKey, (req, res) =>
+  handleCodexImageRequest(req, res, 'edits')
+)
 router.post('/responses', authenticateApiKey, handleResponses)
 router.post('/v1/responses', authenticateApiKey, handleResponses)
 router.post('/responses/compact', authenticateApiKey, handleResponses)
@@ -2928,6 +3124,8 @@ module.exports = router
 module.exports.handleResponses = handleResponses
 module.exports.handleImages = handleImages
 module.exports.CODEX_CLI_INSTRUCTIONS = CODEX_CLI_INSTRUCTIONS
+module.exports.CODEX_MODELS_DEFAULT_CLIENT_VERSION =
+  openaiCodexModelsService.CODEX_MODELS_DEFAULT_CLIENT_VERSION
 module.exports._buildGeneralOpenAIUpstreamUserAgentForTest = buildGeneralOpenAIUpstreamUserAgent
 module.exports._resetGeneralOpenAIUpstreamUserAgentCacheForTest = () => {
   generalOpenAIUpstreamCodexVersion = null

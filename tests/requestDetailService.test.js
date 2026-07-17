@@ -107,6 +107,9 @@ describe('requestDetailService', () => {
       cacheReadTokens: 3,
       cacheCreateTokens: 2,
       cost: 0.123456,
+      usageType: 'openai_responses_lite',
+      webSearchCalls: 0,
+      responsesLite: true,
       requestBody: {
         apiKey: 'super-secret',
         model: 'gpt-5.4',
@@ -130,6 +133,9 @@ describe('requestDetailService', () => {
     expect(storedPayload.endpoint).toBe('/openai/v1/responses')
     expect(storedPayload.reasoningDisplay).toBe('medium')
     expect(storedPayload.reasoningSource).toBe('reasoning.effort')
+    expect(storedPayload.usageType).toBe('openai_responses_lite')
+    expect(storedPayload.webSearchCalls).toBe(0)
+    expect(storedPayload.responsesLite).toBe(true)
     expect(multi.zadd).toHaveBeenCalled()
     expect(exec).toHaveBeenCalled()
   })

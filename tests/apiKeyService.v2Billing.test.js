@@ -181,6 +181,73 @@ describe('apiKeyService v2 billing', () => {
     expect(amount).not.toBeCloseTo(1, 5) // 不是 realCost
   })
 
+  test('recordFixedCostUsage bills search without fabricating tokens and rolls up to the parent', async () => {
+    const result = await apiKeyService.recordFixedCostUsage(CHILD_ID, {
+      realCost: 0.01,
+      service: 'codex',
+      model: 'codex-web-search',
+      accountId: 'acct-1',
+      accountType: 'openai',
+      requestMeta: {
+        requestId: 'search-1',
+        endpoint: '/openai/v1/alpha/search',
+        method: 'POST',
+        statusCode: 200
+      },
+      usageType: 'openai_web_search',
+      webSearchCalls: 1
+    })
+
+    expect(result).toEqual({
+      realCost: 0.01,
+      ratedCost: expect.closeTo(0.03, 10),
+      recorded: true
+    })
+    expect(redis.incrementTokenUsage).toHaveBeenCalledWith(
+      CHILD_ID,
+      0,
+      0,
+      0,
+      0,
+      0,
+      'codex-web-search',
+      0,
+      0,
+      false,
+      0.01,
+      expect.closeTo(0.03, 10)
+    )
+    expect(redis.incrementDailyCost).toHaveBeenCalledWith(CHILD_ID, expect.closeTo(0.03, 10), 0.01)
+    expect(redis.incrementV2ParentTotalCost).toHaveBeenCalledWith(
+      PARENT_ID,
+      expect.closeTo(0.03, 10)
+    )
+    expect(redis.incrementAccountUsage).toHaveBeenCalledWith(
+      'acct-1',
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      'codex-web-search',
+      false
+    )
+    expect(requestDetailService.captureRequestDetail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 'search-1',
+        model: 'codex-web-search',
+        totalTokens: 0,
+        cost: 0.03,
+        realCost: 0.01,
+        usageType: 'openai_web_search',
+        webSearchCalls: 1,
+        responsesLite: false
+      })
+    )
+  })
+
   test('recordUsage preserves the GPT-5.6 cache-write split and priority tier for every sink', async () => {
     CostCalculator.calculateCost.mockReturnValue({
       costs: {
