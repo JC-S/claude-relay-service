@@ -21,7 +21,13 @@ const {
   CACHE_HIT_FORMULA
 } = require('../utils/requestDetailHelper')
 const { applyDisplayModelToRecord } = require('../utils/modelVariantHelper')
+const serviceRatesService = require('./serviceRatesService')
 const requestDetailIndex = require('./requestDetailIndex')
+const {
+  projectV2RequestDetailRecord,
+  projectV2AvailableFilters
+} = require('../utils/v2RequestDetailProjection')
+const { v2RequestDetailGate } = require('../utils/v2RequestDetailGate')
 const {
   PENDING_AGE_KEY,
   PENDING_VERSION_KEY,
@@ -39,6 +45,7 @@ const REQUEST_DETAIL_QUERY_SNAPSHOT_TTL_SECONDS = 30
 const REQUEST_DETAIL_SQLITE_SNAPSHOT_TTL_SECONDS = 120
 const MAX_REQUEST_DETAIL_SNAPSHOT_POINTERS = 25000
 const MAX_REQUEST_DETAIL_SNAPSHOT_BYTES = 2 * 1024 * 1024
+const MAX_V2_SQLITE_JSON_BYTES = 1024 * 1024
 
 const accountTypeNames = {
   claude: 'Claude官方',
@@ -412,7 +419,8 @@ function normalizeRequestDetailDateBoundarySignature(boundary = {}, legacyValue 
 function createRequestDetailFilterSignature(
   filters = {},
   dateBoundarySignature = {},
-  retentionHours = null
+  retentionHours = null,
+  { scopeType = 'admin', scopeFingerprint = null } = {}
 ) {
   return {
     keyword: normalizeOptionalFilterValue(filters.keyword),
@@ -423,6 +431,8 @@ function createRequestDetailFilterSignature(
     sortOrder: filters.sortOrder === 'asc' ? 'asc' : 'desc',
     retentionHours:
       retentionHours !== null && retentionHours !== undefined ? Number(retentionHours) : null,
+    scopeType: scopeType === 'v2' ? 'v2' : 'admin',
+    scopeFingerprint: scopeType === 'v2' ? normalizeOptionalFilterValue(scopeFingerprint) : null,
     startBoundary: normalizeRequestDetailDateBoundarySignature(dateBoundarySignature.startBoundary),
     endBoundary: normalizeRequestDetailDateBoundarySignature(dateBoundarySignature.endBoundary)
   }
@@ -460,7 +470,11 @@ function requestDetailFilterSignaturesMatch(snapshotSignature, currentSignature)
         value: snapshotSignature?.endDate || null
       }
     },
-    snapshotSignature?.retentionHours
+    snapshotSignature?.retentionHours,
+    {
+      scopeType: snapshotSignature?.scopeType || 'admin',
+      scopeFingerprint: snapshotSignature?.scopeFingerprint || null
+    }
   )
   const normalizedCurrent = createRequestDetailFilterSignature(
     currentSignature,
@@ -468,7 +482,11 @@ function requestDetailFilterSignaturesMatch(snapshotSignature, currentSignature)
       startBoundary: currentSignature?.startBoundary,
       endBoundary: currentSignature?.endBoundary
     },
-    currentSignature?.retentionHours
+    currentSignature?.retentionHours,
+    {
+      scopeType: currentSignature?.scopeType || 'admin',
+      scopeFingerprint: currentSignature?.scopeFingerprint || null
+    }
   )
 
   return (
@@ -479,6 +497,8 @@ function requestDetailFilterSignaturesMatch(snapshotSignature, currentSignature)
     normalizedSnapshot.endpoint === normalizedCurrent.endpoint &&
     normalizedSnapshot.sortOrder === normalizedCurrent.sortOrder &&
     normalizedSnapshot.retentionHours === normalizedCurrent.retentionHours &&
+    normalizedSnapshot.scopeType === normalizedCurrent.scopeType &&
+    normalizedSnapshot.scopeFingerprint === normalizedCurrent.scopeFingerprint &&
     requestDetailDateBoundarySignaturesMatch(
       normalizedSnapshot.startBoundary,
       normalizedCurrent.startBoundary,
@@ -649,6 +669,44 @@ function finalizeAvailableFilters(accumulator) {
       earliest: accumulator.earliest !== null ? new Date(accumulator.earliest).toISOString() : null,
       latest: accumulator.latest !== null ? new Date(accumulator.latest).toISOString() : null
     }
+  }
+}
+
+function finalizeV2AvailableFilters(accumulator) {
+  const filters = finalizeAvailableFilters(accumulator)
+  return projectV2AvailableFilters(filters)
+}
+
+function normalizeV2Context(context) {
+  if (!context) {
+    return null
+  }
+  if (context.projection !== 'v2' || context.scopeType !== 'v2') {
+    throw new RequestDetailValidationError('Invalid request detail projection context')
+  }
+
+  const scope = context.apiKeyScope
+  const childIds = scope?.childIds
+  const expectedChildIds = Array.isArray(childIds)
+    ? [...new Set(childIds.map(String).filter(Boolean))].sort()
+    : null
+  if (
+    !expectedChildIds ||
+    expectedChildIds.length !== childIds.length ||
+    childIds.some((value, index) => value !== expectedChildIds[index]) ||
+    !(scope.childIdSet instanceof Set) ||
+    scope.childIdSet.size !== childIds.length ||
+    childIds.some((value) => !scope.childIdSet.has(value)) ||
+    !(scope.childMap instanceof Map) ||
+    !normalizeOptionalFilterValue(scope.scopeFingerprint)
+  ) {
+    throw new RequestDetailValidationError('Invalid V2 request detail scope')
+  }
+
+  return {
+    projection: 'v2',
+    scopeType: 'v2',
+    apiKeyScope: scope
   }
 }
 
@@ -1253,7 +1311,59 @@ class RequestDetailService {
     return enriched
   }
 
-  _matchesKeyword(record, keyword) {
+  async _prepareV2RecordForDisplay(record, apiKeyScope) {
+    const displayRecord = prepareRecordForDisplay(record)
+    const cacheMetrics = getRequestDetailCacheMetrics(displayRecord)
+    const reasoningInfo = resolveRequestDetailReasoning(displayRecord)
+    let { cost } = displayRecord
+
+    if (displayRecord.costRecomputed === true) {
+      const service = serviceRatesService.getService(
+        displayRecord.accountType,
+        displayRecord.rawModel || displayRecord.model
+      )
+      cost = await serviceRatesService.calculateRatedCostWithKeyRates(
+        displayRecord.realCost,
+        service,
+        apiKeyScope.parentServiceRates
+      )
+    }
+
+    return {
+      ...displayRecord,
+      cost: normalizeNumber(cost, 6),
+      cacheCreateNotApplicable: cacheMetrics.cacheCreateNotApplicable,
+      cacheHitRate: cacheMetrics.rate,
+      cacheHitNumerator: cacheMetrics.numerator,
+      cacheHitDenominator: cacheMetrics.denominator,
+      reasoningDisplay: reasoningInfo.reasoningDisplay,
+      reasoningSource: reasoningInfo.reasoningSource
+    }
+  }
+
+  _getV2ApiKeyName(apiKeyScope, apiKeyId) {
+    const child = apiKeyScope.childMap.get(apiKeyId)
+    if (!child) {
+      return apiKeyId || '未知 Key'
+    }
+    return child.isDeleted ? `${child.name}（已删除）` : child.name
+  }
+
+  async _prepareAndProjectV2Record(record, apiKeyScope) {
+    if (!record?.apiKeyId || !apiKeyScope.childIdSet.has(record.apiKeyId)) {
+      return null
+    }
+    const displayRecord = await this._prepareV2RecordForDisplay(record, apiKeyScope)
+    if (!apiKeyScope.childIdSet.has(displayRecord.apiKeyId)) {
+      return null
+    }
+    return projectV2RequestDetailRecord({
+      ...displayRecord,
+      apiKeyName: this._getV2ApiKeyName(apiKeyScope, displayRecord.apiKeyId)
+    })
+  }
+
+  _matchesKeyword(record, keyword, isV2 = false) {
     if (!keyword) {
       return true
     }
@@ -1267,13 +1377,13 @@ class RequestDetailService {
       record.requestId,
       record.apiKeyId,
       record.apiKeyName,
-      record.accountId,
-      record.accountName,
-      record.accountTypeName,
       record.model,
       record.endpoint,
       record.method
     ]
+    if (!isV2) {
+      haystacks.push(record.accountId, record.accountName, record.accountTypeName)
+    }
 
     return haystacks.some((value) =>
       String(value || '')
@@ -1282,11 +1392,11 @@ class RequestDetailService {
     )
   }
 
-  _matchesStructuredFilters(record, filters = {}) {
+  _matchesStructuredFilters(record, filters = {}, isV2 = false) {
     if (filters.apiKeyId && record.apiKeyId !== filters.apiKeyId) {
       return false
     }
-    if (filters.accountId && record.accountId !== filters.accountId) {
+    if (!isV2 && filters.accountId && record.accountId !== filters.accountId) {
       return false
     }
     if (filters.model && record.model !== filters.model) {
@@ -1377,12 +1487,22 @@ class RequestDetailService {
     }
   }
 
-  async _buildPageRecords(pagePointers = []) {
+  async _buildPageRecords(pagePointers = [], context = null) {
     if (!Array.isArray(pagePointers) || pagePointers.length === 0) {
       return []
     }
 
     const rawRecords = await this._loadRecordsForPointers(pagePointers)
+    if (context?.scopeType === 'v2') {
+      const projected = []
+      for (const record of rawRecords) {
+        const safeRecord = await this._prepareAndProjectV2Record(record, context.apiKeyScope)
+        if (safeRecord) {
+          projected.push(safeRecord)
+        }
+      }
+      return projected
+    }
     const enrichedRecords = await this._enrichRecords(rawRecords)
 
     return enrichedRecords.map((record) => ({
@@ -1391,7 +1511,69 @@ class RequestDetailService {
     }))
   }
 
-  async _buildListQueryData(filters, effectiveStart, effectiveEnd, sortOrder) {
+  async _buildV2ListQueryData(filters, effectiveStart, effectiveEnd, sortOrder, context) {
+    const requestPointers = await this._loadRequestPointersInRange(effectiveStart, effectiveEnd)
+    if (requestPointers.length === 0) {
+      return {
+        hasSourceRecords: false,
+        matchedPointers: [],
+        availableFilters: finalizeV2AvailableFilters(createAvailableFilterAccumulator()),
+        summary: finalizeSummary(createSummaryAccumulator())
+      }
+    }
+
+    requestPointers.sort((a, b) =>
+      sortOrder === 'asc' ? a.timestampMs - b.timestampMs : b.timestampMs - a.timestampMs
+    )
+    const availableFilterAccumulator = createAvailableFilterAccumulator()
+    const summaryAccumulator = createSummaryAccumulator()
+    const matchedPointers = []
+    const client = redis.getClient()
+    const { apiKeyScope } = context
+
+    for (
+      let startIndex = 0;
+      startIndex < requestPointers.length;
+      startIndex += REQUEST_DETAIL_QUERY_BATCH_SIZE
+    ) {
+      const pointerBatch = requestPointers.slice(
+        startIndex,
+        startIndex + REQUEST_DETAIL_QUERY_BATCH_SIZE
+      )
+      const recordItems = await this._loadPointerBatchRecords(pointerBatch, client)
+      for (const { record, pointer } of recordItems) {
+        if (!record.apiKeyId || !apiKeyScope.childIdSet.has(record.apiKeyId)) {
+          continue
+        }
+        const displayRecord = await this._prepareV2RecordForDisplay(record, apiKeyScope)
+        displayRecord.apiKeyName = this._getV2ApiKeyName(apiKeyScope, displayRecord.apiKeyId)
+        updateAvailableFilterAccumulator(availableFilterAccumulator, displayRecord)
+        if (
+          !this._matchesStructuredFilters(displayRecord, filters, true) ||
+          !this._matchesKeyword(displayRecord, filters.keyword, true)
+        ) {
+          continue
+        }
+        updateSummaryAccumulator(summaryAccumulator, displayRecord)
+        matchedPointers.push({
+          requestId: displayRecord.requestId,
+          timestampMs: toMillis(displayRecord.timestamp) ?? pointer.timestampMs
+        })
+      }
+    }
+
+    return {
+      hasSourceRecords: true,
+      matchedPointers,
+      availableFilters: finalizeV2AvailableFilters(availableFilterAccumulator),
+      summary: finalizeSummary(summaryAccumulator)
+    }
+  }
+
+  async _buildListQueryData(filters, effectiveStart, effectiveEnd, sortOrder, context = null) {
+    if (context?.scopeType === 'v2') {
+      return this._buildV2ListQueryData(filters, effectiveStart, effectiveEnd, sortOrder, context)
+    }
     const requestPointers = await this._loadRequestPointersInRange(effectiveStart, effectiveEnd)
     if (requestPointers.length === 0) {
       return {
@@ -1619,6 +1801,7 @@ class RequestDetailService {
       startMs: queryData.startMs,
       endMs: queryData.endMs,
       dynamicKeyIds: queryData.dynamicKeyIds,
+      dynamicKeyIdsJson: queryData.dynamicKeyIdsJson,
       dynamicAccounts: queryData.dynamicAccounts,
       summary: queryData.summary,
       availableFilters: queryData.availableFilters,
@@ -1641,7 +1824,7 @@ class RequestDetailService {
     }
   }
 
-  async _resolveSqliteDimensions(phaseA, keyword) {
+  async _resolveSqliteDimensions(phaseA, keyword, context = null) {
     const accumulator = createAvailableFilterAccumulator()
     const apiKeyCache = new Map()
     const accountCache = new Map()
@@ -1652,31 +1835,46 @@ class RequestDetailService {
     const dynamicAccounts = []
 
     for (const keyId of phaseA.apiKeyIds || []) {
-      const name = (await this._getApiKeyName(keyId, apiKeyCache)) || keyId
+      const name =
+        context?.scopeType === 'v2'
+          ? this._getV2ApiKeyName(context.apiKeyScope, keyId)
+          : (await this._getApiKeyName(keyId, apiKeyCache)) || keyId
       accumulator.apiKeyMap.set(keyId, { id: keyId, name })
       if (normalizedKeyword && String(name).toLowerCase().includes(normalizedKeyword)) {
         dynamicKeyIds.push(keyId)
       }
     }
 
-    const representativeById = new Map(
-      (phaseA.accountRepresentatives || []).map((account) => [account.accountId, account])
-    )
-    for (const account of phaseA.accounts || []) {
-      const info = await this._resolveAccountInfo(
-        account.accountId,
-        account.accountType,
-        accountCache
+    if (context?.scopeType !== 'v2') {
+      const representativeById = new Map(
+        (phaseA.accountRepresentatives || []).map((account) => [account.accountId, account])
       )
-      if (normalizedKeyword && info?.accountType !== account.accountType) {
-        const error = new Error('Resolved request detail account type differs from stored type')
-        error.code = 'REQUEST_DETAIL_SQLITE_PARITY_FALLBACK'
-        throw error
-      }
-      const representative = representativeById.get(account.accountId) || account
-      let entry = accumulator.accountMap.get(account.accountId)
-      if (!entry && representative.accountType === account.accountType) {
-        entry = {
+      for (const account of phaseA.accounts || []) {
+        const info = await this._resolveAccountInfo(
+          account.accountId,
+          account.accountType,
+          accountCache
+        )
+        if (normalizedKeyword && info?.accountType !== account.accountType) {
+          const error = new Error('Resolved request detail account type differs from stored type')
+          error.code = 'REQUEST_DETAIL_SQLITE_PARITY_FALLBACK'
+          throw error
+        }
+        const representative = representativeById.get(account.accountId) || account
+        let entry = accumulator.accountMap.get(account.accountId)
+        if (!entry && representative.accountType === account.accountType) {
+          entry = {
+            id: account.accountId,
+            name: info?.accountName || account.accountId,
+            accountType: info?.accountType || account.accountType || 'unknown',
+            accountTypeName:
+              info?.accountTypeName ||
+              accountTypeNames[account.accountType] ||
+              accountTypeNames.unknown
+          }
+          accumulator.accountMap.set(account.accountId, entry)
+        }
+        entry ||= {
           id: account.accountId,
           name: info?.accountName || account.accountId,
           accountType: info?.accountType || account.accountType || 'unknown',
@@ -1685,27 +1883,19 @@ class RequestDetailService {
             accountTypeNames[account.accountType] ||
             accountTypeNames.unknown
         }
-        accumulator.accountMap.set(account.accountId, entry)
-      }
-      entry ||= {
-        id: account.accountId,
-        name: info?.accountName || account.accountId,
-        accountType: info?.accountType || account.accountType || 'unknown',
-        accountTypeName:
-          info?.accountTypeName || accountTypeNames[account.accountType] || accountTypeNames.unknown
-      }
-      if (
-        normalizedKeyword &&
-        [entry.name, entry.accountTypeName].some((value) =>
-          String(value || '')
-            .toLowerCase()
-            .includes(normalizedKeyword)
-        )
-      ) {
-        dynamicAccounts.push({
-          accountId: account.accountId,
-          accountType: account.accountType
-        })
+        if (
+          normalizedKeyword &&
+          [entry.name, entry.accountTypeName].some((value) =>
+            String(value || '')
+              .toLowerCase()
+              .includes(normalizedKeyword)
+          )
+        ) {
+          dynamicAccounts.push({
+            accountId: account.accountId,
+            accountType: account.accountType
+          })
+        }
       }
     }
 
@@ -1717,19 +1907,33 @@ class RequestDetailService {
     }
     accumulator.earliest = phaseA.source?.earliest ?? null
     accumulator.latest = phaseA.source?.latest ?? null
-    if (dynamicKeyIds.length + dynamicAccounts.length * 2 > 450) {
+    if (context?.scopeType !== 'v2' && dynamicKeyIds.length + dynamicAccounts.length * 2 > 450) {
       const error = new Error('Too many dynamic request detail keyword bindings')
       error.code = 'REQUEST_DETAIL_SQLITE_PARITY_FALLBACK'
       throw error
     }
+    const dynamicKeyIdsJson =
+      context?.scopeType === 'v2' ? JSON.stringify(dynamicKeyIds.sort()) : null
+    if (
+      dynamicKeyIdsJson &&
+      Buffer.byteLength(dynamicKeyIdsJson, 'utf8') > MAX_V2_SQLITE_JSON_BYTES
+    ) {
+      const error = new Error('V2 request detail keyword scope is too large')
+      error.code = 'REQUEST_DETAIL_SQLITE_V2_SCOPE_TOO_LARGE'
+      throw error
+    }
     return {
-      availableFilters: finalizeAvailableFilters(accumulator),
+      availableFilters:
+        context?.scopeType === 'v2'
+          ? finalizeV2AvailableFilters(accumulator)
+          : finalizeAvailableFilters(accumulator),
       dynamicKeyIds,
-      dynamicAccounts
+      dynamicAccounts,
+      dynamicKeyIdsJson
     }
   }
 
-  async _applySqliteEligibleCostAdjustment(aggregate, eligible = []) {
+  async _applySqliteEligibleCostAdjustment(aggregate, eligible = [], context = null) {
     let totalCostMicros = Number(aggregate.cost_micros || 0)
     if (!eligible.length) {
       return totalCostMicros
@@ -1738,16 +1942,23 @@ class RequestDetailService {
     const rawItems = await client.mget(
       eligible.map(({ requestId }) => `${REQUEST_DETAIL_ITEM_PREFIX}${requestId}`)
     )
-    rawItems.forEach((rawItem, index) => {
+    for (let index = 0; index < rawItems.length; index += 1) {
+      const rawItem = rawItems[index]
       const record = safeJsonParse(rawItem)
       if (!record) {
-        return
+        continue
       }
-      const displayRecord = prepareRecordForDisplay(record)
+      if (context?.scopeType === 'v2' && !context.apiKeyScope.childIdSet.has(record.apiKeyId)) {
+        continue
+      }
+      const displayRecord =
+        context?.scopeType === 'v2'
+          ? await this._prepareV2RecordForDisplay(record, context.apiKeyScope)
+          : prepareRecordForDisplay(record)
       totalCostMicros +=
         Math.round(normalizeNumber(displayRecord.cost, 6) * 1e6) -
         Number(eligible[index].costMicros || 0)
-    })
+    }
     return totalCostMicros
   }
 
@@ -1773,6 +1984,22 @@ class RequestDetailService {
     }
   }
 
+  _getSqliteV2ScopePayload(context) {
+    if (context?.scopeType !== 'v2') {
+      return {}
+    }
+    const apiKeyScopeJson = JSON.stringify(context.apiKeyScope.childIds)
+    if (Buffer.byteLength(apiKeyScopeJson, 'utf8') > MAX_V2_SQLITE_JSON_BYTES) {
+      const error = new Error('V2 request detail scope is too large')
+      error.code = 'REQUEST_DETAIL_SQLITE_V2_SCOPE_TOO_LARGE'
+      throw error
+    }
+    return {
+      scopeType: 'v2',
+      apiKeyScopeJson
+    }
+  }
+
   async _buildSqliteListResponse({
     settings,
     filters,
@@ -1782,8 +2009,10 @@ class RequestDetailService {
     effectiveEnd,
     page,
     pageSize,
-    sortOrder
+    sortOrder,
+    context = null
   }) {
+    const scopePayload = this._getSqliteV2ScopePayload(context)
     const sessionId = requestDetailIndex.beginQuerySession()
     if (!sessionId) {
       throw new Error('Request detail SQLite query admission rejected')
@@ -1794,7 +2023,8 @@ class RequestDetailService {
         endMs: effectiveEnd.getTime(),
         snapshotCreatedAt: Date.now(),
         sortOrder,
-        hasKeyword: Boolean(filters.keyword?.trim())
+        hasKeyword: Boolean(filters.keyword?.trim()),
+        ...scopePayload
       })
       if (!phaseA.source?.count) {
         requestDetailIndex.endQuerySession(sessionId)
@@ -1803,7 +2033,7 @@ class RequestDetailService {
           filters: responseFilters
         }
       }
-      const dimensions = await this._resolveSqliteDimensions(phaseA, filters.keyword)
+      const dimensions = await this._resolveSqliteDimensions(phaseA, filters.keyword, context)
       const phaseB = await requestDetailIndex.phaseB(sessionId, {
         startMs: effectiveStart.getTime(),
         endMs: effectiveEnd.getTime(),
@@ -1811,11 +2041,13 @@ class RequestDetailService {
         snapshotSequence: phaseA.snapshotSequence,
         filters,
         dynamicKeyIds: dimensions.dynamicKeyIds,
+        dynamicKeyIdsJson: dimensions.dynamicKeyIdsJson,
         dynamicAccounts: dimensions.dynamicAccounts,
         page,
         pageSize,
         sortOrder,
-        recomputeLimit: requestDetailIndex.config.recomputeLimit
+        recomputeLimit: requestDetailIndex.config.recomputeLimit,
+        ...scopePayload
       })
       if (Number(phaseB.aggregate.eligible_count || 0) > requestDetailIndex.config.recomputeLimit) {
         const error = new Error('Request detail SQLite pricing recompute limit exceeded')
@@ -1824,7 +2056,8 @@ class RequestDetailService {
       }
       const totalCostMicros = await this._applySqliteEligibleCostAdjustment(
         phaseB.aggregate,
-        phaseB.eligible
+        phaseB.eligible,
+        context
       )
       const summary = this._finalizeSqliteSummary(phaseB.aggregate, totalCostMicros)
       const queryData = {
@@ -1835,6 +2068,7 @@ class RequestDetailService {
         startMs: effectiveStart.getTime(),
         endMs: effectiveEnd.getTime(),
         dynamicKeyIds: dimensions.dynamicKeyIds,
+        dynamicKeyIdsJson: dimensions.dynamicKeyIdsJson,
         dynamicAccounts: dimensions.dynamicAccounts,
         summary,
         availableFilters: dimensions.availableFilters,
@@ -1846,7 +2080,7 @@ class RequestDetailService {
         responseFilters,
         sortOrder
       )
-      const records = await this._buildPageRecords(phaseB.pointers)
+      const records = await this._buildPageRecords(phaseB.pointers, context)
       return {
         captureEnabled: settings.captureEnabled,
         retentionHours: settings.retentionHours,
@@ -1871,7 +2105,16 @@ class RequestDetailService {
     }
   }
 
-  async _buildSqliteSnapshotPage(snapshot, settings, responseFilters, filters, page, pageSize) {
+  async _buildSqliteSnapshotPage(
+    snapshot,
+    settings,
+    responseFilters,
+    filters,
+    page,
+    pageSize,
+    context = null
+  ) {
+    const scopePayload = this._getSqliteV2ScopePayload(context)
     const result = await requestDetailIndex.page({
       generation: snapshot.generation,
       mutationEpoch: snapshot.mutationEpoch,
@@ -1882,18 +2125,20 @@ class RequestDetailService {
       snapshotSequence: snapshot.snapshotSequence,
       filters,
       dynamicKeyIds: snapshot.dynamicKeyIds || [],
+      dynamicKeyIdsJson: snapshot.dynamicKeyIdsJson || '[]',
       dynamicAccounts: snapshot.dynamicAccounts || [],
       totalRecords: snapshot.totalRecords,
       page,
       pageSize,
-      sortOrder: snapshot.sortOrder
+      sortOrder: snapshot.sortOrder,
+      ...scopePayload
     })
     if (result.stale) {
       const error = new Error('Request detail SQLite snapshot is stale')
       error.code = 'REQUEST_DETAIL_SQLITE_STALE_SNAPSHOT'
       throw error
     }
-    const records = await this._buildPageRecords(result.pointers)
+    const records = await this._buildPageRecords(result.pointers, context)
     return {
       captureEnabled: settings.captureEnabled,
       retentionHours: settings.retentionHours,
@@ -1922,10 +2167,11 @@ class RequestDetailService {
     summary,
     page,
     pageSize,
-    snapshotId = null
+    snapshotId = null,
+    context = null
   }) {
     const pagination = this._paginateMatchedPointers(matchedPointers, page, pageSize)
-    const pageRecords = await this._buildPageRecords(pagination.pagePointers)
+    const pageRecords = await this._buildPageRecords(pagination.pagePointers, context)
 
     return {
       captureEnabled: settings.captureEnabled,
@@ -1947,16 +2193,105 @@ class RequestDetailService {
     }
   }
 
-  async listRequestDetails(filters = {}) {
+  async _runColdListQuery({
+    settings,
+    emptyResult,
+    filters,
+    responseFilters,
+    filterSignature,
+    effectiveStart,
+    effectiveEnd,
+    page,
+    pageSize,
+    sortOrder,
+    context
+  }) {
+    if (requestDetailIndex.shouldUseSqlite() && (await requestDetailIndex.prepareForQuery())) {
+      try {
+        return await this._buildSqliteListResponse({
+          settings,
+          filters,
+          responseFilters,
+          filterSignature,
+          effectiveStart,
+          effectiveEnd,
+          page,
+          pageSize,
+          sortOrder,
+          context
+        })
+      } catch (error) {
+        logger.debug(`Request detail SQLite query fallback: ${error.message}`)
+        requestDetailIndex.recordFallback(error.code || 'query_error')
+      }
+    }
+
+    const queryData = await this._buildListQueryData(
+      filters,
+      effectiveStart,
+      effectiveEnd,
+      sortOrder,
+      context
+    )
+    if (!queryData.hasSourceRecords) {
+      return {
+        ...emptyResult,
+        captureEnabled: settings.captureEnabled,
+        retentionHours: settings.retentionHours,
+        bodyPreviewEnabled: settings.bodyPreviewEnabled,
+        snapshotId: null,
+        filters: responseFilters,
+        availableFilters:
+          context?.scopeType === 'v2'
+            ? projectV2AvailableFilters(emptyResult.availableFilters)
+            : emptyResult.availableFilters
+      }
+    }
+
+    const snapshotId = await this._storeQuerySnapshot(
+      filterSignature,
+      queryData,
+      responseFilters,
+      sortOrder
+    )
+
+    return this._buildListResponse({
+      settings,
+      responseFilters,
+      matchedPointers: queryData.matchedPointers,
+      availableFilters: queryData.availableFilters,
+      summary: queryData.summary,
+      page,
+      pageSize,
+      snapshotId,
+      context
+    })
+  }
+
+  async listRequestDetails(filters = {}, rawContext = null) {
+    const context = normalizeV2Context(rawContext)
     filters = {
       ...filters,
       apiKeyId: normalizeOptionalFilterValue(filters.apiKeyId),
-      accountId: normalizeOptionalFilterValue(filters.accountId),
+      accountId: context ? null : normalizeOptionalFilterValue(filters.accountId),
       model: normalizeOptionalFilterValue(filters.model),
       endpoint: normalizeOptionalFilterValue(filters.endpoint)
     }
+    if (context && filters.apiKeyId && !context.apiKeyScope.childIdSet.has(filters.apiKeyId)) {
+      throw new RequestDetailValidationError('API key is outside the V2 request detail scope')
+    }
     const settings = await this.getSettings()
     const emptyResult = this._emptyListResult(settings, filters)
+    if (context && context.apiKeyScope.childIds.length === 0) {
+      return {
+        ...emptyResult,
+        captureEnabled: undefined,
+        retentionHours: undefined,
+        bodyPreviewEnabled: undefined,
+        filters: undefined,
+        availableFilters: projectV2AvailableFilters(emptyResult.availableFilters)
+      }
+    }
 
     const now = new Date()
     const retentionStart = new Date(now.getTime() - settings.retentionHours * 3600 * 1000)
@@ -1999,7 +2334,13 @@ class RequestDetailService {
           now
         )
       },
-      settings.retentionHours
+      settings.retentionHours,
+      context
+        ? {
+            scopeType: 'v2',
+            scopeFingerprint: context.apiKeyScope.scopeFingerprint
+          }
+        : undefined
     )
 
     let snapshot = await this._loadQuerySnapshot(filters.snapshotId, filterSignature)
@@ -2013,7 +2354,8 @@ class RequestDetailService {
               responseFilters,
               filters,
               page,
-              pageSize
+              pageSize,
+              context
             )
           } catch (error) {
             logger.debug(`Request detail SQLite page fallback: ${error.message}`)
@@ -2033,63 +2375,48 @@ class RequestDetailService {
         summary: snapshot.summary,
         page,
         pageSize,
-        snapshotId: snapshot.snapshotId
+        snapshotId: snapshot.snapshotId,
+        context
       })
     }
 
-    if (requestDetailIndex.shouldUseSqlite() && (await requestDetailIndex.prepareForQuery())) {
-      try {
-        return await this._buildSqliteListResponse({
-          settings,
-          filters,
-          responseFilters,
-          filterSignature,
-          effectiveStart,
-          effectiveEnd,
-          page,
-          pageSize,
-          sortOrder
-        })
-      } catch (error) {
-        logger.debug(`Request detail SQLite query fallback: ${error.message}`)
-        requestDetailIndex.recordFallback(error.code || 'query_error')
-      }
+    const coldQuery = () =>
+      this._runColdListQuery({
+        settings,
+        emptyResult,
+        filters,
+        responseFilters,
+        filterSignature,
+        effectiveStart,
+        effectiveEnd,
+        page,
+        pageSize,
+        sortOrder,
+        context
+      })
+    return context ? v2RequestDetailGate.run(coldQuery) : coldQuery()
+  }
+
+  async getV2RequestDetail(requestId, rawContext) {
+    const context = normalizeV2Context(rawContext)
+    const client = redis.getClient()
+    if (!client) {
+      return null
+    }
+    const raw = await client.get(`${REQUEST_DETAIL_ITEM_PREFIX}${requestId}`)
+    const parsed = safeJsonParse(raw)
+    if (!parsed || !parsed.apiKeyId || !context.apiKeyScope.childIdSet.has(parsed.apiKeyId)) {
+      return null
     }
 
-    const queryData = await this._buildListQueryData(
-      filters,
-      effectiveStart,
-      effectiveEnd,
-      sortOrder
-    )
-    if (!queryData.hasSourceRecords) {
-      return {
-        ...emptyResult,
-        captureEnabled: settings.captureEnabled,
-        retentionHours: settings.retentionHours,
-        bodyPreviewEnabled: settings.bodyPreviewEnabled,
-        snapshotId: null,
-        filters: responseFilters
-      }
+    const settings = await this.getSettings()
+    const timestampMs = toMillis(parsed.timestamp)
+    const retentionStartMs = Date.now() - settings.retentionHours * 3600 * 1000
+    if (timestampMs === null || timestampMs < retentionStartMs || timestampMs > Date.now()) {
+      return null
     }
 
-    const snapshotId = await this._storeQuerySnapshot(
-      filterSignature,
-      queryData,
-      responseFilters,
-      sortOrder
-    )
-
-    return this._buildListResponse({
-      settings,
-      responseFilters,
-      matchedPointers: queryData.matchedPointers,
-      availableFilters: queryData.availableFilters,
-      summary: queryData.summary,
-      page,
-      pageSize,
-      snapshotId
-    })
+    return this._prepareAndProjectV2Record(parsed, context.apiKeyScope)
   }
 
   async getRequestDetail(requestId) {
@@ -2154,3 +2481,5 @@ class RequestDetailService {
 module.exports = new RequestDetailService()
 module.exports.REQUEST_DETAIL_ITEM_PREFIX = REQUEST_DETAIL_ITEM_PREFIX
 module.exports.REQUEST_DETAIL_DAY_INDEX_PREFIX = REQUEST_DETAIL_DAY_INDEX_PREFIX
+module.exports.createRequestDetailFilterSignature = createRequestDetailFilterSignature
+module.exports.requestDetailFilterSignaturesMatch = requestDetailFilterSignaturesMatch

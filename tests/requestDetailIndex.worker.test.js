@@ -198,4 +198,110 @@ describe('request detail SQLite Worker', () => {
     expect(phaseB.aggregate.input_tokens).toBe(10)
     expect(phaseB.aggregate.cost_micros).toBe(123)
   })
+
+  test('applies V2 scope to phase A, phase B and snapshot pages', async () => {
+    await client.call('upsertBatch', {
+      rows: [
+        makeRow('req_child_a', { api_key_id: 'child_a' }),
+        makeRow('req_child_b', { api_key_id: 'child_b', input_tokens: 99 })
+      ]
+    })
+    const scope = {
+      scopeType: 'v2',
+      apiKeyScopeJson: JSON.stringify(['child_a'])
+    }
+    const phaseA = await client.call('phaseA', {
+      startMs: 0,
+      endMs: Date.now(),
+      snapshotCreatedAt: Date.now(),
+      sortOrder: 'desc',
+      hasKeyword: false,
+      ...scope
+    })
+    expect(phaseA.source.count).toBe(1)
+    expect(phaseA.apiKeyIds).toEqual(['child_a'])
+    expect(phaseA.accounts).toEqual([])
+    expect(phaseA.accountRepresentatives).toEqual([])
+
+    const phaseB = await client.call('phaseB', {
+      startMs: 0,
+      endMs: Date.now(),
+      snapshotCreatedAt: phaseA.snapshotCreatedAt,
+      snapshotSequence: phaseA.snapshotSequence,
+      filters: {},
+      dynamicKeyIdsJson: '[]',
+      page: 1,
+      pageSize: 50,
+      sortOrder: 'desc',
+      recomputeLimit: 256,
+      ...scope
+    })
+    expect(phaseB.totalRecords).toBe(1)
+    expect(phaseB.aggregate.input_tokens).toBe(10)
+    expect(phaseB.pointers[0].requestId).toBe('req_child_a')
+
+    const page = await client.call('page', {
+      generation: phaseA.meta.generation,
+      mutationEpoch: Number(phaseA.meta.mutation_epoch),
+      expiresAt: Date.now() + 60000,
+      startMs: 0,
+      endMs: Date.now(),
+      snapshotCreatedAt: phaseA.snapshotCreatedAt,
+      snapshotSequence: phaseA.snapshotSequence,
+      filters: {},
+      dynamicKeyIdsJson: '[]',
+      totalRecords: 1,
+      page: 1,
+      pageSize: 50,
+      sortOrder: 'desc',
+      ...scope
+    })
+    expect(page.pointers.map((pointer) => pointer.requestId)).toEqual(['req_child_a'])
+  })
+
+  test('uses safe V2 keyword columns and JSON dynamic child IDs', async () => {
+    await client.call('upsertBatch', {
+      rows: [
+        makeRow('req_safe', {
+          api_key_id: 'child_named',
+          account_id: 'secret-account',
+          search_text: 'secret-account'
+        })
+      ]
+    })
+    const phaseA = await client.call('phaseA', {
+      startMs: 0,
+      endMs: Date.now(),
+      snapshotCreatedAt: Date.now(),
+      sortOrder: 'desc',
+      hasKeyword: true,
+      scopeType: 'v2',
+      apiKeyScopeJson: JSON.stringify(['child_named'])
+    })
+    const base = {
+      startMs: 0,
+      endMs: Date.now(),
+      snapshotCreatedAt: phaseA.snapshotCreatedAt,
+      snapshotSequence: phaseA.snapshotSequence,
+      page: 1,
+      pageSize: 50,
+      sortOrder: 'desc',
+      recomputeLimit: 256,
+      scopeType: 'v2',
+      apiKeyScopeJson: JSON.stringify(['child_named'])
+    }
+    const hiddenAccount = await client.call('phaseB', {
+      ...base,
+      filters: { keyword: 'secret-account' },
+      dynamicKeyIdsJson: '[]'
+    })
+    expect(hiddenAccount.totalRecords).toBe(0)
+
+    const dynamicName = await client.call('phaseB', {
+      ...base,
+      filters: { keyword: 'friendly child' },
+      dynamicKeyIdsJson: JSON.stringify(['child_named'])
+    })
+    expect(dynamicName.totalRecords).toBe(1)
+  })
 })

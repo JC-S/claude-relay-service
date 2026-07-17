@@ -18,7 +18,7 @@ const SettingsView = () => import('@/views/SettingsView.vue')
 const ApiStatsView = () => import('@/views/ApiStatsView.vue')
 const TutorialView = () => import('@/views/TutorialView.vue')
 const QuotaCardsView = () => import('@/views/QuotaCardsView.vue')
-const RequestDetailsView = () => import('@/views/RequestDetailsView.vue')
+const RequestDetailsRouteView = () => import('@/views/RequestDetailsRouteView.vue')
 
 const routes = [
   {
@@ -181,7 +181,7 @@ const routes = [
       {
         path: '',
         name: 'RequestDetails',
-        component: RequestDetailsView
+        component: RequestDetailsRouteView
       }
     ]
   },
@@ -256,7 +256,7 @@ router.beforeEach(async (to, from, next) => {
     authStore.isAuthenticated &&
     authStore.userRole === 'v2' &&
     to.meta.requiresAuth &&
-    !['/api-keys', '/tutorial'].includes(to.path)
+    !['/api-keys', '/request-details', '/tutorial'].includes(to.path)
   ) {
     // v2 账号只能访问 API Keys 和使用教程，其余受保护页面一律回到 /api-keys
     next('/api-keys')

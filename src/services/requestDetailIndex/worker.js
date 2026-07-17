@@ -35,6 +35,7 @@ let databasePath = null
 let statements = null
 let workerState = 'idle'
 let rebuildSession = null
+let jsonEachAvailable = false
 
 function createSchema(db) {
   db.exec(`
@@ -200,6 +201,12 @@ function initialize(options) {
   databasePath = options.sqlitePath
   database = new Database(options.sqlitePath)
   configureDatabase(options)
+  try {
+    database.prepare("SELECT count(*) AS count FROM json_each('[]')").get()
+    jsonEachAvailable = true
+  } catch (_error) {
+    jsonEachAvailable = false
+  }
   createMetaSchema(database)
   if (!tableExists(database, 'request_detail_records')) {
     createSchema(database)
@@ -443,6 +450,30 @@ function rollbackRebuild({ sessionId }) {
 function buildBaseWhere(input, { includeFilters = true } = {}) {
   const clauses = ['timestamp_ms >= ?', 'timestamp_ms <= ?', 'sequence <= ?', 'expires_at_ms > ?']
   const params = [input.startMs, input.endMs, input.snapshotSequence, input.snapshotCreatedAt]
+  const isV2Scope = input.scopeType === 'v2'
+  if (isV2Scope) {
+    if (!jsonEachAvailable) {
+      const error = new Error('SQLite JSON1 is unavailable for scoped request detail queries')
+      error.code = 'REQUEST_DETAIL_SQLITE_JSON1_UNAVAILABLE'
+      throw error
+    }
+    let childIds
+    try {
+      childIds = JSON.parse(input.apiKeyScopeJson)
+    } catch (_error) {
+      childIds = null
+    }
+    if (
+      !Array.isArray(childIds) ||
+      childIds.some((value) => typeof value !== 'string' || value.length === 0)
+    ) {
+      const error = new Error('Invalid V2 request detail scope')
+      error.code = 'REQUEST_DETAIL_SQLITE_INVALID_SCOPE'
+      throw error
+    }
+    clauses.push('api_key_id IN (SELECT value FROM json_each(?))')
+    params.push(input.apiKeyScopeJson)
+  }
   if (!includeFilters) {
     return { sql: clauses.join(' AND '), params }
   }
@@ -464,19 +495,46 @@ function buildBaseWhere(input, { includeFilters = true } = {}) {
     .trim()
     .toLowerCase()
   if (keyword) {
-    const keywordClauses = ['instr(search_text, ?) > 0']
-    params.push(keyword)
-    const dynamicKeyIds = Array.isArray(input.dynamicKeyIds) ? input.dynamicKeyIds : []
-    if (dynamicKeyIds.length > 0) {
-      keywordClauses.push(`api_key_id IN (${dynamicKeyIds.map(() => '?').join(',')})`)
-      params.push(...dynamicKeyIds)
+    if (isV2Scope) {
+      const keywordClauses = [
+        "instr(lower(COALESCE(request_id, '')), ?) > 0",
+        "instr(lower(COALESCE(api_key_id, '')), ?) > 0",
+        "instr(lower(COALESCE(model, '')), ?) > 0",
+        "instr(lower(COALESCE(endpoint, '')), ?) > 0",
+        "instr(lower(COALESCE(method, '')), ?) > 0"
+      ]
+      params.push(keyword, keyword, keyword, keyword, keyword)
+      let dynamicKeyIds = []
+      try {
+        dynamicKeyIds = JSON.parse(input.dynamicKeyIdsJson || '[]')
+      } catch (_error) {
+        dynamicKeyIds = null
+      }
+      if (!Array.isArray(dynamicKeyIds)) {
+        const error = new Error('Invalid V2 request detail keyword scope')
+        error.code = 'REQUEST_DETAIL_SQLITE_INVALID_SCOPE'
+        throw error
+      }
+      if (dynamicKeyIds.length > 0) {
+        keywordClauses.push('api_key_id IN (SELECT value FROM json_each(?))')
+        params.push(input.dynamicKeyIdsJson)
+      }
+      clauses.push(`(${keywordClauses.join(' OR ')})`)
+    } else {
+      const keywordClauses = ['instr(search_text, ?) > 0']
+      params.push(keyword)
+      const dynamicKeyIds = Array.isArray(input.dynamicKeyIds) ? input.dynamicKeyIds : []
+      if (dynamicKeyIds.length > 0) {
+        keywordClauses.push(`api_key_id IN (${dynamicKeyIds.map(() => '?').join(',')})`)
+        params.push(...dynamicKeyIds)
+      }
+      const dynamicAccounts = Array.isArray(input.dynamicAccounts) ? input.dynamicAccounts : []
+      for (const account of dynamicAccounts) {
+        keywordClauses.push('(account_id = ? AND account_type = ?)')
+        params.push(account.accountId, account.accountType)
+      }
+      clauses.push(`(${keywordClauses.join(' OR ')})`)
     }
-    const dynamicAccounts = Array.isArray(input.dynamicAccounts) ? input.dynamicAccounts : []
-    for (const account of dynamicAccounts) {
-      keywordClauses.push('(account_id = ? AND account_type = ?)')
-      params.push(account.accountId, account.accountType)
-    }
-    clauses.push(`(${keywordClauses.join(' OR ')})`)
   }
   return { sql: clauses.join(' AND '), params }
 }
@@ -492,7 +550,9 @@ function phaseA(input) {
     startMs: input.startMs,
     endMs: input.endMs,
     snapshotCreatedAt,
-    snapshotSequence
+    snapshotSequence,
+    scopeType: input.scopeType,
+    apiKeyScopeJson: input.apiKeyScopeJson
   }
   const where = buildBaseWhere(base, { includeFilters: false })
   const source = database
@@ -513,34 +573,38 @@ function phaseA(input) {
     )
     .all(...where.params)
     .map((row) => row.value)
-  const accounts = database
-    .prepare(
-      `SELECT DISTINCT account_id AS accountId, account_type AS accountType FROM request_detail_records WHERE ${where.sql} AND account_id IS NOT NULL`
-    )
-    .all(...where.params)
-  const representativeDirection =
-    input.hasKeyword === true
-      ? input.sortOrder === 'asc'
-        ? 'DESC'
-        : 'ASC'
-      : input.sortOrder === 'asc'
-        ? 'ASC'
-        : 'DESC'
-  const accountRepresentatives = database
-    .prepare(
+  let accounts = []
+  let accountRepresentatives = []
+  if (input.scopeType !== 'v2') {
+    accounts = database
+      .prepare(
+        `SELECT DISTINCT account_id AS accountId, account_type AS accountType FROM request_detail_records WHERE ${where.sql} AND account_id IS NOT NULL`
+      )
+      .all(...where.params)
+    const representativeDirection =
+      input.hasKeyword === true
+        ? input.sortOrder === 'asc'
+          ? 'DESC'
+          : 'ASC'
+        : input.sortOrder === 'asc'
+          ? 'ASC'
+          : 'DESC'
+    accountRepresentatives = database
+      .prepare(
+        `
+        SELECT accountId, accountType FROM (
+          SELECT account_id AS accountId, account_type AS accountType,
+            ROW_NUMBER() OVER (
+              PARTITION BY account_id
+              ORDER BY timestamp_ms ${representativeDirection}, request_id ASC
+            ) AS rank
+          FROM request_detail_records
+          WHERE ${where.sql} AND account_id IS NOT NULL
+        ) WHERE rank = 1
       `
-      SELECT accountId, accountType FROM (
-        SELECT account_id AS accountId, account_type AS accountType,
-          ROW_NUMBER() OVER (
-            PARTITION BY account_id
-            ORDER BY timestamp_ms ${representativeDirection}, request_id ASC
-          ) AS rank
-        FROM request_detail_records
-        WHERE ${where.sql} AND account_id IS NOT NULL
-      ) WHERE rank = 1
-    `
-    )
-    .all(...where.params)
+      )
+      .all(...where.params)
+  }
   const models = database
     .prepare(`SELECT DISTINCT model AS value FROM request_detail_records WHERE ${where.sql}`)
     .all(...where.params)

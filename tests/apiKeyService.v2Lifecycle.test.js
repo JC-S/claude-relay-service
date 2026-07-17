@@ -32,6 +32,7 @@ jest.mock(
 
 jest.mock('../src/models/redis', () => ({
   getApiKey: jest.fn(),
+  getClient: jest.fn(),
   setApiKey: jest.fn(),
   updateApiKeyFields: jest.fn(),
   reserveApiKeySecret: jest.fn(),
@@ -1618,6 +1619,33 @@ describe('apiKeyService 明文 reveal', () => {
       '自定义 Key · ****tail',
       '自定义 Key · 已设置'
     ])
+  })
+
+  test('getV2RequestDetailScope includes deleted children and rejects dirty memberships', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: PARENT_ID,
+      isV2Parent: 'true',
+      isDeleted: 'false',
+      serviceRates: JSON.stringify({ codex: '2' })
+    })
+    redis.getV2ChildIds.mockResolvedValue(['child-b', 'child-a', 'child-dirty', 'child-a'])
+    const pipeline = {
+      hmget: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue([
+        [null, [PARENT_ID, 'A', 'false']],
+        [null, [PARENT_ID, 'B', 'true']],
+        [null, ['other-parent', 'Dirty', 'false']]
+      ])
+    }
+    redis.getClient.mockReturnValue({ pipeline: jest.fn(() => pipeline) })
+
+    const scope = await apiKeyService.getV2RequestDetailScope(PARENT_ID)
+
+    expect(scope.childIds).toEqual(['child-a', 'child-b'])
+    expect(scope.childIdSet).toEqual(new Set(['child-a', 'child-b']))
+    expect(scope.childMap.get('child-b')).toMatchObject({ name: 'B', isDeleted: true })
+    expect(scope.parentServiceRates).toEqual({ codex: '2' })
+    expect(scope.scopeFingerprint).toMatch(/^[a-f0-9]{64}$/)
   })
 
   // 12. restoreApiKey 返回的安全副本剥离 encryptedApiKey / apiKey（hash）

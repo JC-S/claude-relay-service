@@ -57,6 +57,7 @@ const tabs = computed(() => {
   if (authStore.userRole === 'v2') {
     return [
       { key: 'apiKeys', name: 'API Keys', shortName: 'API', icon: 'fas fa-key' },
+      { key: 'requestDetails', name: '请求明细', shortName: '明细', icon: 'fas fa-table' },
       { key: 'tutorial', name: '使用教程', shortName: '教程', icon: 'fas fa-graduation-cap' }
     ]
   }

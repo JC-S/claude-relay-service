@@ -141,6 +141,36 @@ class ServiceRatesService {
   }
 
   /**
+   * 使用指定 API Key 倍率计算展示成本，不读取 API Key 数据。
+   * 主要用于请求明细中对历史零费用记录进行安全补算。
+   */
+  async calculateRatedCostWithKeyRates(realCost, service, keyRates = {}) {
+    const normalizedRealCost = Number(realCost)
+    if (!Number.isFinite(normalizedRealCost) || normalizedRealCost < 0) {
+      return 0
+    }
+
+    const rawGlobalRate = await this.getServiceRate(service)
+    const globalServiceRate =
+      Number.isFinite(Number(rawGlobalRate)) && Number(rawGlobalRate) > 0
+        ? Number(rawGlobalRate)
+        : 1
+
+    const rawKeyRate = keyRates?.[service]
+    let keyRate = 1
+    if (rawKeyRate !== undefined && rawKeyRate !== null) {
+      const parsedKeyRate = Number(rawKeyRate)
+      if (Number.isFinite(parsedKeyRate) && parsedKeyRate >= 0) {
+        keyRate = parsedKeyRate
+      } else {
+        logger.debug(`忽略无效的 API Key 服务倍率: service=${service}`)
+      }
+    }
+
+    return normalizedRealCost * globalServiceRate * keyRate
+  }
+
+  /**
    * 根据模型名称获取服务类型
    */
   getServiceFromModel(model) {

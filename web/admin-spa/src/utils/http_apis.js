@@ -152,6 +152,10 @@ export const getV2IpWhitelistApi = () =>
   request({ url: '/admin/v2/account/ip-whitelist', method: 'GET' })
 export const updateV2IpWhitelistApi = (data) =>
   request({ url: '/admin/v2/account/ip-whitelist', method: 'PUT', data })
+export const getV2RequestDetailsApi = (params) =>
+  request({ url: '/admin/v2/request-details', method: 'GET', params })
+export const getV2RequestDetailApi = (requestId) =>
+  request({ url: `/admin/v2/request-details/${requestId}`, method: 'GET' })
 
 // Claude 账户
 export const getClaudeAccountsApi = () => request({ url: '/admin/claude-accounts', method: 'GET' })

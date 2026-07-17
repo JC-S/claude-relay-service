@@ -4293,6 +4293,71 @@ class ApiKeyService {
       .filter(Boolean)
   }
 
+  async getV2RequestDetailScope(parentKeyId) {
+    const parent = await redis.getApiKey(parentKeyId)
+    if (
+      !parent ||
+      Object.keys(parent).length === 0 ||
+      parent.isV2Parent !== 'true' ||
+      parent.isDeleted === 'true'
+    ) {
+      throw new Error('V2 parent account not found')
+    }
+
+    const rawChildIds = await redis.getV2ChildIds(parentKeyId)
+    const candidateIds = [...new Set((rawChildIds || []).map(String).filter(Boolean))].sort()
+    const childMap = new Map()
+    const client = redis.getClient()
+    const batchSize = 500
+
+    for (let offset = 0; offset < candidateIds.length; offset += batchSize) {
+      const batch = candidateIds.slice(offset, offset + batchSize)
+      const pipeline = client.pipeline()
+      batch.forEach((childId) => {
+        pipeline.hmget(`apikey:${childId}`, 'parentKeyId', 'name', 'isDeleted')
+      })
+      const results = await pipeline.exec()
+      results.forEach(([error, values], index) => {
+        if (error || !Array.isArray(values)) {
+          return
+        }
+        const [storedParentKeyId, name, isDeleted] = values
+        if (storedParentKeyId !== parentKeyId) {
+          return
+        }
+        const id = batch[index]
+        childMap.set(id, {
+          id,
+          name: name || id,
+          isDeleted: isDeleted === 'true'
+        })
+      })
+    }
+
+    const childIds = [...childMap.keys()].sort()
+    let parentServiceRates = {}
+    try {
+      const parsed = JSON.parse(parent.serviceRates || '{}')
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        parentServiceRates = parsed
+      }
+    } catch (_error) {
+      parentServiceRates = {}
+    }
+
+    return {
+      parentKeyId,
+      childIds,
+      childIdSet: new Set(childIds),
+      childMap,
+      scopeFingerprint: crypto
+        .createHash('sha256')
+        .update(`${parentKeyId}\n${childIds.join('\n')}`)
+        .digest('hex'),
+      parentServiceRates
+    }
+  }
+
   // 📊 v2 自助端子 key 区间统计：只返回倍率后成本与 token/request 白名单字段。
   async getV2ChildrenUsageStats(parentKeyId, options = {}) {
     const parent = await redis.getApiKey(parentKeyId)

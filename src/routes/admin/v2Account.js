@@ -5,6 +5,7 @@
 
 const express = require('express')
 const apiKeyService = require('../../services/apiKeyService')
+const requestDetailService = require('../../services/requestDetailService')
 const redis = require('../../models/redis')
 const { authenticateV2Account } = require('../../middleware/auth')
 const { applyDisplayModelToRecord } = require('../../utils/modelVariantHelper')
@@ -18,6 +19,11 @@ const {
 } = require('../../services/apiKeyConnectivityTestService')
 const { getRequestIp } = require('../../utils/ipWhitelistHelper')
 const logger = require('../../utils/logger')
+const {
+  projectV2Pagination,
+  projectV2Summary,
+  projectV2AvailableFilters
+} = require('../../utils/v2RequestDetailProjection')
 
 const router = express.Router()
 
@@ -97,6 +103,109 @@ router.get('/keys', async (req, res) => {
   } catch (error) {
     logger.error('❌ Failed to list v2 child keys:', error)
     return res.status(500).json({ error: 'Failed to load keys', message: error.message })
+  }
+})
+
+const V2_REQUEST_DETAIL_QUERY_FIELDS = [
+  'page',
+  'pageSize',
+  'startDate',
+  'endDate',
+  'keyword',
+  'apiKeyId',
+  'model',
+  'endpoint',
+  'sortOrder',
+  'snapshotId'
+]
+
+function buildV2RequestDetailContext(apiKeyScope) {
+  return {
+    projection: 'v2',
+    scopeType: 'v2',
+    apiKeyScope
+  }
+}
+
+router.get('/request-details', async (req, res) => {
+  try {
+    const apiKeyScope = await apiKeyService.getV2RequestDetailScope(req.v2Account.parentKeyId)
+    const filters = Object.fromEntries(
+      V2_REQUEST_DETAIL_QUERY_FIELDS.filter((field) => req.query?.[field] !== undefined).map(
+        (field) => [field, req.query[field]]
+      )
+    )
+    if (filters.apiKeyId && !apiKeyScope.childIdSet.has(String(filters.apiKeyId))) {
+      return res.status(404).json({
+        success: false,
+        code: 'NOT_FOUND',
+        message: '请求明细不存在'
+      })
+    }
+
+    const data = await requestDetailService.listRequestDetails(
+      filters,
+      buildV2RequestDetailContext(apiKeyScope)
+    )
+    return res.json({
+      success: true,
+      data: {
+        records: Array.isArray(data.records) ? data.records : [],
+        pagination: projectV2Pagination(data.pagination),
+        summary: projectV2Summary(data.summary),
+        availableFilters: projectV2AvailableFilters(data.availableFilters),
+        snapshotId: data.snapshotId || null
+      }
+    })
+  } catch (error) {
+    if (error.code === 'V2_REQUEST_DETAILS_BUSY') {
+      const retryAfterSeconds = Number(error.retryAfterSeconds) || 2
+      res.set('Retry-After', String(retryAfterSeconds))
+      return res.status(503).json({
+        success: false,
+        code: 'V2_REQUEST_DETAILS_BUSY',
+        message: '请求明细查询繁忙，请稍后重试',
+        retryAfterSeconds
+      })
+    }
+    if (error.statusCode === 400) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_QUERY',
+        message: error.message
+      })
+    }
+    logger.error('❌ Failed to list v2 request details:', error)
+    return res.status(500).json({
+      success: false,
+      code: 'INTERNAL_ERROR',
+      message: 'Failed to load request details'
+    })
+  }
+})
+
+router.get('/request-details/:requestId', async (req, res) => {
+  try {
+    const apiKeyScope = await apiKeyService.getV2RequestDetailScope(req.v2Account.parentKeyId)
+    const record = await requestDetailService.getV2RequestDetail(
+      req.params.requestId,
+      buildV2RequestDetailContext(apiKeyScope)
+    )
+    if (!record) {
+      return res.status(404).json({
+        success: false,
+        code: 'NOT_FOUND',
+        message: '请求明细不存在'
+      })
+    }
+    return res.json({ success: true, data: { record } })
+  } catch (error) {
+    logger.error('❌ Failed to get v2 request detail:', error)
+    return res.status(500).json({
+      success: false,
+      code: 'INTERNAL_ERROR',
+      message: 'Failed to load request detail'
+    })
   }
 })
 

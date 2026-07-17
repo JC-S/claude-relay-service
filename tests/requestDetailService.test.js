@@ -44,6 +44,27 @@ const bedrockAccountService = require('../src/services/account/bedrockAccountSer
 const CostCalculator = require('../src/utils/costCalculator')
 const requestDetailService = require('../src/services/requestDetailService')
 const requestDetailIndex = require('../src/services/requestDetailIndex')
+const serviceRatesService = require('../src/services/serviceRatesService')
+
+function makeV2Context(overrides = {}) {
+  const childIds = ['child_deleted', 'child_live']
+  return {
+    projection: 'v2',
+    scopeType: 'v2',
+    apiKeyScope: {
+      parentKeyId: 'parent_1',
+      childIds,
+      childIdSet: new Set(childIds),
+      childMap: new Map([
+        ['child_deleted', { id: 'child_deleted', name: 'Deleted', isDeleted: true }],
+        ['child_live', { id: 'child_live', name: 'Live', isDeleted: false }]
+      ]),
+      scopeFingerprint: 'fingerprint_1',
+      parentServiceRates: { codex: '2' },
+      ...overrides
+    }
+  }
+}
 
 describe('requestDetailService', () => {
   beforeEach(() => {
@@ -2131,5 +2152,193 @@ describe('requestDetailService', () => {
       'KEEPTTL'
     )
     expect(exec).toHaveBeenCalled()
+  })
+
+  test('getV2RequestDetail validates ownership before projecting safe fields', async () => {
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: true
+    })
+    redis.getClient.mockReturnValue({
+      get: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          requestId: 'req_v2',
+          timestamp: '2026-04-07T17:59:00.000Z',
+          apiKeyId: 'child_deleted',
+          accountId: 'secret_account',
+          accountType: 'openai',
+          clientIp: '203.0.113.4',
+          upstreamNicIp: '10.0.0.2',
+          requestBodySnapshot: { secret: true },
+          model: 'gpt-5.4',
+          serviceTier: 'priority',
+          inputTokens: 10,
+          outputTokens: 2,
+          cost: 0.5,
+          realCost: 0.25
+        })
+      )
+    })
+
+    const record = await requestDetailService.getV2RequestDetail('req_v2', makeV2Context())
+
+    expect(record).toMatchObject({
+      requestId: 'req_v2',
+      apiKeyId: 'child_deleted',
+      apiKeyName: 'Deleted（已删除）',
+      model: 'gpt-5.4 (fast)',
+      cost: 0.5
+    })
+    expect(record).not.toHaveProperty('accountId')
+    expect(record).not.toHaveProperty('clientIp')
+    expect(record).not.toHaveProperty('upstreamNicIp')
+    expect(record).not.toHaveProperty('requestBodySnapshot')
+    expect(record).not.toHaveProperty('realCost')
+  })
+
+  test('getV2RequestDetail rejects foreign records before display preparation', async () => {
+    const calculate = jest.spyOn(serviceRatesService, 'calculateRatedCostWithKeyRates')
+    redis.getClient.mockReturnValue({
+      get: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          requestId: 'req_foreign',
+          timestamp: '2026-04-07T17:59:00.000Z',
+          apiKeyId: 'foreign_key',
+          inputTokens: 10,
+          cost: 0
+        })
+      )
+    })
+
+    await expect(
+      requestDetailService.getV2RequestDetail('req_foreign', makeV2Context())
+    ).resolves.toBeNull()
+    expect(claudeRelayConfigService.getConfig).not.toHaveBeenCalled()
+    expect(calculate).not.toHaveBeenCalled()
+  })
+
+  test('getV2RequestDetail applies parent rates only to recomputed zero-cost history', async () => {
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: false
+    })
+    CostCalculator.calculateCost.mockReturnValue({
+      costs: { input: 1, output: 0, cacheCreate: 0, cacheRead: 0, total: 1 },
+      totalCost: 1
+    })
+    const calculate = jest
+      .spyOn(serviceRatesService, 'calculateRatedCostWithKeyRates')
+      .mockResolvedValue(3)
+    redis.getClient.mockReturnValue({
+      get: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          requestId: 'req_recomputed',
+          timestamp: '2026-04-07T17:59:00.000Z',
+          apiKeyId: 'child_live',
+          accountType: 'openai',
+          model: 'gpt-5.4',
+          inputTokens: 10,
+          cost: 0,
+          realCost: 0
+        })
+      )
+    })
+
+    const record = await requestDetailService.getV2RequestDetail('req_recomputed', makeV2Context())
+
+    expect(calculate).toHaveBeenCalledWith(1, 'codex', { codex: '2' })
+    expect(record.cost).toBe(3)
+  })
+
+  test('listRequestDetails keeps V2 records, summary and filters inside the child scope', async () => {
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: true
+    })
+    const timestamp = Date.parse('2026-04-07T17:59:00.000Z')
+    const recordsByKey = {
+      'request_detail:item:req_child': JSON.stringify({
+        requestId: 'req_child',
+        timestamp: new Date(timestamp).toISOString(),
+        apiKeyId: 'child_live',
+        accountId: 'secret_account',
+        accountType: 'openai',
+        model: 'gpt-5.4',
+        inputTokens: 10,
+        outputTokens: 2,
+        cost: 0.5,
+        clientIp: '203.0.113.5'
+      }),
+      'request_detail:item:req_parent': JSON.stringify({
+        requestId: 'req_parent',
+        timestamp: new Date(timestamp - 1000).toISOString(),
+        apiKeyId: 'parent_1',
+        accountId: 'secret_account',
+        model: 'gpt-5.4',
+        inputTokens: 999,
+        cost: 99
+      }),
+      'request_detail:item:req_foreign': JSON.stringify({
+        requestId: 'req_foreign',
+        timestamp: new Date(timestamp - 2000).toISOString(),
+        apiKeyId: 'foreign_key',
+        accountId: 'secret_account',
+        model: 'gpt-5.4',
+        inputTokens: 999,
+        cost: 99
+      })
+    }
+    redis.getClient.mockReturnValue({
+      zrangebyscore: jest
+        .fn()
+        .mockResolvedValue([
+          'req_child',
+          String(timestamp),
+          'req_parent',
+          String(timestamp - 1000),
+          'req_foreign',
+          String(timestamp - 2000)
+        ]),
+      mget: jest.fn(async (keys) => keys.map((key) => recordsByKey[key] || null)),
+      set: jest.fn().mockResolvedValue('OK')
+    })
+
+    const result = await requestDetailService.listRequestDetails({}, makeV2Context())
+
+    expect(result.summary.totalRequests).toBe(1)
+    expect(result.summary.inputTokens).toBe(10)
+    expect(result.pagination.totalRecords).toBe(1)
+    expect(result.records).toHaveLength(1)
+    expect(result.records[0]).toMatchObject({
+      requestId: 'req_child',
+      apiKeyId: 'child_live',
+      apiKeyName: 'Live'
+    })
+    expect(result.records[0]).not.toHaveProperty('accountId')
+    expect(result.records[0]).not.toHaveProperty('clientIp')
+    expect(result.availableFilters).not.toHaveProperty('accounts')
+  })
+
+  test('listRequestDetails returns an empty V2 result without touching query storage for empty scope', async () => {
+    claudeRelayConfigService.getConfig.mockResolvedValue({
+      requestDetailCaptureEnabled: true,
+      requestDetailRetentionHours: 6,
+      requestDetailBodyPreviewEnabled: true
+    })
+    const context = makeV2Context({
+      childIds: [],
+      childIdSet: new Set(),
+      childMap: new Map(),
+      scopeFingerprint: 'empty-fingerprint'
+    })
+
+    const result = await requestDetailService.listRequestDetails({}, context)
+
+    expect(result.records).toEqual([])
+    expect(result.pagination.totalRecords).toBe(0)
+    expect(redis.getClient).not.toHaveBeenCalled()
   })
 })
