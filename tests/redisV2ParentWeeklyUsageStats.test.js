@@ -179,6 +179,13 @@ describe('redis.getV2ParentSourceKeyIds', () => {
     expect(ids).toEqual(['parent1'])
     expect(logger.warn).toHaveBeenCalled()
   })
+
+  test('strict：子集合读取异常时向上抛出', async () => {
+    redis.client = makeClient({ smembersThrows: true })
+    await expect(redis.getV2ParentSourceKeyIds(PARENT_ID, { strict: true })).rejects.toThrow(
+      'redis smembers boom'
+    )
+  })
 })
 
 describe('redis.getV2ParentWeeklyOpusCost', () => {
@@ -233,6 +240,13 @@ describe('redis.getV2ParentWeeklyOpusCost', () => {
     expect(cost).toBeCloseTo(2, 6) // 仅父自身
     expect(logger.warn).toHaveBeenCalled()
   })
+
+  test('strict：pipeline 异常时不回退父账号自身周费用', async () => {
+    redis.client = makeClient({ pipelineThrows: true })
+    await expect(
+      redis.getV2ParentWeeklyOpusCost(PARENT_ID, 1, 0, { strict: true })
+    ).rejects.toThrow('redis pipeline boom')
+  })
 })
 
 describe('redis.getV2ParentWeeklyFableCost', () => {
@@ -272,6 +286,13 @@ describe('redis.getV2ParentWeeklyFableCost', () => {
     const cost = await redis.getV2ParentWeeklyFableCost(PARENT_ID, 1, 0)
     expect(cost).toBeCloseTo(1, 6)
     expect(logger.warn).toHaveBeenCalled()
+  })
+
+  test('strict：pipeline 异常时不回退父账号自身 Fable 周费用', async () => {
+    redis.client = makeClient({ pipelineThrows: true })
+    await expect(
+      redis.getV2ParentWeeklyFableCost(PARENT_ID, 1, 0, { strict: true })
+    ).rejects.toThrow('redis pipeline boom')
   })
 })
 
@@ -344,5 +365,12 @@ describe('redis.getV2ParentUsageStats', () => {
     expect(stats.total.requests).toBe(2)
     expect(stats.total.allTokens).toBe(100)
     expect(logger.warn).toHaveBeenCalled()
+  })
+
+  test('strict：pipeline 异常时不回退父账号自身用量', async () => {
+    redis.client = makeClient({ pipelineThrows: true })
+    await expect(redis.getV2ParentUsageStats(PARENT_ID, { strict: true })).rejects.toThrow(
+      'redis pipeline boom'
+    )
   })
 })

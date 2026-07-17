@@ -184,4 +184,11 @@ describe('redis.getV2ParentLedgerCostStats', () => {
     expect(stats.period).toBe(0)
     expect(logger.warn).toHaveBeenCalled()
   })
+
+  test('strict：子集合读取异常时不返回降级 ledger', async () => {
+    redis.client = makeClient({ smembersThrows: true })
+    await expect(
+      redis.getV2ParentLedgerCostStats(PARENT_ID, { timeRange: 'all', strict: true })
+    ).rejects.toThrow('redis smembers boom')
+  })
 })

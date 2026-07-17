@@ -475,6 +475,100 @@ function normalizeUsageStats(stats, cost) {
   }
 }
 
+async function loadV2ParentDetailLimits(keyId, apiKey) {
+  const client = redis.getClientSafe()
+  const weeklyOpusCostLimit = parseFloat(apiKey.weeklyOpusCostLimit) || 0
+  const weeklyFableCostLimit = parseFloat(apiKey.weeklyFableCostLimit) || 0
+  const rateLimitWindow = parseInt(apiKey.rateLimitWindow) || 0
+  const resetDay = parseInt(apiKey.weeklyResetDay || 1)
+  const resetHour = parseInt(apiKey.weeklyResetHour || 0)
+
+  const weeklyOpusCostPromise =
+    weeklyOpusCostLimit > 0
+      ? redis.getV2ParentWeeklyOpusCost(keyId, resetDay, resetHour, { strict: true })
+      : Promise.resolve(0)
+  const weeklyFableCostPromise =
+    weeklyFableCostLimit > 0
+      ? redis.getV2ParentWeeklyFableCost(keyId, resetDay, resetHour, { strict: true })
+      : Promise.resolve(0)
+
+  let windowStatsPromise = Promise.resolve({
+    currentWindowCost: 0,
+    currentWindowRequests: 0,
+    currentWindowTokens: 0,
+    windowRemainingSeconds: null,
+    windowStartTime: null,
+    windowEndTime: null
+  })
+
+  if (rateLimitWindow > 0) {
+    windowStatsPromise = Promise.all([
+      client.get(`rate_limit:requests:${keyId}`),
+      client.get(`rate_limit:tokens:${keyId}`),
+      client.get(`rate_limit:cost:${keyId}`),
+      client.get(`rate_limit:window_start:${keyId}`)
+    ]).then(([requests, tokens, cost, windowStart]) => {
+      let currentWindowRequests = parseInt(requests) || 0
+      let currentWindowTokens = parseInt(tokens) || 0
+      let currentWindowCost = parseFloat(cost) || 0
+      let windowRemainingSeconds = null
+      let windowStartTime = null
+      let windowEndTime = null
+
+      if (windowStart) {
+        windowStartTime = parseInt(windowStart)
+        windowEndTime = windowStartTime + rateLimitWindow * 60 * 1000
+        const now = Date.now()
+
+        if (now < windowEndTime) {
+          windowRemainingSeconds = Math.max(0, Math.floor((windowEndTime - now) / 1000))
+        } else {
+          windowRemainingSeconds = 0
+          currentWindowRequests = 0
+          currentWindowTokens = 0
+          currentWindowCost = 0
+        }
+      }
+
+      return {
+        currentWindowCost,
+        currentWindowRequests,
+        currentWindowTokens,
+        windowRemainingSeconds,
+        windowStartTime,
+        windowEndTime
+      }
+    })
+  }
+
+  const [weeklyOpusCost, weeklyFableCost, windowStats] = await Promise.all([
+    weeklyOpusCostPromise,
+    weeklyFableCostPromise,
+    windowStatsPromise
+  ])
+
+  return {
+    weeklyOpusCost,
+    weeklyFableCost,
+    ...windowStats
+  }
+}
+
+async function calculateV2ParentDetailStats(keyId, apiKey) {
+  const [usageStats, allLedger, todayLedger, limits] = await Promise.all([
+    redis.getV2ParentUsageStats(keyId, { strict: true }),
+    redis.getV2ParentLedgerCostStats(keyId, { timeRange: 'all', strict: true }),
+    redis.getV2ParentLedgerCostStats(keyId, { timeRange: 'today', strict: true }),
+    loadV2ParentDetailLimits(keyId, apiKey)
+  ])
+
+  return {
+    total: normalizeUsageStats(usageStats.total, allLedger.total),
+    today: normalizeUsageStats(usageStats.daily, todayLedger.period),
+    limits
+  }
+}
+
 /**
  * 获取详情弹窗使用的固定口径统计：累计、今日、生命周期平均和实时限制。
  * @param {string} keyId - API Key ID
@@ -487,33 +581,25 @@ async function calculateKeyDetailStats(keyId, options = {}) {
     throw new ApiKeyStatsNotFoundError(keyId)
   }
 
-  const [allStats, todayStats] = await Promise.all([
-    calculateKeyStats(keyId, 'all'),
-    calculateKeyStats(keyId, 'today')
-  ])
+  let total
+  let today
+  let limits
 
-  const persistentTotalCost = toFiniteNumber(allStats.allTimeCost)
-  const aggregateTotalCost = toFiniteNumber(allStats.cost)
-  const totalCost = persistentTotalCost !== 0 ? persistentTotalCost : aggregateTotalCost
-  const total = normalizeUsageStats(allStats, totalCost)
-  const today = normalizeUsageStats(todayStats, todayStats.cost)
+  if (apiKey.isV2Parent === 'true' || apiKey.isV2Parent === true) {
+    const v2Stats = await calculateV2ParentDetailStats(keyId, apiKey)
+    ;({ total, today, limits } = v2Stats)
+  } else {
+    const [allStats, todayStats] = await Promise.all([
+      calculateKeyStats(keyId, 'all'),
+      calculateKeyStats(keyId, 'today')
+    ])
 
-  const nowValue = options.now instanceof Date ? options.now.getTime() : Number(options.now)
-  const now = Number.isFinite(nowValue) ? nowValue : Date.now()
-  const createdAt = new Date(apiKey.createdAt).getTime()
-  const elapsedMinutes = Math.max(
-    1,
-    Number.isFinite(createdAt) && createdAt <= now ? (now - createdAt) / 60000 : 1
-  )
-
-  return {
-    total,
-    today,
-    averages: {
-      rpm: Number((total.requests / elapsedMinutes).toFixed(2)),
-      tpm: Number((total.tokens / elapsedMinutes).toFixed(2))
-    },
-    limits: {
+    const persistentTotalCost = toFiniteNumber(allStats.allTimeCost)
+    const aggregateTotalCost = toFiniteNumber(allStats.cost)
+    const totalCost = persistentTotalCost !== 0 ? persistentTotalCost : aggregateTotalCost
+    total = normalizeUsageStats(allStats, totalCost)
+    today = normalizeUsageStats(todayStats, todayStats.cost)
+    limits = {
       weeklyOpusCost: toFiniteNumber(todayStats.weeklyOpusCost),
       weeklyFableCost: toFiniteNumber(todayStats.weeklyFableCost),
       currentWindowCost: toFiniteNumber(todayStats.currentWindowCost),
@@ -533,6 +619,24 @@ async function calculateKeyDetailStats(keyId, options = {}) {
           ? null
           : toFiniteNumber(todayStats.windowEndTime)
     }
+  }
+
+  const nowValue = options.now instanceof Date ? options.now.getTime() : Number(options.now)
+  const now = Number.isFinite(nowValue) ? nowValue : Date.now()
+  const createdAt = new Date(apiKey.createdAt).getTime()
+  const elapsedMinutes = Math.max(
+    1,
+    Number.isFinite(createdAt) && createdAt <= now ? (now - createdAt) / 60000 : 1
+  )
+
+  return {
+    total,
+    today,
+    averages: {
+      rpm: Number((total.requests / elapsedMinutes).toFixed(2)),
+      tpm: Number((total.tokens / elapsedMinutes).toFixed(2))
+    },
+    limits
   }
 }
 

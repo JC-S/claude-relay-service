@@ -3727,7 +3727,7 @@ class RedisClient {
   // options: { timeRange = 'all', startDate, endDate, dateRange: { startDate, endDate } }
   // 返回:    { total, daily, monthly, period, source: 'v2-parent-ledger' }
   async getV2ParentLedgerCostStats(parentKeyId, options = {}) {
-    const { timeRange = 'all', startDate, endDate, dateRange } = options
+    const { timeRange = 'all', startDate, endDate, dateRange, strict = false } = options
 
     // 显式日期区间优先（custom 或排序服务传入的 dateRange），其次才看命名 timeRange
     const explicitRange =
@@ -3812,6 +3812,9 @@ class RedisClient {
       let monthly = 0
       for (let i = 0; i < results.length; i++) {
         const [err, value] = results[i]
+        if (err && strict) {
+          throw err
+        }
         const amount = err ? 0 : parseFloat(value || 0)
         const meta = order[i]
         if (meta.monthly) {
@@ -3840,6 +3843,9 @@ class RedisClient {
       logger.warn(
         `⚠️ getV2ParentLedgerCostStats 聚合失败 (parent: ${parentKeyId}): ${error.message}`
       )
+      if (strict) {
+        throw error
+      }
       // fail-soft：total 仍返回 ledger 值（若已取到），具体周期降级为 0，'all' 回退 total
       return {
         total,
@@ -3852,13 +3858,17 @@ class RedisClient {
   }
 
   // 🗂️ v2 父账号读侧聚合的 source key id 集合：父 + 所有子（含软删，使用原始集合）
-  // 与 getV2ParentLedgerCostStats 的口径一字不差。异常 fail-soft 返回 [parentKeyId]。
-  async getV2ParentSourceKeyIds(parentKeyId) {
+  // 与 getV2ParentLedgerCostStats 的口径一字不差。默认异常 fail-soft；strict 模式向上抛错。
+  async getV2ParentSourceKeyIds(parentKeyId, options = {}) {
+    const { strict = false } = options
     try {
       const childIds = await this.getV2ChildIds(parentKeyId)
       return [parentKeyId, ...(Array.isArray(childIds) ? childIds : [])]
     } catch (error) {
       logger.warn(`⚠️ getV2ParentSourceKeyIds 失败 (parent: ${parentKeyId}): ${error.message}`)
+      if (strict) {
+        throw error
+      }
       return [parentKeyId]
     }
   }
@@ -3866,10 +3876,11 @@ class RedisClient {
   // 💰 v2 父账号本周期 Claude(Opus)周费用：读时聚合父 + 所有子(含软删)的 usage:opus:weekly 计数
   // 口径与 recalibrate_claude_weekly_usage / getV2ParentLedgerCostStats 一致。
   // 子 key 的周键以父账号周期串存储（recordOpusCost 用父 reset 配置），故同周期串直接求和即对齐。
-  async getV2ParentWeeklyOpusCost(parentKeyId, resetDay = 1, resetHour = 0) {
+  async getV2ParentWeeklyOpusCost(parentKeyId, resetDay = 1, resetHour = 0, options = {}) {
+    const { strict = false } = options
     const periodStr = getPeriodString(resetDay, resetHour)
     try {
-      const ids = await this.getV2ParentSourceKeyIds(parentKeyId)
+      const ids = await this.getV2ParentSourceKeyIds(parentKeyId, { strict })
       const pipeline = this.client.pipeline()
       for (const id of ids) {
         pipeline.get(`usage:opus:weekly:${id}:${periodStr}`)
@@ -3877,9 +3888,13 @@ class RedisClient {
       const results = await pipeline.exec()
       let sum = 0
       for (const [err, value] of results) {
-        if (!err) {
-          sum += parseFloat(value || 0)
+        if (err) {
+          if (strict) {
+            throw err
+          }
+          continue
         }
+        sum += parseFloat(value || 0)
       }
       return sum
     } catch (error) {
@@ -3887,15 +3902,19 @@ class RedisClient {
       logger.warn(
         `⚠️ getV2ParentWeeklyOpusCost 聚合失败 (parent: ${parentKeyId}): ${error.message}`
       )
+      if (strict) {
+        throw error
+      }
       return await this.getWeeklyOpusCost(parentKeyId, resetDay, resetHour)
     }
   }
 
   // 💰 v2 父账号本周期 Fable 周费用：读时聚合父 + 所有子(含软删)的 usage:fable:weekly 计数
-  async getV2ParentWeeklyFableCost(parentKeyId, resetDay = 1, resetHour = 0) {
+  async getV2ParentWeeklyFableCost(parentKeyId, resetDay = 1, resetHour = 0, options = {}) {
+    const { strict = false } = options
     const periodStr = getPeriodString(resetDay, resetHour)
     try {
-      const ids = await this.getV2ParentSourceKeyIds(parentKeyId)
+      const ids = await this.getV2ParentSourceKeyIds(parentKeyId, { strict })
       const pipeline = this.client.pipeline()
       for (const id of ids) {
         pipeline.get(`usage:fable:weekly:${id}:${periodStr}`)
@@ -3903,24 +3922,32 @@ class RedisClient {
       const results = await pipeline.exec()
       let sum = 0
       for (const [err, value] of results) {
-        if (!err) {
-          sum += parseFloat(value || 0)
+        if (err) {
+          if (strict) {
+            throw err
+          }
+          continue
         }
+        sum += parseFloat(value || 0)
       }
       return sum
     } catch (error) {
       logger.warn(
         `⚠️ getV2ParentWeeklyFableCost 聚合失败 (parent: ${parentKeyId}): ${error.message}`
       )
+      if (strict) {
+        throw error
+      }
       return await this.getWeeklyFableCost(parentKeyId, resetDay, resetHour)
     }
   }
 
   // 📊 v2 父账号读侧聚合用量统计：父 + 所有子(含软删)的 total/daily/monthly 求和
   // 返回与 getUsageStats(keyId) 同形对象（averages 以父账号 createdAt 为基准重算）。
-  async getV2ParentUsageStats(parentKeyId) {
+  async getV2ParentUsageStats(parentKeyId, options = {}) {
+    const { strict = false } = options
     try {
-      const ids = await this.getV2ParentSourceKeyIds(parentKeyId)
+      const ids = await this.getV2ParentSourceKeyIds(parentKeyId, { strict })
       const today = getDateStringInTimezone()
       const tzDate = getDateInTimezone()
       const currentMonth = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(
@@ -3951,6 +3978,9 @@ class RedisClient {
       for (let i = 0; i < results.length; i++) {
         const [err, value] = results[i]
         if (err) {
+          if (strict) {
+            throw err
+          }
           continue
         }
         const bucket = acc[bucketNames[i % 3]]
@@ -3987,6 +4017,9 @@ class RedisClient {
     } catch (error) {
       // fail-soft：聚合失败时退回父账号自身用量（与现状一致，不致整页报错）
       logger.warn(`⚠️ getV2ParentUsageStats 聚合失败 (parent: ${parentKeyId}): ${error.message}`)
+      if (strict) {
+        throw error
+      }
       return await this.getUsageStats(parentKeyId)
     }
   }

@@ -4,6 +4,7 @@ jest.mock('../src/models/redis', () => ({
   getDateStringInTimezone: jest.fn(),
   getApiKey: jest.fn(),
   getV2ParentSourceKeyIds: jest.fn(),
+  getV2ParentUsageStats: jest.fn(),
   getV2ParentLedgerCostStats: jest.fn(),
   getDailyCost: jest.fn(),
   getWeeklyOpusCost: jest.fn(),
@@ -82,6 +83,12 @@ describe('apiKeyStatsService', () => {
     })
     redis.getWeeklyFableCost.mockResolvedValue(0)
     redis.getV2ParentWeeklyFableCost.mockResolvedValue(0)
+    redis.getV2ParentUsageStats.mockResolvedValue({
+      total: {},
+      daily: {},
+      monthly: {},
+      averages: {}
+    })
   })
 
   function addDaily(date, { requests, inputTokens, outputTokens, ratedCostMicro }) {
@@ -294,50 +301,166 @@ describe('apiKeyStatsService', () => {
       weeklyFableCostLimit: '0',
       rateLimitWindow: '0'
     })
-    redis.getV2ParentSourceKeyIds.mockResolvedValue(['parent-1', 'child-1'])
+    redis.getV2ParentUsageStats.mockResolvedValue({
+      total: {
+        requests: 5,
+        tokens: 500,
+        inputTokens: 300,
+        outputTokens: 150,
+        cacheCreateTokens: 20,
+        cacheReadTokens: 30
+      },
+      daily: {
+        requests: 1,
+        tokens: 40,
+        inputTokens: 20,
+        outputTokens: 10,
+        cacheCreateTokens: 4,
+        cacheReadTokens: 6
+      }
+    })
     redis.getV2ParentLedgerCostStats.mockImplementation(async (_keyId, options) => ({
       total: 50,
       daily: options.timeRange === 'today' ? 5 : 0,
       period: options.timeRange === 'today' ? 5 : 50
     }))
-    dataByKey.set('usage:parent-1:model:alltime:claude-opus-4-7', {
-      totalRequests: '2',
-      totalInputTokens: '100',
-      totalOutputTokens: '50',
-      ratedCostMicro: '1000000',
-      realCostMicro: '1000000'
-    })
-    dataByKey.set('usage:child-1:model:alltime:claude-opus-4-7', {
-      totalRequests: '3',
-      totalInputTokens: '200',
-      totalOutputTokens: '100',
-      ratedCostMicro: '2000000',
-      realCostMicro: '2000000'
-    })
-    dataByKey.set('usage:child-1:model:daily:claude-opus-4-7:2026-06-02', {
-      totalRequests: '1',
-      totalInputTokens: '20',
-      totalOutputTokens: '10',
-      ratedCostMicro: '500000',
-      realCostMicro: '500000'
-    })
 
     const stats = await calculateKeyDetailStats('parent-1', {
       now: new Date('2026-06-02T12:00:00.000Z')
     })
 
-    expect(stats.total).toMatchObject({ requests: 5, tokens: 450, cost: 50 })
-    expect(stats.today).toMatchObject({ requests: 1, tokens: 30, cost: 5 })
+    expect(stats.total).toMatchObject({
+      requests: 5,
+      tokens: 500,
+      inputTokens: 300,
+      outputTokens: 150,
+      cacheCreateTokens: 20,
+      cacheReadTokens: 30,
+      cost: 50
+    })
+    expect(stats.today).toMatchObject({
+      requests: 1,
+      tokens: 40,
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheCreateTokens: 4,
+      cacheReadTokens: 6,
+      cost: 5
+    })
+    expect(redis.getV2ParentUsageStats).toHaveBeenCalledWith('parent-1', { strict: true })
     expect(redis.getV2ParentLedgerCostStats).toHaveBeenCalledWith('parent-1', {
       timeRange: 'all',
-      startDate: undefined,
-      endDate: undefined
+      strict: true
     })
     expect(redis.getV2ParentLedgerCostStats).toHaveBeenCalledWith('parent-1', {
       timeRange: 'today',
-      startDate: undefined,
-      endDate: undefined
+      strict: true
     })
+    expect(redis.getV2ParentWeeklyOpusCost).not.toHaveBeenCalled()
+    expect(redis.getV2ParentWeeklyFableCost).not.toHaveBeenCalled()
+    expect(client.scan).not.toHaveBeenCalled()
+  })
+
+  test('v2 parent detail loads enabled weekly limits and active window without scanning', async () => {
+    const now = new Date('2026-06-02T12:00:00.000Z').getTime()
+    const windowStart = now - 5 * 60 * 1000
+    jest.spyOn(Date, 'now').mockReturnValue(now)
+    redis.getApiKey.mockResolvedValue({
+      id: 'parent-1',
+      createdAt: '2026-06-02T11:00:00.000Z',
+      isV2Parent: true,
+      weeklyOpusCostLimit: '100',
+      weeklyFableCostLimit: '200',
+      weeklyResetDay: '4',
+      weeklyResetHour: '7',
+      rateLimitWindow: '15'
+    })
+    redis.getV2ParentUsageStats.mockResolvedValue({
+      total: { requests: 2, tokens: 100 },
+      daily: { requests: 1, tokens: 40 }
+    })
+    redis.getV2ParentLedgerCostStats.mockImplementation(async (_keyId, options) => ({
+      total: 12,
+      period: options.timeRange === 'today' ? 3 : 12
+    }))
+    redis.getV2ParentWeeklyOpusCost.mockResolvedValue(8.5)
+    redis.getV2ParentWeeklyFableCost.mockResolvedValue(4.25)
+    client.get.mockImplementation(async (key) => {
+      const values = {
+        'rate_limit:requests:parent-1': '7',
+        'rate_limit:tokens:parent-1': '900',
+        'rate_limit:cost:parent-1': '1.75',
+        'rate_limit:window_start:parent-1': String(windowStart)
+      }
+      return values[key] || null
+    })
+
+    const stats = await calculateKeyDetailStats('parent-1', { now })
+
+    expect(redis.getV2ParentWeeklyOpusCost).toHaveBeenCalledWith('parent-1', 4, 7, {
+      strict: true
+    })
+    expect(redis.getV2ParentWeeklyFableCost).toHaveBeenCalledWith('parent-1', 4, 7, {
+      strict: true
+    })
+    expect(stats.limits).toEqual({
+      weeklyOpusCost: 8.5,
+      weeklyFableCost: 4.25,
+      currentWindowCost: 1.75,
+      currentWindowRequests: 7,
+      currentWindowTokens: 900,
+      windowRemainingSeconds: 600,
+      windowStartTime: windowStart,
+      windowEndTime: windowStart + 15 * 60 * 1000
+    })
+    expect(client.scan).not.toHaveBeenCalled()
+  })
+
+  test('v2 parent detail clears expired window counters', async () => {
+    const now = new Date('2026-06-02T12:00:00.000Z').getTime()
+    jest.spyOn(Date, 'now').mockReturnValue(now)
+    redis.getApiKey.mockResolvedValue({
+      id: 'parent-1',
+      createdAt: '2026-06-02T11:00:00.000Z',
+      isV2Parent: 'true',
+      weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '0',
+      rateLimitWindow: '15'
+    })
+    redis.getV2ParentLedgerCostStats.mockResolvedValue({ total: 0, period: 0 })
+    client.get.mockImplementation(async (key) => {
+      const values = {
+        'rate_limit:requests:parent-1': '7',
+        'rate_limit:tokens:parent-1': '900',
+        'rate_limit:cost:parent-1': '1.75',
+        'rate_limit:window_start:parent-1': String(now - 20 * 60 * 1000)
+      }
+      return values[key] || null
+    })
+
+    const stats = await calculateKeyDetailStats('parent-1', { now })
+
+    expect(stats.limits).toMatchObject({
+      currentWindowCost: 0,
+      currentWindowRequests: 0,
+      currentWindowTokens: 0,
+      windowRemainingSeconds: 0
+    })
+  })
+
+  test('v2 parent detail propagates strict aggregation failures instead of returning partial data', async () => {
+    redis.getApiKey.mockResolvedValue({
+      id: 'parent-1',
+      isV2Parent: 'true',
+      weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '0',
+      rateLimitWindow: '0'
+    })
+    redis.getV2ParentUsageStats.mockRejectedValue(new Error('redis pipeline boom'))
+    redis.getV2ParentLedgerCostStats.mockResolvedValue({ total: 0, period: 0 })
+
+    await expect(calculateKeyDetailStats('parent-1')).rejects.toThrow('redis pipeline boom')
+    expect(client.scan).not.toHaveBeenCalled()
   })
 
   test('detail stats reject missing API keys', async () => {
