@@ -1,390 +1,36 @@
 <template>
-  <el-dialog
-    :append-to-body="true"
-    class="request-detail-modal"
-    :close-on-click-modal="false"
-    :destroy-on-close="true"
-    :fullscreen="isMobileViewport"
-    :model-value="show"
-    :show-close="false"
-    top="6vh"
-    width="960px"
-    @close="emitClose"
-  >
-    <template #header>
-      <div class="flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap sm:items-center">
-        <div class="min-w-0 flex-1">
-          <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100">
-            {{ detail?.model || '加载中...' }}
-          </h3>
-          <p class="mt-1 break-all text-xs text-gray-500 dark:text-gray-400 sm:text-sm">
-            Request ID: {{ requestId || '未知' }}
-          </p>
-        </div>
-        <div class="flex items-center gap-2 self-start sm:self-center">
-          <el-tag v-if="detail" effect="dark" :type="statusTagType(detail.statusCode)">
-            {{ detail.statusCode || 200 }}
-          </el-tag>
-          <button aria-label="关闭" class="modal-close-button" type="button" @click="emitClose">
-            <i class="fas fa-times" />
-          </button>
-        </div>
-      </div>
-    </template>
-
-    <div v-loading="loading" class="space-y-4">
-      <div
-        v-if="!loading && !detail"
-        class="rounded-xl border border-dashed border-gray-300 p-8 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400"
-      >
-        未找到该请求详情
-      </div>
-
-      <template v-else-if="detail">
-        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <div class="info-card">
-            <p class="info-label">接口</p>
-            <p class="info-value">{{ detail.endpoint || '-' }}</p>
-            <p class="info-sub">{{ detail.method || 'POST' }}</p>
-          </div>
-          <div class="info-card">
-            <p class="info-label">耗时</p>
-            <p class="info-value">{{ formatDuration(detail.durationMs) }}</p>
-            <p class="info-sub">{{ detail.stream ? '流式请求' : '非流式请求' }}</p>
-          </div>
-          <div class="info-card">
-            <p class="info-label">费用</p>
-            <p class="info-value text-amber-600 dark:text-amber-400">
-              {{ formatCost(detail.cost) }}
-            </p>
-            <p class="info-sub">
-              {{ detail.costRecomputed ? '估算成本' : '真实成本' }}
-              {{ formatCost(detail.realCost) }}
-              <span v-if="detail.usedFallbackPricing">unknown fallback</span>
-            </p>
-          </div>
-          <div class="info-card">
-            <p class="info-label">缓存命中率</p>
-            <p class="info-value text-cyan-600 dark:text-cyan-400">
-              {{ formatPercent(detail.cacheHitRate) }}
-            </p>
-            <p class="info-sub">{{ cacheHitRateLabel }}</p>
-          </div>
-        </div>
-
-        <div class="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
-          <div
-            class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
-          >
-            <h4 class="section-title">基础信息</h4>
-            <div class="grid gap-3 md:grid-cols-2">
-              <div>
-                <p class="field-label">时间</p>
-                <p class="field-value">{{ formatDate(detail.timestamp) }}</p>
-              </div>
-              <div>
-                <p class="field-label">API Key</p>
-                <p class="field-value">{{ detail.apiKeyName || detail.apiKeyId || '-' }}</p>
-                <p class="field-sub">{{ detail.apiKeyId || '-' }}</p>
-              </div>
-              <div>
-                <p class="field-label">使用账户</p>
-                <p class="field-value">{{ detail.accountName || detail.accountId || '-' }}</p>
-                <p class="field-sub">{{ detail.accountTypeName || detail.accountType || '-' }}</p>
-              </div>
-              <div>
-                <p class="field-label">模型</p>
-                <p class="field-value">{{ detail.model || '-' }}</p>
-                <p class="field-sub">
-                  {{ detail.isLongContextRequest ? '长上下文请求' : '标准上下文' }}
-                </p>
-              </div>
-              <div>
-                <p class="field-label">推理</p>
-                <p class="field-value">{{ formatReasoning(detail.reasoningDisplay) }}</p>
-                <p class="field-sub">
-                  {{ detail.reasoningSource ? `来源：${detail.reasoningSource}` : '未指定' }}
-                </p>
-              </div>
-              <div v-if="detail.usageType || detail.responsesLite || detail.webSearchCalls">
-                <p class="field-label">请求类型</p>
-                <p class="field-value">{{ detail.usageType || 'OpenAI Responses' }}</p>
-                <p class="field-sub">
-                  <span v-if="detail.responsesLite">Responses Lite</span>
-                  <span v-else-if="detail.webSearchCalls">
-                    Web Search {{ detail.webSearchCalls }} 次
-                  </span>
-                  <span v-else>标准请求</span>
-                </p>
-              </div>
-              <div>
-                <p class="field-label">出口本地 IP</p>
-                <p class="field-value">{{ detail.upstreamNicIp || '—' }}</p>
-                <p class="field-sub">
-                  {{ detail.upstreamNicIp ? '多网卡轮询' : '默认出口' }}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div
-            class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
-          >
-            <h4 class="section-title">Token 明细</h4>
-            <div class="space-y-2 text-sm">
-              <div class="metric-row">
-                <span>输入</span>
-                <span class="font-semibold text-blue-600 dark:text-blue-400">{{
-                  formatNumber(detail.inputTokens)
-                }}</span>
-              </div>
-              <div
-                v-if="hasImageUsage"
-                class="metric-row ml-4 text-xs text-gray-500 dark:text-gray-400"
-              >
-                <span>文本输入</span>
-                <span>{{ formatNumber(detail.textInputTokens) }}</span>
-              </div>
-              <div
-                v-if="hasImageUsage"
-                class="metric-row ml-4 text-xs text-gray-500 dark:text-gray-400"
-              >
-                <span>
-                  图片输入
-                  <span v-if="detail.imageUsageBreakdownEstimated" class="opacity-70"
-                    >（估算）</span
-                  >
-                </span>
-                <span>{{ formatNumber(detail.imageInputTokens) }}</span>
-              </div>
-              <div class="metric-row">
-                <span>输出</span>
-                <span class="font-semibold text-green-600 dark:text-green-400">{{
-                  formatNumber(detail.outputTokens)
-                }}</span>
-              </div>
-              <div
-                v-if="hasImageUsage"
-                class="metric-row ml-4 text-xs text-gray-500 dark:text-gray-400"
-              >
-                <span>图片输出</span>
-                <span>{{ formatNumber(detail.imageOutputTokens) }}</span>
-              </div>
-              <div class="metric-row">
-                <span>缓存读取</span>
-                <span class="font-semibold text-cyan-600 dark:text-cyan-400">{{
-                  formatNumber(detail.cacheReadTokens)
-                }}</span>
-              </div>
-              <div class="metric-row">
-                <span>缓存创建</span>
-                <span class="font-semibold text-purple-600 dark:text-purple-400">{{
-                  formatCacheCreate(detail.cacheCreateTokens, detail.cacheCreateNotApplicable)
-                }}</span>
-              </div>
-              <div
-                class="metric-row border-t border-dashed border-gray-200 pt-2 dark:border-gray-700"
-              >
-                <span>总 Token</span>
-                <span class="font-semibold text-gray-900 dark:text-gray-100">{{
-                  formatNumber(detail.totalTokens)
-                }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div
-          v-if="hasGrokRelayMetadata"
-          class="rounded-xl border border-cyan-200 bg-slate-50 p-4 shadow-sm dark:border-cyan-900/60 dark:bg-slate-900/40"
-        >
-          <h4 class="section-title">Grok 转发详情</h4>
-          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <div v-if="hasValue(detail.downstreamHttpStatus)">
-              <p class="field-label">下游 HTTP 状态</p>
-              <p class="field-value">{{ detail.downstreamHttpStatus }}</p>
-            </div>
-            <div v-if="hasValue(detail.upstreamHttpStatus)">
-              <p class="field-label">上游 HTTP 状态</p>
-              <p class="field-value">{{ detail.upstreamHttpStatus }}</p>
-            </div>
-            <div v-if="hasValue(detail.upstreamSemanticStatus)">
-              <p class="field-label">上游语义状态</p>
-              <p class="field-value">{{ detail.upstreamSemanticStatus }}</p>
-            </div>
-            <div v-if="detail.terminalType">
-              <p class="field-label">终态事件</p>
-              <p class="field-value">{{ detail.terminalType }}</p>
-            </div>
-            <div v-if="detail.errorType">
-              <p class="field-label">错误类型</p>
-              <p class="field-value">{{ detail.errorType }}</p>
-            </div>
-            <div v-if="detail.errorCode">
-              <p class="field-label">错误代码</p>
-              <p class="field-value">{{ detail.errorCode }}</p>
-            </div>
-            <div v-if="detail.upstreamRequestId">
-              <p class="field-label">上游请求 ID</p>
-              <p class="field-value break-all">{{ detail.upstreamRequestId }}</p>
-            </div>
-            <div v-if="detail.clientIp">
-              <p class="field-label">客户端 IP</p>
-              <p class="field-value break-all">{{ detail.clientIp }}</p>
-            </div>
-            <div v-if="hasValue(detail.firstTokenLatencyMs)">
-              <p class="field-label">首 Token 延迟</p>
-              <p class="field-value">{{ formatDuration(detail.firstTokenLatencyMs) }}</p>
-            </div>
-            <div v-if="detail.requestedModel">
-              <p class="field-label">请求模型</p>
-              <p class="field-value">{{ detail.requestedModel }}</p>
-            </div>
-            <div v-if="detail.mappedModel">
-              <p class="field-label">映射模型</p>
-              <p class="field-value">{{ detail.mappedModel }}</p>
-            </div>
-            <div v-if="detail.actualModel">
-              <p class="field-label">上游实际模型</p>
-              <p class="field-value">{{ detail.actualModel }}</p>
-            </div>
-            <div v-if="detail.billingModel">
-              <p class="field-label">计费模型</p>
-              <p class="field-value">{{ detail.billingModel }}</p>
-            </div>
-          </div>
-        </div>
-
-        <div
-          class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
-        >
-          <h4 class="section-title">费用拆分</h4>
-          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <div class="cost-chip">
-              <span>输入</span>
-              <strong>{{ formatCost(costBreakdown.input) }}</strong>
-            </div>
-            <div class="cost-chip">
-              <span>输出</span>
-              <strong>{{ formatCost(costBreakdown.output) }}</strong>
-            </div>
-            <div class="cost-chip">
-              <span>缓存创建</span>
-              <strong>{{
-                formatCacheCreateCost(costBreakdown.cacheCreate, detail.cacheCreateNotApplicable)
-              }}</strong>
-            </div>
-            <div class="cost-chip">
-              <span>缓存读取</span>
-              <strong>{{ formatCost(costBreakdown.cacheRead) }}</strong>
-            </div>
-            <div class="cost-chip">
-              <span>总计</span>
-              <strong>{{ formatCost(costBreakdown.total || detail.cost) }}</strong>
-            </div>
-          </div>
-        </div>
-
-        <div
-          class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
-        >
-          <div class="mb-3 flex items-center justify-between gap-3">
-            <h4 class="section-title mb-0">Request Body 快照</h4>
-            <el-button v-if="hasRequestBodySnapshot" size="small" @click="copySnapshot">
-              复制 JSON
-            </el-button>
-          </div>
-          <div v-if="hasRequestBodySnapshot" class="snapshot-panel">
-            <pre>{{ formattedSnapshot }}</pre>
-          </div>
-          <div
-            v-else-if="!bodyPreviewEnabled"
-            class="rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-4 py-6 text-sm text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300"
-          >
-            请求体预览已关闭，当前仅保留请求摘要字段，不展示请求体快照。
-          </div>
-          <div
-            v-else
-            class="rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400"
-          >
-            未保存请求体快照
-          </div>
-        </div>
-      </template>
-    </div>
-  </el-dialog>
+  <RequestDetailModalShell
+    :body-preview-enabled="bodyPreviewEnabled"
+    :detail="detail"
+    :formatted-snapshot="formattedSnapshot"
+    :loading="loading"
+    mode="admin"
+    :request-id="requestId"
+    :show="show"
+    @close="$emit('close')"
+    @copy-snapshot="copySnapshot"
+  />
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import dayjs from 'dayjs'
+import { computed, ref, watch } from 'vue'
+import RequestDetailModalShell from '@/components/request-details/RequestDetailModalShell.vue'
 import { getRequestDetailApi } from '@/utils/http_apis'
-import { showToast, formatNumber } from '@/utils/tools'
+import { showToast } from '@/utils/tools'
 
 const props = defineProps({
-  show: {
-    type: Boolean,
-    default: false
-  },
-  requestId: {
-    type: String,
-    default: ''
-  }
+  show: { type: Boolean, default: false },
+  requestId: { type: String, default: '' }
 })
-
-const emit = defineEmits(['close'])
+defineEmits(['close'])
 
 const loading = ref(false)
 const detail = ref(null)
 const bodyPreviewEnabled = ref(false)
-const isMobileViewport = ref(false)
-const hasImageUsage = computed(
-  () =>
-    detail.value?.textInputTokens !== undefined ||
-    detail.value?.imageInputTokens !== undefined ||
-    detail.value?.imageOutputTokens !== undefined
-)
-
-const hasValue = (value) => value !== null && value !== undefined && value !== ''
-const grokMetadataFields = [
-  'downstreamHttpStatus',
-  'upstreamHttpStatus',
-  'upstreamSemanticStatus',
-  'terminalType',
-  'errorType',
-  'errorCode',
-  'upstreamRequestId',
-  'clientIp',
-  'firstTokenLatencyMs',
-  'requestedModel',
-  'mappedModel',
-  'actualModel',
-  'billingModel'
-]
-const hasGrokRelayMetadata = computed(
-  () =>
-    detail.value?.accountType === 'grok' &&
-    grokMetadataFields.some((field) => hasValue(detail.value?.[field]))
-)
-
-const costBreakdown = computed(() => {
-  const breakdown = detail.value?.realCostBreakdown || detail.value?.costBreakdown || {}
-  return {
-    input: breakdown.input || 0,
-    output: breakdown.output || 0,
-    cacheCreate: breakdown.cacheCreate || breakdown.cacheWrite || 0,
-    cacheRead: breakdown.cacheRead || 0,
-    total: breakdown.total || detail.value?.realCost || detail.value?.cost || 0
-  }
-})
-
 const previewSuffixPattern = /\.\.\.\[\d+ chars\]$/
 
 const tryFormatJsonString = (value) => {
-  if (typeof value !== 'string') {
-    return null
-  }
-
+  if (typeof value !== 'string') return null
   try {
     return JSON.stringify(JSON.parse(value), null, 2)
   } catch (error) {
@@ -393,17 +39,13 @@ const tryFormatJsonString = (value) => {
 }
 
 const formatJsonLikeText = (value) => {
-  if (typeof value !== 'string') {
-    return ''
-  }
-
+  if (typeof value !== 'string') return ''
   const suffix = value.match(previewSuffixPattern)?.[0] || ''
   const source = suffix ? value.slice(0, -suffix.length) : value
   let formatted = ''
   let indent = 0
   let inString = false
   let escaping = false
-
   const appendIndent = () => {
     formatted += '  '.repeat(Math.max(0, indent))
   }
@@ -414,110 +56,67 @@ const formatJsonLikeText = (value) => {
       escaping = false
       continue
     }
-
     if (char === '\\') {
       formatted += char
       escaping = inString
       continue
     }
-
     if (char === '"') {
       inString = !inString
       formatted += char
       continue
     }
-
     if (inString) {
       formatted += char
       continue
     }
-
     if (char === '{' || char === '[') {
       formatted += `${char}\n`
       indent += 1
       appendIndent()
       continue
     }
-
     if (char === '}' || char === ']') {
-      formatted = formatted.replace(/[ \t]+$/g, '')
-      formatted = formatted.replace(/\n?$/, '\n')
+      formatted = formatted.replace(/[ \t]+$/g, '').replace(/\n?$/, '\n')
       indent = Math.max(0, indent - 1)
       appendIndent()
       formatted += char
       continue
     }
-
     if (char === ',') {
       formatted += ',\n'
       appendIndent()
       continue
     }
-
     if (char === ':') {
       formatted += ': '
       continue
     }
-
     formatted += char
   }
-
   const trimmed = formatted.trim()
-  if (!trimmed) {
-    return suffix
-  }
-
   return suffix ? `${trimmed}\n${suffix}` : trimmed
 }
 
-const extractSnapshotDisplaySource = (snapshot) => {
-  if (!snapshot) {
-    return ''
-  }
-
-  if (
-    typeof snapshot === 'object' &&
-    !Array.isArray(snapshot) &&
-    typeof snapshot.preview === 'string'
-  ) {
-    return snapshot.preview
-  }
-
-  return snapshot
-}
-
-const hasRequestBodySnapshot = computed(() => Boolean(detail.value?.requestBodySnapshot))
-
 const formattedSnapshot = computed(() => {
-  if (!detail.value?.requestBodySnapshot) {
-    return ''
-  }
-
-  const snapshotSource = extractSnapshotDisplaySource(detail.value.requestBodySnapshot)
-
-  if (typeof snapshotSource === 'string') {
-    return tryFormatJsonString(snapshotSource) || formatJsonLikeText(snapshotSource)
-  }
-
-  return JSON.stringify(snapshotSource, null, 2)
+  const snapshot = detail.value?.requestBodySnapshot
+  if (!snapshot) return ''
+  const source =
+    typeof snapshot === 'object' && !Array.isArray(snapshot) && typeof snapshot.preview === 'string'
+      ? snapshot.preview
+      : snapshot
+  if (typeof source === 'string') return tryFormatJsonString(source) || formatJsonLikeText(source)
+  return JSON.stringify(source, null, 2)
 })
 
-const cacheHitRateLabel = computed(() => '读 / (输入 + 读 + 建)')
-
-const emitClose = () => emit('close')
-
 const fetchDetail = async () => {
-  if (!props.show || !props.requestId) {
-    return
-  }
-
-  const targetRequestId = props.requestId
-
+  if (!props.show || !props.requestId) return
+  const target = props.requestId
   loading.value = true
   detail.value = null
   try {
-    const response = await getRequestDetailApi(targetRequestId)
-    if (targetRequestId !== props.requestId || !props.show) return
+    const response = await getRequestDetailApi(target)
+    if (!props.show || props.requestId !== target) return
     if (response?.success === false) {
       showToast(response.message || '加载请求详情失败', 'error')
       return
@@ -525,23 +124,16 @@ const fetchDetail = async () => {
     bodyPreviewEnabled.value = response.data?.bodyPreviewEnabled === true
     detail.value = response.data?.record || null
   } catch (error) {
-    if (targetRequestId !== props.requestId || !props.show) return
-    detail.value = null
+    if (!props.show || props.requestId !== target) return
     bodyPreviewEnabled.value = false
     showToast(`加载请求详情失败：${error.message || '未知错误'}`, 'error')
   } finally {
-    if (targetRequestId === props.requestId) {
-      loading.value = false
-    }
+    if (props.requestId === target) loading.value = false
   }
 }
 
 const copySnapshot = async () => {
-  if (!formattedSnapshot.value) {
-    showToast('没有可复制的快照', 'info')
-    return
-  }
-
+  if (!formattedSnapshot.value) return showToast('没有可复制的快照', 'info')
   try {
     await navigator.clipboard.writeText(formattedSnapshot.value)
     showToast('已复制请求快照', 'success')
@@ -550,258 +142,17 @@ const copySnapshot = async () => {
   }
 }
 
-const formatDate = (value) => (value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-')
-const formatDurationSecondsValue = (value) => {
-  const durationMs = Number(value || 0)
-  const seconds = Number.isFinite(durationMs) ? durationMs / 1000 : 0
-  return seconds.toFixed(2)
-}
-const formatDuration = (value) => `${formatDurationSecondsValue(value)}s`
-const formatPercent = (value) => `${Number(value || 0).toFixed(2)}%`
-const formatCacheCreate = (value, notApplicable = false) =>
-  notApplicable ? '-' : formatNumber(value)
-const formatReasoning = (value) => value || '-'
-const formatCost = (value) => {
-  const num = Number(value || 0)
-  if (num >= 1) return `$${num.toFixed(2)}`
-  if (num >= 0.001) return `$${num.toFixed(4)}`
-  return `$${num.toFixed(6)}`
-}
-const formatCacheCreateCost = (value, notApplicable = false) =>
-  notApplicable ? '-' : formatCost(value)
-
-const statusTagType = (statusCode) => {
-  if (statusCode >= 500) return 'danger'
-  if (statusCode >= 400) return 'warning'
-  return 'success'
-}
-
-const syncViewportState = () => {
-  if (typeof window === 'undefined') {
-    return
-  }
-  isMobileViewport.value = window.innerWidth < 768
-}
-
 watch(
   () => [props.show, props.requestId],
   () => {
+    if (!props.show) {
+      detail.value = null
+      bodyPreviewEnabled.value = false
+      loading.value = false
+      return
+    }
     fetchDetail()
   },
   { immediate: true }
 )
-
-watch(
-  () => props.show,
-  (visible) => {
-    if (!visible) {
-      detail.value = null
-      bodyPreviewEnabled.value = false
-    }
-  }
-)
-
-onMounted(() => {
-  syncViewportState()
-  window.addEventListener('resize', syncViewportState)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', syncViewportState)
-})
 </script>
-
-<style scoped>
-.request-detail-modal :deep(.el-dialog) {
-  width: min(960px, calc(100vw - 32px));
-  max-width: calc(100vw - 32px);
-  margin: 0 auto;
-  overflow: hidden;
-  border-radius: 24px;
-}
-
-.request-detail-modal :deep(.el-dialog__header) {
-  margin: 0;
-  padding: 18px 20px 0;
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  background: rgba(255, 255, 255, 0.98);
-  backdrop-filter: blur(10px);
-}
-
-.dark .request-detail-modal :deep(.el-dialog__header) {
-  background: rgba(17, 24, 39, 0.98);
-}
-
-.request-detail-modal :deep(.el-dialog__body) {
-  padding: 12px 20px 20px;
-  max-height: min(78vh, 920px);
-  overflow-y: auto;
-}
-
-.request-detail-modal :deep(.el-dialog.is-fullscreen) {
-  width: 100vw !important;
-  max-width: none;
-  height: 100vh;
-  margin: 0;
-  border-radius: 0;
-}
-
-.request-detail-modal :deep(.el-dialog.is-fullscreen .el-dialog__header) {
-  padding: 14px 16px 0;
-}
-
-.request-detail-modal :deep(.el-dialog.is-fullscreen .el-dialog__body) {
-  padding: 12px 16px 24px;
-  max-height: none;
-  height: calc(100vh - 76px);
-}
-
-.modal-close-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 9999px;
-  color: rgb(100 116 139);
-  transition: all 0.2s ease;
-}
-
-.modal-close-button:hover {
-  background: rgba(148, 163, 184, 0.14);
-  color: rgb(51 65 85);
-}
-
-.dark .modal-close-button {
-  color: rgb(203 213 225);
-}
-
-.dark .modal-close-button:hover {
-  background: rgba(71, 85, 105, 0.35);
-  color: rgb(248 250 252);
-}
-
-.info-card {
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 16px;
-  padding: 16px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(240, 249, 255, 0.94));
-}
-
-.dark .info-card {
-  background: linear-gradient(135deg, rgba(17, 24, 39, 0.94), rgba(15, 23, 42, 0.92));
-  border-color: rgba(71, 85, 105, 0.35);
-}
-
-.info-label,
-.field-label {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgb(100 116 139);
-}
-
-.info-value,
-.field-value {
-  margin-top: 6px;
-  font-size: 18px;
-  font-weight: 700;
-  color: rgb(15 23 42);
-}
-
-.dark .info-value,
-.dark .field-value {
-  color: rgb(241 245 249);
-}
-
-.info-sub,
-.field-sub {
-  margin-top: 4px;
-  font-size: 12px;
-  color: rgb(100 116 139);
-}
-
-.section-title {
-  margin-bottom: 12px;
-  font-size: 14px;
-  font-weight: 700;
-  color: rgb(30 41 59);
-}
-
-.dark .section-title {
-  color: rgb(226 232 240);
-}
-
-.metric-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.cost-chip {
-  border-radius: 14px;
-  background: rgb(248 250 252);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.dark .cost-chip {
-  background: rgba(30, 41, 59, 0.75);
-}
-
-.snapshot-panel {
-  max-height: 380px;
-  overflow: auto;
-  border-radius: 14px;
-  background: rgb(15 23 42);
-  padding: 16px;
-}
-
-.snapshot-panel pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-  line-height: 1.55;
-  color: rgb(226 232 240);
-}
-
-@media (max-width: 767px) {
-  .request-detail-modal :deep(.el-dialog__header) {
-    padding: 14px 16px 0;
-  }
-
-  .request-detail-modal :deep(.el-dialog__body) {
-    padding: 12px 16px 20px;
-    max-height: calc(100vh - 88px);
-  }
-
-  .info-card {
-    padding: 14px;
-  }
-
-  .info-value,
-  .field-value {
-    font-size: 16px;
-  }
-
-  .cost-chip {
-    padding: 10px 12px;
-  }
-
-  .snapshot-panel {
-    max-height: min(42vh, 420px);
-    padding: 14px;
-  }
-
-  .snapshot-panel pre {
-    font-size: 11px;
-    line-height: 1.5;
-  }
-}
-</style>

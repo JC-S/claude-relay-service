@@ -96,37 +96,7 @@
             请求明细采集已关闭，当前展示的是仍在保留期内的历史记录；不会继续写入新的请求明细。
           </div>
 
-          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <div class="summary-card">
-              <p class="summary-label">总请求</p>
-              <p class="summary-value">{{ formatNumber(summary.totalRequests) }}</p>
-            </div>
-            <div class="summary-card">
-              <p class="summary-label">输入 / 输出</p>
-              <p class="summary-value">{{ formatNumber(summary.inputTokens) }}</p>
-              <p class="summary-sub">输出 {{ formatNumber(summary.outputTokens) }}</p>
-            </div>
-            <div class="summary-card">
-              <p class="summary-label">缓存命中率</p>
-              <p class="summary-value text-cyan-600 dark:text-cyan-400">
-                {{ formatPercent(summary.cacheHitRate) }}
-              </p>
-              <p class="summary-sub">
-                读 / (输入 + 读 + 建)：{{ formatNumber(summary.cacheHitNumerator) }} /
-                {{ formatNumber(summary.cacheHitDenominator) }}
-              </p>
-            </div>
-            <div class="summary-card">
-              <p class="summary-label">总费用</p>
-              <p class="summary-value text-amber-600 dark:text-amber-400">
-                {{ formatCost(summary.totalCost) }}
-              </p>
-            </div>
-            <div class="summary-card">
-              <p class="summary-label">平均耗时</p>
-              <p class="summary-value">{{ formatDuration(summary.avgDurationMs) }}</p>
-            </div>
-          </div>
+          <RequestDetailsSummary :summary="summary" />
 
           <div
             class="rounded-2xl border border-gray-200 bg-gray-50/70 p-4 dark:border-gray-700 dark:bg-gray-800/40"
@@ -595,6 +565,7 @@ import {
 } from '@/utils/http_apis'
 import { showToast, formatDate, formatNumber } from '@/utils/tools'
 import RequestDetailModal from '@/components/admin/RequestDetailModal.vue'
+import RequestDetailsSummary from '@/components/request-details/RequestDetailsSummary.vue'
 
 const router = useRouter()
 
