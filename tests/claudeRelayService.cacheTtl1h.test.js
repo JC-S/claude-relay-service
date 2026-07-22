@@ -74,6 +74,37 @@ function ephemeral(text, ttl) {
 }
 
 describe('Claude relay Anthropic cache TTL 1h helpers', () => {
+  test.each([
+    [false, {}, false],
+    [true, {}, true],
+    [false, { anthropicCacheTtl1hOverrideEnabled: true }, false],
+    [true, { anthropicCacheTtl1hOverrideEnabled: true }, false],
+    [
+      false,
+      { anthropicCacheTtl1hOverrideEnabled: true, anthropicCacheTtl1hInjectionEnabled: true },
+      true
+    ],
+    [
+      true,
+      { anthropicCacheTtl1hOverrideEnabled: 'true', anthropicCacheTtl1hInjectionEnabled: 'true' },
+      true
+    ],
+    [
+      true,
+      { anthropicCacheTtl1hOverrideEnabled: 'false', anthropicCacheTtl1hInjectionEnabled: true },
+      true
+    ],
+    [
+      false,
+      { anthropicCacheTtl1hOverrideEnabled: 1, anthropicCacheTtl1hInjectionEnabled: true },
+      false
+    ]
+  ])('resolves global and API key TTL settings %#', (globalEnabled, apiKeyData, expected) => {
+    expect(relayService._resolveAnthropicCacheTtl1hInjection(globalEnabled, apiKeyData)).toBe(
+      expected
+    )
+  })
+
   test('injects all supported existing ephemeral cache breakpoints without creating new ones', () => {
     const body = {
       cache_control: { type: 'ephemeral', ttl: '5m' },

@@ -42,7 +42,8 @@ jest.mock('../src/utils/logger', () => ({
   warn: jest.fn(),
   error: jest.fn(),
   database: jest.fn(),
-  debug: jest.fn()
+  debug: jest.fn(),
+  api: jest.fn()
 }))
 
 jest.mock('../src/services/serviceRatesService', () => ({
@@ -113,6 +114,8 @@ describe('apiKeyService openai responses config', () => {
     expect(storedKeyData.enableOpenAICodexLiteImages).toBe('false')
     expect(storedKeyData.enableGeneralPromptCacheAssist).toBe('false')
     expect(storedKeyData.enableClaudeThinkingSignatureLossyFallback).toBe('false')
+    expect(storedKeyData.anthropicCacheTtl1hOverrideEnabled).toBe('false')
+    expect(storedKeyData.anthropicCacheTtl1hInjectionEnabled).toBe('false')
 
     expect(result.enableOpenAIResponsesCodexAdaptation).toBe(true)
     expect(result.enableOpenAIResponsesPayloadRules).toBe(false)
@@ -124,6 +127,8 @@ describe('apiKeyService openai responses config', () => {
     expect(result.enableOpenAICodexLiteImages).toBe(false)
     expect(result.enableGeneralPromptCacheAssist).toBe(false)
     expect(result.enableClaudeThinkingSignatureLossyFallback).toBe(false)
+    expect(result.anthropicCacheTtl1hOverrideEnabled).toBe(false)
+    expect(result.anthropicCacheTtl1hInjectionEnabled).toBe(false)
   })
 
   test('updateApiKey serializes toggle and payload rule fields', async () => {
@@ -146,7 +151,9 @@ describe('apiKeyService openai responses config', () => {
       enableGeneralOpenAIImages: true,
       enableOpenAICodexLiteImages: true,
       enableGeneralPromptCacheAssist: true,
-      enableClaudeThinkingSignatureLossyFallback: true
+      enableClaudeThinkingSignatureLossyFallback: true,
+      anthropicCacheTtl1hOverrideEnabled: true,
+      anthropicCacheTtl1hInjectionEnabled: true
     })
 
     const [, storedKeyData] = redis.updateApiKeyFields.mock.calls[0]
@@ -162,6 +169,8 @@ describe('apiKeyService openai responses config', () => {
     expect(storedKeyData.enableOpenAICodexLiteImages).toBe('true')
     expect(storedKeyData.enableGeneralPromptCacheAssist).toBe('true')
     expect(storedKeyData.enableClaudeThinkingSignatureLossyFallback).toBe('true')
+    expect(storedKeyData.anthropicCacheTtl1hOverrideEnabled).toBe('true')
+    expect(storedKeyData.anthropicCacheTtl1hInjectionEnabled).toBe('true')
   })
 
   test('getApiKeyById returns parsed toggle and rule values', async () => {
@@ -196,6 +205,8 @@ describe('apiKeyService openai responses config', () => {
       enableOpenAICodexLiteImages: 'true',
       enableGeneralPromptCacheAssist: 'true',
       enableClaudeThinkingSignatureLossyFallback: 'true',
+      anthropicCacheTtl1hOverrideEnabled: 'true',
+      anthropicCacheTtl1hInjectionEnabled: 'false',
       ipWhitelist: JSON.stringify(['203.0.113.10']),
       openaiResponsesPayloadRules: JSON.stringify([
         { path: 'model', valueType: 'string', value: 'gpt-5' }
@@ -212,6 +223,8 @@ describe('apiKeyService openai responses config', () => {
     expect(result.enableOpenAICodexLiteImages).toBe(true)
     expect(result.enableGeneralPromptCacheAssist).toBe(true)
     expect(result.enableClaudeThinkingSignatureLossyFallback).toBe(true)
+    expect(result.anthropicCacheTtl1hOverrideEnabled).toBe(true)
+    expect(result.anthropicCacheTtl1hInjectionEnabled).toBe(false)
     expect(result.ipWhitelist).toEqual(['203.0.113.10'])
     expect(result.openaiResponsesPayloadRules).toEqual([
       { path: 'model', valueType: 'string', value: 'gpt-5' }
@@ -255,6 +268,8 @@ describe('apiKeyService openai responses config', () => {
       tags: '[]',
       enableOpenAIResponsesCodexAdaptation: 'true',
       enableOpenAIResponsesPayloadRules: 'false',
+      anthropicCacheTtl1hOverrideEnabled: 'true',
+      anthropicCacheTtl1hInjectionEnabled: 'false',
       openaiResponsesPayloadRules: '[]'
     })
     redis.getDailyCost.mockResolvedValue(12.34)
@@ -271,7 +286,43 @@ describe('apiKeyService openai responses config', () => {
     expect(result.keyData.weeklyOpusCost).toBe(23.45)
     expect(result.keyData.enableIpWhitelist).toBe(true)
     expect(result.keyData.ipWhitelist).toEqual(['203.0.113.10'])
+    expect(result.keyData.anthropicCacheTtl1hOverrideEnabled).toBe(true)
+    expect(result.keyData.anthropicCacheTtl1hInjectionEnabled).toBe(false)
     expect(redis.getWeeklyOpusCost).toHaveBeenCalledWith('key-1', 3, 19)
+  })
+
+  test('validateApiKey projects the per-key Anthropic cache TTL override', async () => {
+    redis.findApiKeyByHash.mockResolvedValue({
+      id: 'key-1',
+      name: 'Key',
+      description: '',
+      isActive: 'true',
+      isDeleted: 'false',
+      expiresAt: '',
+      permissions: '[]',
+      restrictedModels: '[]',
+      allowedClients: '[]',
+      ipWhitelist: '[]',
+      tags: '[]',
+      serviceRates: '{}',
+      tokenLimit: '0',
+      concurrencyLimit: '0',
+      rateLimitWindow: '0',
+      rateLimitRequests: '0',
+      rateLimitCost: '0',
+      dailyCostLimit: '0',
+      totalCostLimit: '0',
+      weeklyOpusCostLimit: '0',
+      weeklyFableCostLimit: '0',
+      anthropicCacheTtl1hOverrideEnabled: 'true',
+      anthropicCacheTtl1hInjectionEnabled: 'true'
+    })
+
+    const result = await apiKeyService.validateApiKey('cr_test_key')
+
+    expect(result.valid).toBe(true)
+    expect(result.keyData.anthropicCacheTtl1hOverrideEnabled).toBe(true)
+    expect(result.keyData.anthropicCacheTtl1hInjectionEnabled).toBe(true)
   })
 
   test('recordUsageWithDetails uses CostCalculator unknown fallback for missing model pricing', async () => {

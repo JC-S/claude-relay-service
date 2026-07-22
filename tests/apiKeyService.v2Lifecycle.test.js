@@ -263,7 +263,7 @@ describe('apiKeyService v2 lifecycle fixes', () => {
   })
 
   // 4.6. 普通编辑入口不得改 v2 父账号的 daily/total/v2TotalBudget，但周 Opus 限制仍可继承生效
-  test('updateApiKey ignores v2 parent daily total and v2TotalBudget but preserves weekly updates', async () => {
+  test('updateApiKey ignores v2 parent limits but preserves weekly and Anthropic TTL updates', async () => {
     redis.getApiKey.mockResolvedValue({
       id: PARENT_ID,
       apiKey: 'hashed-parent-key',
@@ -282,7 +282,9 @@ describe('apiKeyService v2 lifecycle fixes', () => {
       dailyCostLimit: 100,
       totalCostLimit: 9000,
       v2TotalBudget: 15000,
-      weeklyOpusCostLimit: 600
+      weeklyOpusCostLimit: 600,
+      anthropicCacheTtl1hOverrideEnabled: true,
+      anthropicCacheTtl1hInjectionEnabled: true
     })
 
     const [keyId, storedKeyData] = redis.updateApiKeyFields.mock.calls[0]
@@ -290,6 +292,8 @@ describe('apiKeyService v2 lifecycle fixes', () => {
     expect(storedKeyData).not.toHaveProperty('dailyCostLimit')
     expect(storedKeyData).not.toHaveProperty('totalCostLimit')
     expect(storedKeyData).not.toHaveProperty('v2TotalBudget')
+    expect(storedKeyData.anthropicCacheTtl1hOverrideEnabled).toBe('true')
+    expect(storedKeyData.anthropicCacheTtl1hInjectionEnabled).toBe('true')
     expect(storedKeyData.weeklyOpusCostLimit).toBe('600')
     expect(redis.deleteApiKeyHash).toHaveBeenCalledWith('hashed-parent-key')
   })
@@ -1125,6 +1129,63 @@ describe('apiKeyService v2 IP whitelist', () => {
       expect(result.keyData.ipWhitelist).toEqual(['9.9.9.9'])
     })
 
+    test('keeps Anthropic cache TTL override on the v2 child instead of inheriting the parent', async () => {
+      mockChildAndParent(
+        {
+          anthropicCacheTtl1hOverrideEnabled: 'true',
+          anthropicCacheTtl1hInjectionEnabled: 'false'
+        },
+        {
+          anthropicCacheTtl1hOverrideEnabled: 'true',
+          anthropicCacheTtl1hInjectionEnabled: 'true'
+        }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(result.keyData.anthropicCacheTtl1hOverrideEnabled).toBe(true)
+      expect(result.keyData.anthropicCacheTtl1hInjectionEnabled).toBe(false)
+    })
+
+    test('inherits the v2 parent Anthropic cache TTL override when the child follows defaults', async () => {
+      mockChildAndParent(
+        {
+          anthropicCacheTtl1hOverrideEnabled: 'false',
+          anthropicCacheTtl1hInjectionEnabled: 'false'
+        },
+        {
+          anthropicCacheTtl1hOverrideEnabled: 'true',
+          anthropicCacheTtl1hInjectionEnabled: 'true'
+        }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(result.keyData.anthropicCacheTtl1hOverrideEnabled).toBe(true)
+      expect(result.keyData.anthropicCacheTtl1hInjectionEnabled).toBe(true)
+    })
+
+    test('falls through to the global setting when neither v2 parent nor child overrides TTL', async () => {
+      mockChildAndParent(
+        {
+          anthropicCacheTtl1hOverrideEnabled: 'false',
+          anthropicCacheTtl1hInjectionEnabled: 'true'
+        },
+        {
+          anthropicCacheTtl1hOverrideEnabled: 'false',
+          anthropicCacheTtl1hInjectionEnabled: 'true'
+        }
+      )
+
+      const result = await apiKeyService.validateApiKey(CHILD_SECRET)
+
+      expect(result.valid).toBe(true)
+      expect(result.keyData.anthropicCacheTtl1hOverrideEnabled).toBe(false)
+      expect(result.keyData.anthropicCacheTtl1hInjectionEnabled).toBe(false)
+    })
+
     test('uses v2 parent aggregate Fable weekly cost for inherited Fable limit', async () => {
       redis.getV2ParentWeeklyFableCost.mockResolvedValue(88.5)
       mockChildAndParent(
@@ -1210,6 +1271,37 @@ describe('apiKeyService v2 IP whitelist', () => {
       expect(keyData.enableIpWhitelist).toBe('false')
       expect(keyData.ipWhitelist).toBe('[]')
       expect(keyData.permissions).toBe('["claude"]')
+    })
+
+    test('uses the same v2 parent and child Anthropic TTL precedence for stats', async () => {
+      redis.getApiKey.mockResolvedValue({
+        ...STATS_PARENT,
+        anthropicCacheTtl1hOverrideEnabled: 'true',
+        anthropicCacheTtl1hInjectionEnabled: 'true'
+      })
+      const inherited = {
+        id: 'child-1',
+        parentKeyId: PARENT_ID,
+        anthropicCacheTtl1hOverrideEnabled: 'false',
+        anthropicCacheTtl1hInjectionEnabled: 'false'
+      }
+
+      await apiKeyService._overlayV2ParentConfigForStats(inherited)
+
+      expect(inherited.anthropicCacheTtl1hOverrideEnabled).toBe('true')
+      expect(inherited.anthropicCacheTtl1hInjectionEnabled).toBe('true')
+
+      const childOverride = {
+        id: 'child-2',
+        parentKeyId: PARENT_ID,
+        anthropicCacheTtl1hOverrideEnabled: 'true',
+        anthropicCacheTtl1hInjectionEnabled: 'false'
+      }
+
+      await apiKeyService._overlayV2ParentConfigForStats(childOverride)
+
+      expect(childOverride.anthropicCacheTtl1hOverrideEnabled).toBe('true')
+      expect(childOverride.anthropicCacheTtl1hInjectionEnabled).toBe('false')
     })
   })
 

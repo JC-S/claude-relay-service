@@ -29,6 +29,8 @@ describe('redis api key parsing', () => {
       enableGeneralOpenAIImages: 'true',
       enableGeneralPromptCacheAssist: 'true',
       enableClaudeThinkingSignatureLossyFallback: 'true',
+      anthropicCacheTtl1hOverrideEnabled: 'true',
+      anthropicCacheTtl1hInjectionEnabled: 'true',
       ipWhitelist: JSON.stringify(['203.0.113.10', '2001:db8::1']),
       openaiResponsesPayloadRules: JSON.stringify([
         { path: 'model', valueType: 'string', value: 'gpt-5' }
@@ -43,6 +45,8 @@ describe('redis api key parsing', () => {
     expect(parsed.enableGeneralOpenAIImages).toBe(true)
     expect(parsed.enableGeneralPromptCacheAssist).toBe(true)
     expect(parsed.enableClaudeThinkingSignatureLossyFallback).toBe(true)
+    expect(parsed.anthropicCacheTtl1hOverrideEnabled).toBe(true)
+    expect(parsed.anthropicCacheTtl1hInjectionEnabled).toBe(true)
     expect(parsed.ipWhitelist).toEqual(['203.0.113.10', '2001:db8::1'])
     expect(parsed.openaiResponsesPayloadRules).toEqual([
       { path: 'model', valueType: 'string', value: 'gpt-5' }
@@ -75,6 +79,8 @@ describe('redis api key parsing', () => {
     expect(parsed.enableGeneralOpenAIImages).toBe(false)
     expect(parsed.enableGeneralPromptCacheAssist).toBe(false)
     expect(parsed.enableClaudeThinkingSignatureLossyFallback).toBe(false)
+    expect(parsed.anthropicCacheTtl1hOverrideEnabled).toBe(false)
+    expect(parsed.anthropicCacheTtl1hInjectionEnabled).toBe(false)
     expect(parsed.ipWhitelist).toEqual([])
     expect(parsed.openaiResponsesPayloadRules).toEqual([])
   })

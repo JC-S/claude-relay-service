@@ -484,6 +484,19 @@ class ClaudeRelayService {
     )
   }
 
+  _resolveAnthropicCacheTtl1hInjection(globalEnabled, apiKeyData = {}) {
+    const overrideEnabled =
+      apiKeyData.anthropicCacheTtl1hOverrideEnabled === true ||
+      apiKeyData.anthropicCacheTtl1hOverrideEnabled === 'true'
+    if (!overrideEnabled) {
+      return globalEnabled === true || globalEnabled === 'true'
+    }
+    return (
+      apiKeyData.anthropicCacheTtl1hInjectionEnabled === true ||
+      apiKeyData.anthropicCacheTtl1hInjectionEnabled === 'true'
+    )
+  }
+
   _isInvalidThinkingSignatureError(statusCode, body) {
     if (statusCode !== 400) {
       return false
@@ -966,8 +979,12 @@ class ClaudeRelayService {
 
       // 获取有效的访问token
       const accessToken = await claudeAccountService.getValidAccessToken(accountId)
-      const enableCacheTtl1hInjection =
+      const globalCacheTtl1hInjectionEnabled =
         await claudeRelayConfigService.isAnthropicCacheTtl1hInjectionEnabled()
+      const enableCacheTtl1hInjection = this._resolveAnthropicCacheTtl1hInjection(
+        globalCacheTtl1hInjectionEnabled,
+        apiKeyData
+      )
 
       const isRealClaudeCodeRequest = this._isActualClaudeCodeRequest(requestBody, clientHeaders)
       const processedBody = this._processRequestBody(
@@ -2617,8 +2634,12 @@ class ClaudeRelayService {
 
       // 获取有效的访问token
       const accessToken = await claudeAccountService.getValidAccessToken(accountId)
-      const enableCacheTtl1hInjection =
+      const globalCacheTtl1hInjectionEnabled =
         await claudeRelayConfigService.isAnthropicCacheTtl1hInjectionEnabled()
+      const enableCacheTtl1hInjection = this._resolveAnthropicCacheTtl1hInjection(
+        globalCacheTtl1hInjectionEnabled,
+        apiKeyData
+      )
 
       const isRealClaudeCodeRequest = this._isActualClaudeCodeRequest(requestBody, clientHeaders)
       const processedBody = this._processRequestBody(

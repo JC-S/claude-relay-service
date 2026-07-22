@@ -297,6 +297,22 @@ function getV2InheritSkipFields(keyData) {
   return new Set(['enableIpWhitelist', 'ipWhitelist'])
 }
 
+function overlayV2AnthropicCacheTtlSettings(childData, parentData) {
+  if (parseBooleanWithDefault(childData?.anthropicCacheTtl1hOverrideEnabled, false)) {
+    return
+  }
+
+  const parentOverrideEnabled = parseBooleanWithDefault(
+    parentData?.anthropicCacheTtl1hOverrideEnabled,
+    false
+  )
+  childData.anthropicCacheTtl1hOverrideEnabled = String(parentOverrideEnabled)
+  childData.anthropicCacheTtl1hInjectionEnabled = String(
+    parentOverrideEnabled &&
+      parseBooleanWithDefault(parentData?.anthropicCacheTtl1hInjectionEnabled, false)
+  )
+}
+
 // 🆕 v2 自助接口布尔入参口径（与 updateV2Child 的 isActive 一致）：bool 或 'true'/'false' 字符串
 function parseV2Boolean(value, fieldName) {
   if (typeof value === 'boolean') {
@@ -423,6 +439,8 @@ class ApiKeyService {
       enableOpenAICodexLiteImages = false,
       enableGeneralPromptCacheAssist = false,
       enableClaudeThinkingSignatureLossyFallback = false,
+      anthropicCacheTtl1hOverrideEnabled = false,
+      anthropicCacheTtl1hInjectionEnabled = false,
       enableOpenAIResponsesCodexAdaptation = true,
       enableOpenAIResponsesPayloadRules = false,
       openaiResponsesPayloadRules = []
@@ -516,6 +534,8 @@ class ApiKeyService {
       enableClaudeThinkingSignatureLossyFallback: String(
         enableClaudeThinkingSignatureLossyFallback === true
       ),
+      anthropicCacheTtl1hOverrideEnabled: String(anthropicCacheTtl1hOverrideEnabled === true),
+      anthropicCacheTtl1hInjectionEnabled: String(anthropicCacheTtl1hInjectionEnabled === true),
       enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
       enableOpenAIResponsesPayloadRules: String(enableOpenAIResponsesPayloadRules === true),
       openaiResponsesPayloadRules: JSON.stringify(payloadRulesValidation.rules)
@@ -619,6 +639,14 @@ class ApiKeyService {
       ),
       enableClaudeThinkingSignatureLossyFallback: parseBooleanWithDefault(
         keyData.enableClaudeThinkingSignatureLossyFallback,
+        false
+      ),
+      anthropicCacheTtl1hOverrideEnabled: parseBooleanWithDefault(
+        keyData.anthropicCacheTtl1hOverrideEnabled,
+        false
+      ),
+      anthropicCacheTtl1hInjectionEnabled: parseBooleanWithDefault(
+        keyData.anthropicCacheTtl1hInjectionEnabled,
         false
       ),
       enableOpenAIResponsesCodexAdaptation: parseBooleanWithDefault(
@@ -755,6 +783,7 @@ class ApiKeyService {
             keyData[f] = parentData[f]
           }
         }
+        overlayV2AnthropicCacheTtlSettings(keyData, parentData)
         // 父账号总账信息（供 auth 层做总账 402 校验）
         const parentBudget = parseFloat(parentData.v2TotalBudget || 0)
         const parentUsed = await redis.getV2ParentTotalCost(keyData.parentKeyId)
@@ -875,6 +904,14 @@ class ApiKeyService {
         keyData.enableClaudeThinkingSignatureLossyFallback,
         false
       )
+      const anthropicCacheTtl1hOverrideEnabled = parseBooleanWithDefault(
+        keyData.anthropicCacheTtl1hOverrideEnabled,
+        false
+      )
+      const anthropicCacheTtl1hInjectionEnabled = parseBooleanWithDefault(
+        keyData.anthropicCacheTtl1hInjectionEnabled,
+        false
+      )
 
       return {
         valid: true,
@@ -923,6 +960,8 @@ class ApiKeyService {
           enableOpenAICodexLiteImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
+          anthropicCacheTtl1hOverrideEnabled,
+          anthropicCacheTtl1hInjectionEnabled,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
           openaiResponsesPayloadRules,
@@ -1069,6 +1108,14 @@ class ApiKeyService {
         keyData.enableClaudeThinkingSignatureLossyFallback,
         false
       )
+      const anthropicCacheTtl1hOverrideEnabled = parseBooleanWithDefault(
+        keyData.anthropicCacheTtl1hOverrideEnabled,
+        false
+      )
+      const anthropicCacheTtl1hInjectionEnabled = parseBooleanWithDefault(
+        keyData.anthropicCacheTtl1hInjectionEnabled,
+        false
+      )
 
       return {
         valid: true,
@@ -1136,6 +1183,8 @@ class ApiKeyService {
           enableOpenAICodexLiteImages,
           enableGeneralPromptCacheAssist,
           enableClaudeThinkingSignatureLossyFallback,
+          anthropicCacheTtl1hOverrideEnabled,
+          anthropicCacheTtl1hInjectionEnabled,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
           openaiResponsesPayloadRules
@@ -1172,6 +1221,7 @@ class ApiKeyService {
           keyData[f] = parentData[f]
         }
       }
+      overlayV2AnthropicCacheTtlSettings(keyData, parentData)
     }
     return keyData
   }
@@ -1436,6 +1486,14 @@ class ApiKeyService {
         )
         key.enableClaudeThinkingSignatureLossyFallback = parseBooleanWithDefault(
           key.enableClaudeThinkingSignatureLossyFallback,
+          false
+        )
+        key.anthropicCacheTtl1hOverrideEnabled = parseBooleanWithDefault(
+          key.anthropicCacheTtl1hOverrideEnabled,
+          false
+        )
+        key.anthropicCacheTtl1hInjectionEnabled = parseBooleanWithDefault(
+          key.anthropicCacheTtl1hInjectionEnabled,
           false
         )
         key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
@@ -1764,6 +1822,14 @@ class ApiKeyService {
           key.enableClaudeThinkingSignatureLossyFallback,
           false
         )
+        key.anthropicCacheTtl1hOverrideEnabled = parseBooleanWithDefault(
+          key.anthropicCacheTtl1hOverrideEnabled,
+          false
+        )
+        key.anthropicCacheTtl1hInjectionEnabled = parseBooleanWithDefault(
+          key.anthropicCacheTtl1hInjectionEnabled,
+          false
+        )
         key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
           key.enableOpenAIResponsesCodexAdaptation,
           true
@@ -2019,6 +2085,8 @@ class ApiKeyService {
         'enableOpenAICodexLiteImages',
         'enableGeneralPromptCacheAssist',
         'enableClaudeThinkingSignatureLossyFallback',
+        'anthropicCacheTtl1hOverrideEnabled',
+        'anthropicCacheTtl1hInjectionEnabled',
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
         'openaiResponsesPayloadRules',
@@ -2070,6 +2138,8 @@ class ApiKeyService {
             field === 'enableOpenAICodexLiteImages' ||
             field === 'enableGeneralPromptCacheAssist' ||
             field === 'enableClaudeThinkingSignatureLossyFallback' ||
+            field === 'anthropicCacheTtl1hOverrideEnabled' ||
+            field === 'anthropicCacheTtl1hInjectionEnabled' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
             field === 'enableOpenAIResponsesPayloadRules' ||
             field === 'v2IpWhitelistOverride'
@@ -3427,6 +3497,14 @@ class ApiKeyService {
         ),
         enableClaudeThinkingSignatureLossyFallback: parseBooleanWithDefault(
           keyData.enableClaudeThinkingSignatureLossyFallback,
+          false
+        ),
+        anthropicCacheTtl1hOverrideEnabled: parseBooleanWithDefault(
+          keyData.anthropicCacheTtl1hOverrideEnabled,
+          false
+        ),
+        anthropicCacheTtl1hInjectionEnabled: parseBooleanWithDefault(
+          keyData.anthropicCacheTtl1hInjectionEnabled,
           false
         ),
         enableOpenAIResponsesCodexAdaptation: parseBooleanWithDefault(

@@ -1053,6 +1053,8 @@ class RedisClient {
       'enableOpenAICodexLiteImages',
       'enableGeneralPromptCacheAssist',
       'enableClaudeThinkingSignatureLossyFallback',
+      'anthropicCacheTtl1hOverrideEnabled',
+      'anthropicCacheTtl1hInjectionEnabled',
       'enableOpenAIResponsesCodexAdaptation',
       'enableOpenAIResponsesPayloadRules',
       'isDeleted',
@@ -1091,6 +1093,12 @@ class RedisClient {
     }
     if (parsed.enableClaudeThinkingSignatureLossyFallback === undefined) {
       parsed.enableClaudeThinkingSignatureLossyFallback = false
+    }
+    if (parsed.anthropicCacheTtl1hOverrideEnabled === undefined) {
+      parsed.anthropicCacheTtl1hOverrideEnabled = false
+    }
+    if (parsed.anthropicCacheTtl1hInjectionEnabled === undefined) {
+      parsed.anthropicCacheTtl1hInjectionEnabled = false
     }
 
     // 数字字段

@@ -2419,6 +2419,8 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       enableOpenAICodexLiteImages,
       enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback,
+      anthropicCacheTtl1hOverrideEnabled,
+      anthropicCacheTtl1hInjectionEnabled,
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
       openaiResponsesPayloadRules
@@ -2705,6 +2707,24 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       }
       updates.enableClaudeThinkingSignatureLossyFallback =
         enableClaudeThinkingSignatureLossyFallback
+    }
+
+    if (anthropicCacheTtl1hOverrideEnabled !== undefined) {
+      if (typeof anthropicCacheTtl1hOverrideEnabled !== 'boolean') {
+        return res
+          .status(400)
+          .json({ error: 'anthropicCacheTtl1hOverrideEnabled must be a boolean' })
+      }
+      updates.anthropicCacheTtl1hOverrideEnabled = anthropicCacheTtl1hOverrideEnabled
+    }
+
+    if (anthropicCacheTtl1hInjectionEnabled !== undefined) {
+      if (typeof anthropicCacheTtl1hInjectionEnabled !== 'boolean') {
+        return res
+          .status(400)
+          .json({ error: 'anthropicCacheTtl1hInjectionEnabled must be a boolean' })
+      }
+      updates.anthropicCacheTtl1hInjectionEnabled = anthropicCacheTtl1hInjectionEnabled
     }
 
     if (enableOpenAIResponsesCodexAdaptation !== undefined) {

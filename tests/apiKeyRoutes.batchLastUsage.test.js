@@ -19,7 +19,8 @@ jest.mock('../src/middleware/auth', () => ({
 }))
 
 jest.mock('../src/services/apiKeyService', () => ({
-  _resolveAccountByUsageRecord: jest.fn()
+  _resolveAccountByUsageRecord: jest.fn(),
+  updateApiKey: jest.fn()
 }))
 
 jest.mock('../src/models/redis', () => ({
@@ -79,6 +80,11 @@ function createResponse() {
 
 function findBatchLastUsageHandler() {
   const route = mockRouter.post.mock.calls.find((call) => call[0] === '/api-keys/batch-last-usage')
+  return route?.[2]
+}
+
+function findUpdateApiKeyHandler() {
+  const route = mockRouter.put.mock.calls.find((call) => call[0] === '/api-keys/:keyId')
   return route?.[2]
 }
 
@@ -239,5 +245,52 @@ describe('admin api keys route batch last-usage', () => {
       expect.anything()
     )
     expect(res.body.data.k1.rawAccountId).toBe('acc-latest')
+  })
+})
+
+describe('admin api keys route Anthropic cache TTL override', () => {
+  beforeEach(() => {
+    apiKeyService.updateApiKey.mockReset()
+    apiKeyService.updateApiKey.mockResolvedValue({ success: true })
+  })
+
+  test('accepts strict booleans and forwards both fields', async () => {
+    const handler = findUpdateApiKeyHandler()
+    const res = createResponse()
+
+    await handler(
+      {
+        params: { keyId: 'k1' },
+        body: {
+          anthropicCacheTtl1hOverrideEnabled: true,
+          anthropicCacheTtl1hInjectionEnabled: false
+        }
+      },
+      res
+    )
+
+    expect(apiKeyService.updateApiKey).toHaveBeenCalledWith('k1', {
+      anthropicCacheTtl1hOverrideEnabled: true,
+      anthropicCacheTtl1hInjectionEnabled: false
+    })
+    expect(res.statusCode).toBe(200)
+  })
+
+  test.each([
+    ['anthropicCacheTtl1hOverrideEnabled', 'true'],
+    ['anthropicCacheTtl1hOverrideEnabled', 1],
+    ['anthropicCacheTtl1hOverrideEnabled', null],
+    ['anthropicCacheTtl1hInjectionEnabled', 'false'],
+    ['anthropicCacheTtl1hInjectionEnabled', 0],
+    ['anthropicCacheTtl1hInjectionEnabled', null]
+  ])('rejects non-boolean %s value %#', async (field, value) => {
+    const handler = findUpdateApiKeyHandler()
+    const res = createResponse()
+
+    await handler({ params: { keyId: 'k1' }, body: { [field]: value } }, res)
+
+    expect(res.statusCode).toBe(400)
+    expect(res.body.error).toBe(`${field} must be a boolean`)
+    expect(apiKeyService.updateApiKey).not.toHaveBeenCalled()
   })
 })

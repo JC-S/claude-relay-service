@@ -746,6 +746,84 @@
           </div>
 
           <div
+            class="rounded-lg border border-cyan-200 bg-cyan-50 p-3 dark:border-cyan-700 dark:bg-cyan-900/20"
+          >
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded bg-cyan-500"
+              >
+                <i class="fas fa-clock text-xs text-white" />
+              </div>
+              <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                {{ isV2Parent ? 'Anthropic 缓存 TTL（全部子 API）' : 'Anthropic 缓存 TTL' }}
+              </h4>
+            </div>
+
+            <div class="space-y-4">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0 flex-1">
+                  <div class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{
+                      isV2Parent
+                        ? '单独设置全部子 API 的 Anthropic 缓存 TTL'
+                        : '单独设置 Anthropic 缓存 TTL'
+                    }}
+                  </div>
+                  <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                    <template v-if="isV2Parent">
+                      关闭时全部子 API 跟随系统全局开关；开启后覆盖所有未单独设置的子 API。
+                    </template>
+                    <template v-else-if="apiKey.parentKeyId">
+                      关闭时跟随 V2 父账号设置；父账号未单独设置时继续跟随系统全局开关。
+                    </template>
+                    <template v-else>
+                      关闭时跟随系统设置中的全局开关；开启后使用此 API Key 的独立设置。
+                    </template>
+                  </p>
+                </div>
+                <label class="relative inline-flex flex-shrink-0 cursor-pointer items-center">
+                  <input
+                    v-model="form.anthropicCacheTtl1hOverrideEnabled"
+                    class="peer sr-only"
+                    type="checkbox"
+                  />
+                  <span
+                    class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-cyan-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-cyan-200 dark:bg-gray-700 dark:peer-focus:ring-cyan-800"
+                  />
+                </label>
+              </div>
+
+              <div
+                v-if="form.anthropicCacheTtl1hOverrideEnabled"
+                class="border-t border-cyan-200 pt-3 dark:border-cyan-800"
+              >
+                <div class="flex items-start justify-between gap-4">
+                  <div class="min-w-0 flex-1">
+                    <div class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{
+                        isV2Parent ? '为全部子 API 注入 1 小时 TTL' : '为此 API Key 注入 1 小时 TTL'
+                      }}
+                    </div>
+                    <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                      开启时强制启用，关闭时强制禁用；仅影响已有的 ephemeral 缓存断点。
+                    </p>
+                  </div>
+                  <label class="relative inline-flex flex-shrink-0 cursor-pointer items-center">
+                    <input
+                      v-model="form.anthropicCacheTtl1hInjectionEnabled"
+                      class="peer sr-only"
+                      type="checkbox"
+                    />
+                    <span
+                      class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-cyan-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-cyan-200 dark:bg-gray-700 dark:peer-focus:ring-cyan-800"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div
             class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-700 dark:bg-emerald-900/20"
           >
             <div class="mb-3 flex items-center gap-2">
@@ -1661,6 +1739,8 @@ const form = reactive({
   enableOpenAICodexLiteImages: false,
   enableGeneralPromptCacheAssist: false,
   enableClaudeThinkingSignatureLossyFallback: false,
+  anthropicCacheTtl1hOverrideEnabled: false,
+  anthropicCacheTtl1hInjectionEnabled: false,
   enableOpenAIResponsesCodexAdaptation: true,
   enableOpenAIResponsesPayloadRules: false,
   openaiResponsesPayloadRules: [],
@@ -1863,6 +1943,8 @@ const updateApiKey = async () => {
       enableOpenAICodexLiteImages: form.enableOpenAICodexLiteImages,
       enableGeneralPromptCacheAssist: form.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback: form.enableClaudeThinkingSignatureLossyFallback,
+      anthropicCacheTtl1hOverrideEnabled: form.anthropicCacheTtl1hOverrideEnabled,
+      anthropicCacheTtl1hInjectionEnabled: form.anthropicCacheTtl1hInjectionEnabled,
       enableOpenAIResponsesCodexAdaptation: form.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: form.enableOpenAIResponsesPayloadRules,
       // 规则内容独立持久化，关闭开关时也要保留已保存的休眠规则。
@@ -2315,6 +2397,12 @@ onMounted(async () => {
   form.enableClaudeThinkingSignatureLossyFallback =
     props.apiKey.enableClaudeThinkingSignatureLossyFallback === true ||
     props.apiKey.enableClaudeThinkingSignatureLossyFallback === 'true'
+  form.anthropicCacheTtl1hOverrideEnabled =
+    props.apiKey.anthropicCacheTtl1hOverrideEnabled === true ||
+    props.apiKey.anthropicCacheTtl1hOverrideEnabled === 'true'
+  form.anthropicCacheTtl1hInjectionEnabled =
+    props.apiKey.anthropicCacheTtl1hInjectionEnabled === true ||
+    props.apiKey.anthropicCacheTtl1hInjectionEnabled === 'true'
   form.enableOpenAIResponsesCodexAdaptation =
     props.apiKey.enableOpenAIResponsesCodexAdaptation === undefined ||
     props.apiKey.enableOpenAIResponsesCodexAdaptation === true ||

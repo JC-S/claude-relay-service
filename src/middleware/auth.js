@@ -1460,6 +1460,12 @@ const authenticateApiKey = async (req, res, next) => {
       enableGeneralPromptCacheAssist: validation.keyData.enableGeneralPromptCacheAssist,
       enableClaudeThinkingSignatureLossyFallback:
         validation.keyData.enableClaudeThinkingSignatureLossyFallback,
+      anthropicCacheTtl1hOverrideEnabled:
+        validation.keyData.anthropicCacheTtl1hOverrideEnabled === true ||
+        validation.keyData.anthropicCacheTtl1hOverrideEnabled === 'true',
+      anthropicCacheTtl1hInjectionEnabled:
+        validation.keyData.anthropicCacheTtl1hInjectionEnabled === true ||
+        validation.keyData.anthropicCacheTtl1hInjectionEnabled === 'true',
       enableOpenAIResponsesCodexAdaptation: validation.keyData.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: validation.keyData.enableOpenAIResponsesPayloadRules,
       openaiResponsesPayloadRules: validation.keyData.openaiResponsesPayloadRules,
