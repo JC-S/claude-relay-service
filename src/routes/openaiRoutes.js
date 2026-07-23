@@ -45,6 +45,11 @@ const {
   isResponsesLiteRequest,
   normalizeOpenAIResponsesLiteBody
 } = require('../utils/openaiResponsesLiteHelper')
+const {
+  GPT55_PHASEOUT_ERROR_CODE,
+  createGpt55PhaseoutError,
+  isGpt55PhaseoutModel
+} = require('../utils/gpt55PhaseoutHelper')
 
 const CODEX_UPSTREAM_USER_AGENT =
   'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)'
@@ -1033,6 +1038,17 @@ const handleResponses = async (req, res) => {
           code: 'permission_denied'
         }
       })
+    }
+
+    const downstreamModel = req.body?.model
+    if (isGpt55PhaseoutModel(downstreamModel)) {
+      logger.api('GPT-5.5 request rejected by model migration policy', {
+        apiKeyId: apiKeyData.id || 'unknown',
+        path: req.originalUrl || req.path || 'unknown',
+        model: typeof downstreamModel === 'string' ? downstreamModel.trim() : downstreamModel,
+        errorCode: GPT55_PHASEOUT_ERROR_CODE
+      })
+      return res.status(409).json(createGpt55PhaseoutError())
     }
 
     // 判断是否为 Codex CLI 的请求（基于 User-Agent）

@@ -135,6 +135,36 @@ describe('/general OpenAI-compatible instructions handling', () => {
     })
   })
 
+  test('streaming chat completions preserve a local migration error as plain JSON', async () => {
+    openaiRoutes.handleResponses.mockImplementationOnce(async (_req, res) =>
+      res.status(409).json({
+        error: {
+          message:
+            'GPT-5.6 models are now available. GPT-5.6-sol offers better intelligence at the same price as GPT-5.5. Please update your model configuration.',
+          type: 'invalid_request_error',
+          code: 'model_migration_required',
+          param: 'model'
+        }
+      })
+    )
+    const app = buildApp()
+
+    const response = await request(app)
+      .post('/general/v1/chat/completions')
+      .send({
+        model: 'gpt-5.5',
+        stream: true,
+        messages: [{ role: 'user', content: 'Hello World.' }]
+      })
+
+    expect(openaiRoutes.handleResponses).toHaveBeenCalledTimes(1)
+    expect(response.status).toBe(409)
+    expect(response.headers['content-type']).toMatch(/^application\/json/)
+    expect(response.body.error.code).toBe('model_migration_required')
+    expect(response.text).not.toContain('data:')
+    expect(response.text).not.toContain('[DONE]')
+  })
+
   test('responses add empty instructions only when missing', async () => {
     const app = buildApp()
 

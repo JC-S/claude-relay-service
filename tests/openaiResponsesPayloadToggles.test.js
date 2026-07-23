@@ -97,6 +97,14 @@ jest.mock('../src/utils/requestDetailHelper', () => ({
   extractOpenAICacheReadTokens: jest.fn(() => 0)
 }))
 
+jest.mock('../src/utils/gpt55PhaseoutHelper', () => {
+  const actual = jest.requireActual('../src/utils/gpt55PhaseoutHelper')
+  return {
+    ...actual,
+    isGpt55PhaseoutModel: jest.fn(() => false)
+  }
+})
+
 const unifiedOpenAIScheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
 const axios = require('axios')
 const apiKeyService = require('../src/services/apiKeyService')
@@ -104,6 +112,7 @@ const openaiAccountService = require('../src/services/account/openaiAccountServi
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../src/services/relay/openaiResponsesRelayService')
 const { IncrementalSSEParser } = require('../src/utils/sseParser')
+const gpt55PhaseoutHelper = require('../src/utils/gpt55PhaseoutHelper')
 const openaiRoutes = require('../src/routes/openaiRoutes')
 
 function createHash(value) {
@@ -169,6 +178,7 @@ function createRes() {
 describe('openai responses payload toggles', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    gpt55PhaseoutHelper.isGpt55PhaseoutModel.mockReset().mockReturnValue(false)
     openaiRoutes._resetGeneralOpenAIUpstreamUserAgentCacheForTest()
 
     unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
@@ -184,6 +194,92 @@ describe('openai responses payload toggles', () => {
 
     openaiResponsesRelayService.handleRequest.mockResolvedValue({ ok: true })
     openaiAccountService.decrypt.mockReturnValue('decrypted-token')
+  })
+
+  test.each([
+    ['standard', '/v1/responses', {}, false],
+    ['priority fast mode', '/v1/responses', { service_tier: 'priority' }, false],
+    ['general', '/v1/responses', {}, true],
+    ['unified', '/v1/responses', {}, false],
+    [
+      'responses lite',
+      '/v1/responses',
+      {},
+      false,
+      { 'x-openai-internal-codex-responses-lite': 'true' }
+    ],
+    ['compact', '/v1/responses/compact', {}, false]
+  ])(
+    'rejects a %s gpt-5.5 request before scheduling',
+    async (_name, path, body, general, headers = {}) => {
+      gpt55PhaseoutHelper.isGpt55PhaseoutModel.mockReturnValueOnce(true)
+      const req = createReq({
+        path,
+        body: { model: 'gpt-5.5', input: 'hello', ...body },
+        fromUnifiedEndpoint: _name === 'unified',
+        extraHeaders: headers
+      })
+      req._generalOpenAIEndpoint = general
+      const res = createRes()
+
+      await openaiRoutes.handleResponses(req, res)
+
+      expect(gpt55PhaseoutHelper.isGpt55PhaseoutModel).toHaveBeenCalledTimes(1)
+      expect(gpt55PhaseoutHelper.isGpt55PhaseoutModel).toHaveBeenCalledWith('gpt-5.5')
+      expect(res.status).toHaveBeenCalledWith(409)
+      expect(res.payload).toEqual({
+        error: {
+          message:
+            'GPT-5.6 models are now available. GPT-5.6-sol offers better intelligence at the same price as GPT-5.5. Please update your model configuration.',
+          type: 'invalid_request_error',
+          code: 'model_migration_required',
+          param: 'model'
+        }
+      })
+      expect(unifiedOpenAIScheduler.selectAccountForApiKey).not.toHaveBeenCalled()
+      expect(openaiResponsesRelayService.handleRequest).not.toHaveBeenCalled()
+      expect(axios.post).not.toHaveBeenCalled()
+      expect(apiKeyService.recordUsage).not.toHaveBeenCalled()
+    }
+  )
+
+  test('continues normal scheduling for a non-target GPT model', async () => {
+    const req = createReq({
+      body: {
+        model: 'gpt-5.6-sol',
+        input: 'hello',
+        prompt_cache_key: 'gpt-5.6-session'
+      },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false
+      }
+    })
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(gpt55PhaseoutHelper.isGpt55PhaseoutModel).toHaveBeenCalledTimes(1)
+    expect(req.body.model).toBe('gpt-5.6-sol')
+    expect(unifiedOpenAIScheduler.selectAccountForApiKey).toHaveBeenCalledWith(
+      req.apiKey,
+      createHash('gpt-5.6-session'),
+      'gpt-5.6-sol'
+    )
+    expect(openaiResponsesRelayService.handleRequest).toHaveBeenCalledTimes(1)
+  })
+
+  test('checks OpenAI permission before applying the migration policy', async () => {
+    apiKeyService.hasPermission.mockReturnValueOnce(false)
+    const res = createRes()
+
+    await openaiRoutes.handleResponses(
+      createReq({ body: { model: 'gpt-5.5', input: 'hello' } }),
+      res
+    )
+
+    expect(res.status).toHaveBeenCalledWith(403)
+    expect(res.payload.error.code).toBe('permission_denied')
+    expect(gpt55PhaseoutHelper.isGpt55PhaseoutModel).not.toHaveBeenCalled()
+    expect(unifiedOpenAIScheduler.selectAccountForApiKey).not.toHaveBeenCalled()
   })
 
   test('keeps standard responses payload unchanged for openai-responses when both toggles are off', async () => {
